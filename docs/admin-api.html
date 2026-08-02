@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+  <title>Admin API &middot; Phoenix MCP docs</title>
+  <meta name="description" content="The full Phoenix MCP admin API: every route for tokens, permissions, approvals, MESA profiles, entity hints, and settings, with request and response payload schemas." />
+  <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400..700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/phoenix-mcp-docs.css" />
+</head>
+<body data-page="admin-api" data-toc>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header" id="site-header"></header>
+  <div class="sidebar-backdrop" data-close-nav></div>
+
+  <div class="layout" id="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main" id="main">
+      <div class="content prose">
+
+        <header class="page-head">
+          <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Admin API</p>
+          <h1>Admin API</h1>
+          <p class="lede">The panel is a client of this API; everything it does, you can do over HTTP. These are the admin routes under <code>/api/phoenix-mcp/admin/</code> and the request and response bodies they expect.</p>
+        </header>
+
+        <div class="callout note">
+          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>
+          <div class="callout-body"><p class="callout-title">Home Assistant session, admin only</p><p>Every admin route requires a valid Home Assistant session and the admin role. A Phoenix MCP token can never authenticate here, not even a pass-through token. See <a href="security.html">Security</a>.</p></div>
+        </div>
+
+        <h2>Conventions</h2>
+        <dl class="kv">
+          <div class="kv-row"><dt>Bodies</dt><dd>JSON, <code>Content-Type: application/json</code>. Bodies over 1&nbsp;MB are rejected with 413.</dd></div>
+          <div class="kv-row"><dt>Request ID</dt><dd>Every response carries <code>X-Phoenix-Request-ID</code>. Admin actions are recorded in Home Assistant's own log, not the Phoenix audit store; the audit-entry correlation applies to token-facing API requests.</dd></div>
+          <div class="kv-row"><dt>Errors</dt><dd>Error responses are <code>{ "error": code, "message": text }</code>, with an optional <code>suggestions</code> array. Codes: <code>unauthorized</code> (401), <code>forbidden</code> (403), <code>not_found</code> (404), <code>invalid_request</code> (400), <code>request_too_large</code> (413), <code>conflict</code> (409, e.g. a duplicate token name or an approval already being processed), <code>service_unavailable</code> (503, e.g. the kill switch or MESA unavailable), <code>internal_error</code> (500).</dd></div>
+        </dl>
+
+        <h2 id="tokens">Tokens</h2>
+        <pre class="code" data-lang="http" data-label="Tokens"><code>GET     /api/phoenix-mcp/admin/tokens                 List tokens
+POST    /api/phoenix-mcp/admin/tokens                 Create a token
+GET     /api/phoenix-mcp/admin/tokens/{id}            Get one token
+PATCH   /api/phoenix-mcp/admin/tokens/{id}            Update a token
+DELETE  /api/phoenix-mcp/admin/tokens/{id}            Revoke a token
+POST    /api/phoenix-mcp/admin/tokens/{id}/rotate     Generate a new raw value
+POST    /api/phoenix-mcp/admin/tokens/{id}/presets                Save current settings as a preset
+PATCH   /api/phoenix-mcp/admin/tokens/{id}/presets/{pid}          Rename a preset
+DELETE  /api/phoenix-mcp/admin/tokens/{id}/presets/{pid}          Delete a preset (active preset refused)
+POST    /api/phoenix-mcp/admin/tokens/{id}/presets/{pid}/apply    Make the token match a preset
+GET     /api/phoenix-mcp/admin/tokens/{id}/stats      Request counters
+GET     /api/phoenix-mcp/admin/tokens/{id}/connection last_used_at + request_count
+GET     /api/phoenix-mcp/admin/tokens/{id}/audit      Audit log for one token
+GET     /api/phoenix-mcp/admin/tokens/archived        List archived tokens
+DELETE  /api/phoenix-mcp/admin/tokens/archived/{id}   Delete an archived record</code></pre>
+
+        <p><strong>Create</strong> (<code>POST /tokens</code>) takes a name and optional lifetime and limits. The response is the full token record plus a one-time <code>token</code> field (the raw value, never returned again).</p>
+        <pre class="code" data-lang="json" data-label="Create token body"><code>{
+  "name": "claude-code",          // required, 3-32 chars: letters, digits, _ or -
+  "expires_at": "2026-07-01T00:00:00Z", // optional ISO-8601, omit for no expiry; a value without a timezone is read as HA's local time and stored as UTC
+  "pass_through": false,          // optional
+  "confirm_pass_through": false,  // required to be true when pass_through is true
+  "rate_limit_requests": 60,      // optional, 0 disables rate limiting
+  "rate_limit_burst": 10          // optional
+}</code></pre>
+
+        <p><strong>Presets</strong> (all four endpoints return 403 while the <code>token_presets_enabled</code> setting is off): a preset is a named snapshot of the token's full configuration. Create takes <code>{"name": "..."}</code> and snapshots the CURRENT settings (at most 8 per token, names unique per token). Apply makes the token match the stored preset; applying a preset other than the active one first auto-saves the live state into the outgoing active preset, while applying the active preset reverts to its saved state. Applying a preset that would enable pass-through on a scoped token requires <code>{"confirm_pass_through": true}</code>. All return the updated token record.</p>
+
+        <p><strong>Update</strong> (<code>PATCH /tokens/{id}</code>) accepts any subset of these fields. Capability fields take <code>"deny"</code> or <code>"allow"</code>; <code>"confirm"</code> is accepted only for the Confirm-eligible capabilities (the write, system, and irreversible tiers listed under <a href="capabilities.html#capability-flags">Capabilities</a>), and a PATCH setting it on a read-tier capability returns 400. Enabling pass-through requires <code>confirm_pass_through: true</code> in the same request, or the call returns 400. A token can also be renamed by sending <code>name</code> (same format and uniqueness rules as creation, excluding the token's own name); <code>expires_at</code> stays immutable. Renaming rebuilds the token's per-token sensor entities under the new name.</p>
+        <pre class="code" data-lang="json" data-label="Patch token body (all optional)"><code>{
+  "persona": "voice_assistant",
+  "pass_through": false,
+  "confirm_pass_through": false,
+  "confirm_inline_wait_seconds": 60,
+  "rate_limit_requests": 60,
+  "rate_limit_burst": 10,
+  "cap_config_read": "allow",
+  "cap_template_render": "allow",
+  "cap_log_read": "deny",
+  "cap_search": "allow",
+  "cap_registry_read": "allow",
+  "cap_traces": "deny",
+  "cap_diagnostics": "deny",
+  "cap_broadcast": "deny",
+  "cap_service_response": "allow",
+  "cap_automation_write": "deny",
+  "cap_script_write": "deny",
+  "cap_scene_write": "deny",
+  "cap_helper_write": "deny",
+  "cap_blueprint_write": "deny",
+  "cap_physical_control": "confirm",
+  "cap_restart": "deny",
+  "cap_integration_write": "deny",
+  "cap_lovelace_write": "deny",
+  "cap_registry_write": "deny",
+  "cap_radio_write": "deny",
+  "cap_backup": "deny",
+  "cap_filesystem": "deny",
+  "cap_yaml_edit": "deny",
+  "cap_esphome_yaml": "deny",
+  "cap_esphome_flash": "deny",
+  "use_assist_exposure": false,
+  "announce_all_tools": false
+}</code></pre>
+        <p>Setting a <code>persona</code> applies that persona's full preset across every capability in one request; see <a href="capabilities.html#personas">Personas</a>. <code>use_assist_exposure</code> and <code>announce_all_tools</code> are advanced options described in <a href="operations.html#advanced-token-options">Operations</a>. <code>confirm_inline_wait_seconds</code> is how long a confirm-gated call holds the response open waiting for an admin decision before falling back to an immediate <code>pending_approval</code> reply; it must be <code>0</code> (off, admin-API-only) or an integer from 30 to 180, and defaults new tokens to 60.</p>
+
+        <h2 id="permissions">Permissions</h2>
+        <pre class="code" data-lang="http" data-label="Permissions"><code>GET    /api/phoenix-mcp/admin/tokens/{id}/permissions                    Read the tree
+PUT    /api/phoenix-mcp/admin/tokens/{id}/permissions                    Replace the tree
+PATCH  /api/phoenix-mcp/admin/tokens/{id}/permissions/domains/{node}     Set one domain node
+PATCH  /api/phoenix-mcp/admin/tokens/{id}/permissions/devices/{node}     Set one device node
+PATCH  /api/phoenix-mcp/admin/tokens/{id}/permissions/entities/{node}    Set one entity node
+GET    /api/phoenix-mcp/admin/tokens/{id}/resolve/{entity}               Explain effective permission
+GET    /api/phoenix-mcp/admin/tokens/{id}/scope                          Readable / writable lists</code></pre>
+        <p>A node PATCH sets a single node's state, with an optional per-token hint (max 200 characters; <code>null</code> clears it). The PUT replaces the whole tree; nodes use the same shape.</p>
+        <pre class="code" data-lang="json" data-label="Permission node body"><code>{
+  "state": "GREEN",   // GREY | YELLOW | GREEN | RED
+  "hint": "Rachel's desk lamp, not the ceiling light"  // optional, <= 200 chars, null clears
+}</code></pre>
+        <p><code>resolve</code> returns the decision and the ancestor that made it: <code>{ entity_id, resolution_path: [{level, state}], effective, effective_hint }</code>.</p>
+
+        <h2 id="entity-hints">Entity hints</h2>
+        <p>Global hints apply to every token that can see the entity. A per-token permission-node hint (above) always takes precedence over the global one. Both are capped at 200 characters.</p>
+        <pre class="code" data-lang="http" data-label="Entity hints"><code>GET  /api/phoenix-mcp/admin/entity-hints               The global entity_id > hint map
+PUT  /api/phoenix-mcp/admin/entity-hints/{entity_id}   Set or clear one global hint</code></pre>
+        <pre class="code" data-lang="json" data-label="Global hint body"><code>{ "hint": "Garage side door" }   // null clears the hint</code></pre>
+
+        <h2 id="entities">Entities</h2>
+        <pre class="code" data-lang="http" data-label="Entities"><code>GET  /api/phoenix-mcp/admin/entities                   The entity tree (domains, devices, entities)
+GET  /api/phoenix-mcp/admin/entities?force_reload=1    Rebuild the cached tree</code></pre>
+
+        <h2 id="approvals">Approvals</h2>
+        <pre class="code" data-lang="http" data-label="Approvals"><code>GET     /api/phoenix-mcp/admin/approvals                List approvals (filter by status, token_id)
+GET     /api/phoenix-mcp/admin/approvals/{id}           Get one approval
+POST    /api/phoenix-mcp/admin/approvals/{id}/approve   Approve and run the held action
+POST    /api/phoenix-mcp/admin/approvals/{id}/reject    Reject with an optional reason
+DELETE  /api/phoenix-mcp/admin/approvals/{id}           Cancel a pending approval</code></pre>
+        <p>List accepts <code>?status=pending|approved|rejected|expired|cancelled</code>, <code>?token_id=</code>, <code>?limit=</code>, and <code>?offset=</code>, and returns <code>{ approvals: [...], total, limit, offset }</code>. Approve and reject take small optional bodies.</p>
+        <pre class="code" data-lang="json" data-label="Approve / reject bodies"><code>// POST .../approve
+{ "note": "looks fine" }      // optional
+
+// POST .../reject
+{ "reason": "not this one" }  // optional</code></pre>
+
+        <h2 id="versions">Configuration history</h2>
+        <pre class="code" data-lang="http" data-label="Configuration history"><code>GET     /api/phoenix-mcp/admin/versions                              Recent changes across all resources
+GET     /api/phoenix-mcp/admin/versions?resource_type=&amp;resource_id=   One resource's version history
+GET     /api/phoenix-mcp/admin/versions/{id}                          One version, with full before/after
+POST    /api/phoenix-mcp/admin/versions/{id}/restore                 Re-apply a version (admin authority)</code></pre>
+        <p>Every agent-made create, edit, or delete of an automation, script, scene, helper, blueprint, dashboard layout, entity-registry metadata (<code>set_entity</code> / <code>delete_entity</code>), ESPHome device YAML, the raw <code>configuration.yaml</code>, or a scoped file (<code>www/</code>, <code>themes/</code>, <code>custom_templates/</code>) is snapshotted here. With no query parameters the list returns the most recent versions across all resources (the panel's Changes feed); with both <code>resource_type</code> and <code>resource_id</code> it returns that resource's history, newest first. List rows are compact summaries; fetch a single version for the full <code>before</code> / <code>after</code> config. <strong>Restore</strong> re-applies one of the version's two snapshots (an optional <code>side</code> body field selects <code>before</code> or <code>after</code>; it defaults to <code>after</code>, falling back to <code>before</code> for a delete; an empty body means the default, while malformed or non-object JSON is a 400 and restores nothing), editing the resource if it still exists or recreating it if it was deleted (in place under its original id for automations, scripts, and scenes, so re-restoring is idempotent; helpers get a new HA-assigned id), and records the change as a <code>rollback</code> attributed to you. Configs are stored raw so a restore can round-trip; the data is admin-only and no more sensitive than the YAML it mirrors (ESPHome snapshots are credential-masked at display time). Two deliberate limits fail closed rather than restore incorrectly: an automation, script, or scene snapshot containing YAML tags such as <code>!secret</code> or <code>!include</code> is refused (the snapshot flattened the tag to a display string, and writing that back as a quoted string would silently break the config; re-create it manually), and a deleted entity-registry entry cannot be recreated, since the entry belongs to its integration; restoring an <code>entity</code> version re-applies name/icon/area to an entity that still exists. Any raw-content snapshot over 100&nbsp;KB (a scoped file, <code>configuration.yaml</code>, a blueprint, or ESPHome device YAML) is kept as a metadata-only marker, so restoring that version returns an error instead.</p>
+
+        <h2 id="card-catalog">Dashboard card catalog</h2>
+        <pre class="code" data-lang="http" data-label="Card catalog"><code>GET     /api/phoenix-mcp/admin/card_catalog                          The harvested catalog
+POST    /api/phoenix-mcp/admin/card_catalog                          Report a harvest (panel only)</code></pre>
+        <p>Which custom Lovelace cards this instance can render, backing the <code>list_dashboard_cards</code> tool. The POST is sent by the Phoenix MCP panel, not by hand: a card registers itself on <code>window.customCards</code> at runtime and many card sets build their type names by string concatenation, so the catalog can only be built by a browser that has loaded the resources. The panel harvests on load and re-checks shortly afterwards for cards that register late (an integration-provided card may wait on its own websocket first), re-reporting only if the set grew. Each report REPLACES the stored catalog, so an uninstalled card disappears rather than being recommended forever. <code>harvested: false</code> means no browser has reported yet, which is not the same as an instance with no custom cards, and the tool says so explicitly rather than returning an empty list.</p>
+
+        <h2 id="mesa">MESA profiles</h2>
+        <p>Profiles exist at the entity, device, area, integration, and domain levels, plus a canonical-tag vocabulary and a validation view. The profile document shape is defined by <a href="https://github.com/leecaochang/mesa-core" target="_blank" rel="noopener">mesa-core</a>; see <a href="mesa.html">MESA</a> for how it fits into Phoenix MCP.</p>
+        <pre class="code" data-lang="http" data-label="MESA"><code>GET     /api/phoenix-mcp/admin/mesa/profiles               List entity profiles (domain, tag, area, origin, cursor)
+GET     /api/phoenix-mcp/admin/mesa/profiles/{entity_id}   Stored + effective profile for one entity
+PUT     /api/phoenix-mcp/admin/mesa/profiles/{entity_id}   Create or replace an entity profile
+DELETE  /api/phoenix-mcp/admin/mesa/profiles/{entity_id}   Remove an entity profile
+GET     /api/phoenix-mcp/admin/mesa/domains                List domain profiles
+GET/PUT/DELETE  /api/phoenix-mcp/admin/mesa/domains/{domain}   One domain profile
+GET     /api/phoenix-mcp/admin/mesa/integrations           List integration profiles
+GET/PUT/DELETE  /api/phoenix-mcp/admin/mesa/integrations/{integration}   One integration profile
+GET     /api/phoenix-mcp/admin/mesa/integration-options    Integrations with entities (picker source)
+GET     /api/phoenix-mcp/admin/mesa/areas                  List area profiles
+GET/PUT/DELETE  /api/phoenix-mcp/admin/mesa/areas/{area_id}    One area profile
+GET     /api/phoenix-mcp/admin/mesa/devices                List device profiles
+GET/PUT/DELETE  /api/phoenix-mcp/admin/mesa/devices/{device_id}    One device profile
+GET     /api/phoenix-mcp/admin/mesa/device-options         Devices with display names (picker source)
+GET/PUT /api/phoenix-mcp/admin/mesa/defaults               Deployment-default profile (the fallback level)
+GET     /api/phoenix-mcp/admin/mesa/vocabulary             Canonical tags and roots
+GET     /api/phoenix-mcp/admin/mesa/issues                 Validation issues + orphans (?refresh=1)
+POST    /api/phoenix-mcp/admin/mesa/orphans/clear          Delete every orphaned entity, device, area, and integration profile in one call
+GET     /api/phoenix-mcp/admin/mesa/export                 Export every profile as a portable archive
+POST    /api/phoenix-mcp/admin/mesa/import                 Import a portable archive
+POST    /api/phoenix-mcp/admin/mesa/suggestions/dismiss    Dismiss one profile suggestion
+POST    /api/phoenix-mcp/admin/mesa/suggestions/restore    Restore a dismissed suggestion, or all of them</code></pre>
+        <p>The <code>orphans/clear</code> action recomputes the orphan lists against the live registries, then deletes exactly those profiles (the per-profile DELETE endpoints remain for one-off removals). It returns the deleted ids grouped by kind and a total <code>count</code>. Profiles are never deleted automatically; this is an explicit admin action.</p>
+        <pre class="code" data-lang="json" data-label="MESA profile document (PUT)"><code>{
+  "semantic_profile": { },        // mesa-core schema; see the mesa-core repo
+  "privacy_classification": { }
+}</code></pre>
+        <p><strong>Export / import</strong> move profiles between deployments using mesa-core's own portable archive format. Export takes no body and returns every stored profile (entity, device, area, integration, and domain levels, plus the deployment default) verbatim, with no filtering, so the response is exactly what import expects back. Import validates every document in the archive and never writes an invalid one; a document that fails validation is reported in <code>invalid</code> rather than aborting the rest of the archive.</p>
+        <pre class="code" data-lang="json" data-label="Import body"><code>{
+  "archive": { },        // a document previously returned by GET .../export
+  "on_conflict": "skip"  // skip (default, keep the existing profile) | overwrite
+}</code></pre>
+        <p>Import responds with <code>{ imported, overwritten, skipped_existing, invalid }</code>, each a list or map keyed by profile.</p>
+        <p><strong>Suggestions</strong> (surfaced as the <code>suggestions</code> array on <code>GET .../issues</code>) are computed, never auto-applied; dismiss and restore only change whether a suggestion is shown, they never touch a profile. Dismiss requires the key to match a suggestion in the currently computed set. Restore takes either <code>key</code> for one suggestion or <code>{"all": true}</code> to clear every dismissal; both return the current <code>suggestions</code> and <code>dismissed_suggestions</code> lists alongside the action's own result field (<code>dismissed</code> or <code>restored</code>).</p>
+        <pre class="code" data-lang="json" data-label="Suggestion dismiss / restore bodies"><code>// POST .../suggestions/dismiss
+{ "key": "naked_risky:lock" }
+
+// POST .../suggestions/restore
+{ "key": "naked_risky:lock" }   // restore one
+{ "all": true }                 // or clear every dismissal</code></pre>
+
+        <h2 id="agentcli">Agent Chat</h2>
+        <p><a href="agentcli.html">Agent Chat</a> is the in-panel LLM chat that runs an agentic loop against a chosen token. Provider accounts ("instances", since more than one account of the same kind is allowed, for example two Claude keys) are configured through these admin routes and stored in a dedicated secrets file separate from tokens; the chat turn itself streams over Server-Sent Events rather than returning a single JSON body. Every route here, including the chat route, requires the same Home Assistant admin session as the rest of this page.</p>
+        <pre class="code" data-lang="http" data-label="Agent Chat"><code>GET     /api/phoenix-mcp/admin/agentcli/providers                      List provider accounts
+POST    /api/phoenix-mcp/admin/agentcli/providers                      Add a provider account (validated before it is stored)
+DELETE  /api/phoenix-mcp/admin/agentcli/providers/{instance_id}         Remove a provider account
+GET     /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/models  List that account's available models
+POST    /api/phoenix-mcp/admin/agentcli/probe                           Validate credentials and list models, without storing anything
+POST    /api/phoenix-mcp/agentcli/chat                                  Run one streaming agent turn (Server-Sent Events)</code></pre>
+        <p>A provider account holds a <code>kind</code> (one of <code>claude</code>, <code>deepseek</code>, <code>chatgpt</code>, <code>gemini</code>, <code>grok</code>, <code>kimi</code>, <code>meta</code>, <code>minimax</code>, <code>openrouter</code>, <code>nvidia</code>, <code>ollama</code>, <code>ollama_cloud</code>) plus either an <code>api_key</code> or, for the keyless local <code>ollama</code> kind, a <code>base_url</code>. Create validates the credential against the provider before saving it; list never returns the key.</p>
+        <pre class="code" data-lang="json" data-label="Create provider account body"><code>{
+  "kind": "claude",
+  "api_key": "sk-ant-...",              // required for every kind except ollama
+  "base_url": "http://localhost:11434", // required for ollama; ignored otherwise
+  "model": "claude-opus-4-8"            // optional; a provider with no default is chosen later
+}</code></pre>
+        <p>The response is <code>{ "instance": { id, kind, name, model, base_url } }</code>, the same shape <code>GET .../providers</code> returns as <code>{ "instances": [...] }</code>. <code>name</code> is a display label the server derives (the provider kind, with a discriminator like the last four characters of the key appended only when more than one account of that kind exists). <strong>Probe</strong> accepts the same body as create but stores nothing, so a Settings form can validate a credential and populate a model dropdown before committing; it responds <code>{ "ok": true, "models": [...] }</code> or <code>{ "ok": false, "error": "...", "models": [] }</code> instead of an HTTP error, since a failed probe is an expected outcome, not a server fault.</p>
+        <p><strong>Chat</strong> takes the token to act as, the provider account to use, the new user message, and the prior turns (the browser holds the transcript and resends it each turn; this endpoint keeps no conversation state of its own).</p>
+        <pre class="code" data-lang="json" data-label="Chat turn body"><code>{
+  "token_id": "...",                     // required, the Phoenix MCP token this turn acts as
+  "instance_id": "...",                  // required, a stored provider account id
+  "model": "claude-opus-4-8",            // optional, overrides the account's saved model
+  "user": "turn off the kitchen lights", // required, the new user message
+  "messages": [ ],                       // optional prior turns: [{"role": "user"|"assistant", "content": "..."}]
+  "options": { "thinking": true, "effort": "high", "show_thinking": false, "temperature": 0.7, "max_tokens": 8192 }
+}</code></pre>
+        <p>The response is <code>text/event-stream</code>, not a single JSON body: named SSE frames (<code>ready</code>, <code>assistant_delta</code>, <code>thinking_delta</code>, <code>tool_call</code>, <code>tool_progress</code> (a live status line from a long-running tool, e.g. a firmware build percentage), <code>tool_result</code>, <code>approval_required</code>, <code>approval_resolved</code>, <code>continue_required</code> (the turn paused at the steps-before-check-in limit; re-POST with <code>"continue": true</code> to resume it, the panel's Continue button), <code>usage</code>, <code>notice</code>, <code>messages</code>, <code>error</code>, <code>done</code>) carry the turn's progress as it streams, with periodic unnamed keepalive comments so an idle stretch (the model thinking, an approval awaiting a decision) does not get dropped by an intermediary. The <code>usage</code> frame reports provider-exact token counts for the turn so far (<code>input_tokens</code>, <code>output_tokens</code>, and <code>context_tokens</code>, the newest model call's input size); it only appears when the provider reports usage. Every tool call the agent makes runs through the same capability gates, MESA checks, and audit log as a real MCP client on that token; a confirm-gated call surfaces as an inline approval card in the panel rather than a plain <code>pending_approval</code> reply.</p>
+        <div class="callout note">
+          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>
+          <div class="callout-body"><p class="callout-title">The chat route is kill-switch-gated; provider config is not</p><p>The four provider config/model routes above are kill-switch-immune, like the rest of the admin API. <code>POST /api/phoenix-mcp/agentcli/chat</code> is agent activity, not administration, so it is gated by the <a href="security.html">kill switch</a> the same way the MCP and REST proxy endpoints are: with the kill switch on, the route is not even registered.</p></div>
+        </div>
+
+        <h2 id="settings-system">Settings and system</h2>
+        <pre class="code" data-lang="http" data-label="Settings & system"><code>GET    /api/phoenix-mcp/admin/settings                 Read global settings
+PATCH  /api/phoenix-mcp/admin/settings                 Update global settings (any subset)
+GET    /api/phoenix-mcp/admin/audit                     Global audit log (limit, offset, token_id, outcome, ip)
+GET    /api/phoenix-mcp/admin/info                      Version info and tool counts
+GET    /api/phoenix-mcp/admin/catalog/{language}        Panel string catalog for one language
+POST   /api/phoenix-mcp/admin/voice_agent/pipeline      Create an Assist pipeline pointed at Phoenix MCP's voice agent
+DELETE /api/phoenix-mcp/admin/voice_agent/pipeline      Remove the Phoenix-created pipeline
+GET    /api/phoenix-mcp/admin/ai_task/preferred         Read the "Data generation tasks" default vs Phoenix MCP's entity
+POST   /api/phoenix-mcp/admin/ai_task/preferred         Make Phoenix MCP the default data-gen entity
+DELETE /api/phoenix-mcp/admin/ai_task/preferred         Clear Phoenix MCP as the default
+DELETE /api/phoenix-mcp/admin/wipe                      Wipe tokens, audit log, and settings</code></pre>
+        <p><code>GET /catalog/{language}</code> returns <code>{ "language": …, "resources": { … } }</code>, the panel's strings as flat dotted keys. Anything that language does not translate comes back in English.</p>
+        <p><code>GET /info</code> returns <code>version</code>, <code>min_ha_version</code>, <code>github_url</code>, and <code>tool_count</code>: <code>{ "total": …, "native": …, "additional": … }</code>, counted from the running build's own tool registry. That registry is the single source of truth for the count, so this endpoint never disagrees with the documentation.</p>
+        <p>Settings are described in <a href="operations.html#global-settings">Operations</a>. A PATCH may include any subset of the writable settings; the GET response additionally carries computed, read-only fields (the <code>*_supported</code> flags, the ESPHome availability fields, and <code>voice_agent_pipeline_id</code>, which is managed through the pipeline routes below, not by PATCH). The <code>voice_agent/pipeline</code> and <code>ai_task/preferred</code> routes back the one-click <a href="connect.html#assist">Assist</a> and <a href="connect.html#ai-task">AI Task</a> setup buttons in the panel: <code>POST</code> a pipeline requires <code>{ "preferred": true|false }</code> and needs the voice agent fully configured; the AI Task routes report and set Home Assistant's single default data-generation entity.</p>
+        <pre class="code" data-lang="json" data-label="Global settings"><code>{
+  "kill_switch": false,
+  "disable_all_logging": false,
+  "log_allowed": true,
+  "log_denied": true,
+  "log_rate_limited": true,
+  "log_entity_names": true,
+  "log_client_ip": true,
+  "notify_on_rate_limit": false,
+  "notify_on_approval": true,
+  "audit_flush_interval": 15,    // minutes: 0 (never), 5, 10, 15, 30, 60
+  "audit_log_maxlen": 10000,
+  "mesa_mode": "advisory",       // off | advisory | enforced
+  "mesa_inject_enabled": false,  // experimental in-context MESA buttons; admin-only, off by default
+  "token_presets_enabled": false, // token settings presets; enabling seeds a default preset on every token
+  "agentcli_global": true,        // Agent Chat floats over all of Home Assistant, not just the Phoenix MCP panel (default on)
+  "agentcli_scrollback_lines": 100, // Agent Chat memory: 0-5000 lines, shown in the panel as "Chat memory"
+  "agentcli_max_iterations": 20,  // Agent Chat rounds per turn (3-100) before it pauses to ask whether to continue
+  "assist_bound_token_id": null,  // Assist Tool Provider: token whose tools "Phoenix MCP (scoped)" exposes (null = unbound)
+  "voice_agent_enabled": false,   // Voice Agent: Phoenix MCP as an HA conversation agent, on its own token/provider/model
+  "voice_agent_token_id": null,
+  "voice_agent_provider_id": null, // an Agent Chat provider account id
+  "voice_agent_model": null,
+  "voice_agent_pipeline_id": null, // set by Phoenix MCP when it creates the HA assistant for the voice agent; not set by hand
+  "ai_task_enabled": false,       // AI Task: Phoenix MCP as an HA AI Task entity, on its own token/provider/model
+  "ai_task_token_id": null,
+  "ai_task_provider_id": null,    // an Agent Chat provider account id
+  "ai_task_model": null
+}</code></pre>
+        <p id="wipe">The wipe route is intentionally guarded: it requires an exact confirmation string. It is scoped by three independent flags, so you choose what to delete. <code>wipe_core</code> (default <code>true</code>) clears every token and archived token, all settings back to their defaults, global entity hints, the audit log, and the configuration/version change history, plus in-memory request-tracking state (the rate limiter's windows, per-token request counters, and rate-limit/stale-tools notification markers) and any queued pending approvals (dismissing their notifications). <code>wipe_providers</code> (default <code>true</code>) deletes the Agent Chat provider accounts and their stored API keys from <code>.storage/phoenix_mcp_agentcli_secrets</code>. <code>wipe_mesa</code> (default <code>false</code>) deletes all MESA profiles from <code>.storage/phoenix_mcp_mesa</code>; it is off by default so a reset keeps hand-authored safety policy unless you ask otherwise. Omitting a flag uses its default (a bare <code>{ "confirm": "WIPE" }</code> clears core data and provider keys but leaves MESA intact). The panel's Data Management card exposes all three as switches.</p>
+        <pre class="code" data-lang="json" data-label="Wipe body"><code>{
+  "confirm": "WIPE",
+  "wipe_core": true,       // tokens, settings, audit, versions, pending approvals (default true)
+  "wipe_providers": true,  // Agent Chat provider accounts + API keys (default true)
+  "wipe_mesa": false       // MESA safety profiles (default false)
+}</code></pre>
+
+        <div class="callout warn">
+          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.8 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><circle cx="12" cy="17" r="0.4" fill="currentColor"/></svg>
+          <div class="callout-body"><p class="callout-title">PATCH is read-modify-write under a lock</p><p>Token and record PATCH handlers load, modify, and save atomically, so two admins editing the same token at once cannot clobber each other.</p></div>
+        </div>
+
+        <p>The token-scoped proxy routes (states, services, history, and so on) are listed in <a href="operations.html#route-reference">Operations</a>.</p>
+
+        <nav class="pager" id="pager" aria-label="Page navigation"></nav>
+      </div>
+    </main>
+    <aside class="toc" id="toc"></aside>
+  </div>
+
+  <footer class="site-footer" id="site-footer"></footer>
+  <script src="assets/site.js"></script>
+</body>
+</html>

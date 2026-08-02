@@ -1,0 +1,125 @@
+"""Tests for log-text redaction used by the cap_log_read tools/endpoint.
+
+collect_log_entries routes every message and exception through _scrub_log_text,
+which removes Phoenix MCP tokens, JWTs/LLATs, and URL-embedded credentials so a token
+holding cap_log_read never receives another integration's secret verbatim.
+"""
+
+from __future__ import annotations
+
+from custom_components.phoenix_mcp.const import DOMAIN, TOKEN_PREFIX
+from custom_components.phoenix_mcp.helpers import (
+    _PHOENIX_LOGGER_PREFIXES,
+    _scrub_log_text,
+    redact_diagnostics,
+    redact_secrets_in_text,
+)
+
+
+def test_scrubs_phx_token():
+    raw = "auth failed for phx_" + "a" * 64
+    assert "phx_" + "a" * 64 not in _scrub_log_text(raw)
+    assert "<phoenix-token>" in _scrub_log_text(raw)
+
+
+def test_token_scrub_pattern_tracks_the_real_token_prefix():
+    """The scrubber must match the prefix tokens are actually minted with.
+
+    This pair fails open: if the pattern drifts from TOKEN_PREFIX, live bearer
+    tokens flow through to a caller holding cap_log_read and nothing raises.
+    """
+    minted = TOKEN_PREFIX + "b" * 64
+    assert minted not in _scrub_log_text(f"Bearer {minted} rejected")
+
+
+def test_logger_prefixes_match_the_integration_module_path():
+    """Log filtering keys off this module path; a stale value silently matches nothing."""
+    assert any(p.endswith(f".{DOMAIN}") for p in _PHOENIX_LOGGER_PREFIXES)
+    assert f"custom_components.{DOMAIN}" in _PHOENIX_LOGGER_PREFIXES
+
+
+def test_scrubs_jwt_llat():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJoYSJ9.abc123signaturepart"
+    out = _scrub_log_text(f"rejected token {jwt} from client")
+    assert jwt not in out
+    assert "<token>" in out
+
+
+def test_scrubs_url_query_credentials():
+    out = _scrub_log_text("GET https://api.example.com/v1?access_token=SEKRET&page=2")
+    assert "SEKRET" not in out
+    assert "access_token=<redacted>" in out
+    assert "page=2" in out
+
+
+def test_scrubs_userinfo_credentials():
+    out = _scrub_log_text("connecting to https://admin:hunter2@db.local/x")
+    assert "hunter2" not in out
+    assert "://<redacted>@" in out
+
+
+def test_preserves_benign_text():
+    raw = "Setup of sensor.kitchen took 1.2 seconds"
+    assert _scrub_log_text(raw) == raw
+
+
+def test_redact_secrets_in_text_yaml_keys():
+    diff = "name: My HA\npassword: hunter2\napi_key: abcd1234\nlatitude: 51.5"
+    out = redact_secrets_in_text(diff)
+    assert "hunter2" not in out
+    assert "abcd1234" not in out
+    assert "password: <redacted>" in out
+    assert "api_key: <redacted>" in out
+    assert "latitude: 51.5" in out  # benign key preserved
+
+
+def test_redact_secrets_in_text_none_passthrough():
+    assert redact_secrets_in_text(None) is None
+    assert redact_secrets_in_text("") == ""
+
+
+def test_redact_diagnostics_scrubs_topology_conservatively():
+    obj = {
+        "a": "10.0.0.5",                 # private IPv4
+        "b": "192.168.1.1",              # private IPv4
+        "c": "172.20.3.4",               # private IPv4 (172.16/12)
+        "d": "fe80::1ff:fe23:4567:890a", # link-local IPv6
+        "e": "http://nas.local:8080/x",  # bare URL host
+        "f": "/config/.storage/db",      # absolute unix path
+        "g": r"C:\HA\config\secrets",    # windows path
+        "ok": "reachable",               # benign
+        "ver": "4.8.0.1",                # public-IP-shaped version: NOT private, keep
+        "pub": "8.8.8.8",                # public IP: not a private range, keep
+        "frac": "ratio 1/2 done",        # lone slash: not a path, keep
+    }
+    out = redact_diagnostics(obj)
+    assert out["a"] == "<redacted-ip>"
+    assert out["b"] == "<redacted-ip>"
+    assert out["c"] == "<redacted-ip>"
+    assert out["d"] == "<redacted-ip>"
+    assert out["e"] == "<redacted-url>"
+    assert out["f"] == "<redacted-path>"
+    assert out["g"] == "<redacted-path>"
+    assert out["ok"] == "reachable"
+    assert out["ver"] == "4.8.0.1"
+    assert out["pub"] == "8.8.8.8"
+    assert out["frac"] == "ratio 1/2 done"
+
+
+def test_redact_diagnostics_scrubs_topology_in_dict_keys():
+    # An integration may key its free-form health data by a URL, LAN IP, or path;
+    # keys get the same scrub as values so topology cannot leak through the key.
+    out = redact_diagnostics({
+        "http://nas.local:8080/status": "ok",
+        "/config/.storage/core": "ok",
+        "192.168.1.50": "reachable",
+        "benign_label": "ok",
+    })
+    assert out == {
+        "<redacted-url>": "ok",
+        "<redacted-path>": "ok",
+        "<redacted-ip>": "reachable",
+        "benign_label": "ok",
+    }
+    # A sensitive-named key still redacts its value (key name is a harmless label).
+    assert redact_diagnostics({"password": "hunter2"}) == {"password": "<redacted>"}

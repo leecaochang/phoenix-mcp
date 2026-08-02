@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+  <title>Tools reference &middot; Phoenix MCP docs</title>
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 108 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400..700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/phoenix-mcp-docs.css" />
+</head>
+<body data-page="tools">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header" id="site-header"></header>
+  <div class="sidebar-backdrop" data-close-nav></div>
+
+  <div class="layout" id="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main" id="main">
+      <div class="content wide prose">
+
+        <header class="page-head">
+          <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
+          <h1>Tools reference</h1>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 108 of its own, 128 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+        </header>
+
+        <div class="tool-toolbar" role="search">
+          <label class="tool-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="text" id="tool-search-input" placeholder="Search all 131 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+          </label>
+          <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
+          <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
+          <button class="filter-chip" data-cap="discovery" aria-pressed="false">Discovery</button>
+          <button class="filter-chip" data-cap="mesa" aria-pressed="false">MESA</button>
+          <button class="filter-chip" data-cap="service" aria-pressed="false">Service</button>
+          <button class="filter-chip" data-cap="control" aria-pressed="false">Native control</button>
+          <button class="filter-chip" data-cap="write" aria-pressed="false">Writes</button>
+          <button class="filter-chip" data-cap="system" aria-pressed="false">System</button>
+        </div>
+
+        <p id="no-results" class="no-results is-hidden">No tools match your search.</p>
+
+        <!-- ===== Automations & scripts ===== -->
+        <section class="tool-group" data-cap="write">
+          <div class="tool-group-head"><h2>Automations &amp; scripts</h2>
+          <p>These tools write YAML directly and do <strong>not</strong> consult the permission tree. See <a href="capabilities.html#automation-write">automation and script write</a>.</p></div>
+
+          <article class="tool" data-cap="write" data-search="get_automation read automation config content_hash">
+            <div class="tool-head"><span class="tool-name">get_automation</span><span class="badge badge-cap">Automation write</span></div>
+            <p class="tool-desc">Read one automation's full current configuration. This is the read half of a safe edit: <code>edit_automation</code> replaces the whole config, so an agent that edits without reading first silently destroys any trigger, condition, or action it did not resend. The response includes a <code>content_hash</code> to pass back as <code>expected_hash</code> on the edit, making the write conditional on the automation not having changed in between. YAML tags appear as display strings (for example <code>!secret my_key</code>); a secret's value is never resolved or returned. Gated on the same capability as editing, and never requires approval (reads are not gated by Confirm).</p>
+            <dl><dt>params</dt><dd><code>automation_id</code> (required), from <code>list_automations</code> or the entity's <code>id</code> attribute</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="create_automation edit_automation delete_automation automations.yaml expected_hash">
+            <div class="tool-head"><span class="tool-name">create_automation</span><span class="tool-name">edit_automation</span><span class="tool-name">delete_automation</span><span class="badge badge-cap">Automation write</span></div>
+            <p class="tool-desc">Create, edit, or delete automations in the YAML file your <code>configuration.yaml</code> routes automations to. Split configurations (<code>!include</code> and <code>!include_dir_*</code> layouts) are followed to the correct leaf file and only the target entry's lines are rewritten: comments, formatting, and <code>!secret</code> references elsewhere in the file are preserved byte-for-byte. New automations are appended for a plain <code>!include</code>, or written as a new file per entry for directory includes. Ambiguous cases (duplicate ids across files, entries in packages or inline config, multiple create targets) are refused rather than guessed at. <strong>Edit replaces the entire configuration</strong>, so read it with <code>get_automation</code> first and resend everything you want to keep.</p>
+            <dl><dt>create</dt><dd><code>config</code> (required), an object holding <code>alias</code>, <code>trigger</code>, <code>action</code>, plus optional <code>condition</code>, <code>mode</code></dd><dt>edit / delete</dt><dd><code>automation_id</code> (the slug); edit replaces the entire config and accepts an optional <code>expected_hash</code> from <code>get_automation</code>, which refuses the write if the automation changed since that read</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="get_script read script config content_hash">
+            <div class="tool-head"><span class="tool-name">get_script</span><span class="badge badge-cap">Script write</span></div>
+            <p class="tool-desc">Read one script's full current configuration, the read half of a safe edit for the same reason as <code>get_automation</code>: <code>edit_script</code> replaces the whole config. Returns a <code>content_hash</code> for the edit's <code>expected_hash</code>, and renders YAML tags as display strings without resolving secrets.</p>
+            <dl><dt>params</dt><dd><code>script_id</code> (required), the part after <code>script.</code> in the entity id</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="create_script edit_script delete_script scripts.yaml expected_hash">
+            <div class="tool-head"><span class="tool-name">create_script</span><span class="tool-name">edit_script</span><span class="tool-name">delete_script</span><span class="badge badge-cap">Script write</span></div>
+            <p class="tool-desc">Create, edit, or delete scripts in the YAML file your <code>configuration.yaml</code> routes scripts to. Split configurations (<code>!include</code> and <code>!include_dir_named</code>/<code>merge_named</code> layouts) are followed to the correct leaf file, preserving untouched content byte-for-byte, the same include-graph handling as the automation tools. <strong>Edit replaces the entire configuration</strong>, so read it with <code>get_script</code> first.</p>
+            <dl><dt>create</dt><dd><code>script_id</code> and <code>config</code> (both required), where <code>config</code> holds <code>alias</code>, <code>sequence</code>, <code>mode</code>, <code>variables</code>, <code>fields</code></dd><dt>edit / delete</dt><dd><code>script_id</code> (the slug); edit replaces the entire config and accepts an optional <code>expected_hash</code> from <code>get_script</code></dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Configuration & templates ===== -->
+        <section class="tool-group" data-cap="read">
+          <div class="tool-group-head"><h2>Configuration &amp; templates</h2></div>
+
+          <article class="tool" data-cap="read" data-search="get_config configuration data">
+            <div class="tool-head"><span class="tool-name">get_config</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Read a curated subset of Home Assistant's configuration: version, time zone, unit system, location name, and the list of loaded integrations. Precise home coordinates, internal/external URLs, and host filesystem paths are withheld.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="list_blueprints blueprint automation script">
+            <div class="tool-head"><span class="tool-name">list_blueprints</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">List installed automation and script blueprints with their inputs. To instantiate one, create an automation or script with a <code>use_blueprint</code> config (the existing authoring tools accept it); there is no separate create-from-blueprint tool.</p>
+            <dl><dt>params</dt><dd><code>domain</code> (optional, <code>automation</code> or <code>script</code>)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_blueprint blueprint source yaml automation script">
+            <div class="tool-head"><span class="tool-name">get_blueprint</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Read one blueprint's YAML source, so an agent can see what it actually does before instantiating it. <code>list_blueprints</code> reports the inputs a blueprint accepts; this returns the body behind them, <code>!input</code> placeholders included. Only a path the blueprint registry itself enumerated can be read, so no path outside <code>blueprints/</code> is reachable.</p>
+            <dl><dt>params</dt><dd><code>domain</code> (required; <code>automation</code> or <code>script</code>), <code>path</code> (required; exactly as returned by <code>list_blueprints</code>)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="create_blueprint edit_blueprint delete_blueprint blueprint authoring yaml">
+            <div class="tool-head"><span class="tool-name">create_blueprint</span><span class="tool-name">edit_blueprint</span><span class="tool-name">delete_blueprint</span><span class="badge badge-cap">Blueprint write</span></div>
+            <p class="tool-desc">Author blueprints from YAML you supply. Confirm-eligible. Gated by <strong>two</strong> capabilities: <code>cap_blueprint_write</code> plus the matching <code>cap_automation_write</code> or <code>cap_script_write</code>, so a token cannot rewire scripts through a script blueprint while script authoring is denied. Paths are jailed to the domain's blueprint folder and validated against Home Assistant's own blueprint schema before an approval is created, so a malformed document is refused immediately rather than failing after you approve it.</p>
+            <p class="tool-desc"><strong>Editing has a wider blast radius than it looks.</strong> Home Assistant reloads every automation or script built from the blueprint, and those entities' own configs do not change at all, so the effect is invisible in their history. The approval names the entities that will be reloaded, and the tool result repeats them. Deleting is refused by Home Assistant while anything still uses the blueprint.</p>
+            <p class="tool-desc">There is deliberately <strong>no import-from-URL</strong>. Fetching an operator-unseen URL from inside Home Assistant would reach the LAN and the supervisor API; instead the agent fetches the URL itself and passes the YAML, so the full source lands in the approval where you read it.</p>
+            <dl><dt>params</dt><dd><code>domain</code> (required; <code>automation</code> or <code>script</code>), <code>path</code> (required; relative <code>.yaml</code> path, jailed to <code>blueprints/&lt;domain&gt;/</code>), <code>content</code> (required for create/edit; the full blueprint YAML)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_logs system log entries">
+            <div class="tool-head"><span class="tool-name">get_logs</span><span class="badge badge-cap">Log read</span></div>
+            <p class="tool-desc">Recent HA system log entries. Phoenix MCP's own entries are excluded and token values, JWTs, and URL credentials are scrubbed from messages and tracebacks. The scrubber is pattern-based and cannot guarantee removal of arbitrary third-party secrets or PII an integration writes into a log line, so treat Log read as an elevated-trust grant.</p>
+            <p class="tool-desc">The response reports <code>total</code> (entries matching the level and integration filters) next to <code>count</code> (entries in this page) and a <code>truncated</code> flag. Same on <code>/api/phoenix-mcp/logs</code>.</p>
+            <dl><dt>params</dt><dd><code>limit</code> (default 50, max 100), <code>level</code> (<code>INFO</code> / <code>WARNING</code> / <code>ERROR</code>), <code>integration</code> (only entries logged by one integration, e.g. <code>zha</code>)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_logbook human readable event history logbook">
+            <div class="tool-head"><span class="tool-name">get_logbook</span><span class="badge badge-cap">Log read</span></div>
+            <p class="tool-desc">The human-readable logbook (state changes, automations and scripts triggered). Scoped to entities the token can access; entries for out-of-scope entities are dropped. This is the narrative event history, distinct from <code>get_logs</code> (error log) and <code>get_history</code> (raw samples).</p>
+            <dl><dt>params</dt><dd><code>start_time</code> (default 24h), <code>end_time</code>, <code>entity_id</code> (optional, focus on one entity), <code>limit</code> (default 100, max 1000)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="render_template jinja2">
+            <div class="tool-head"><span class="tool-name">render_template</span><span class="badge badge-cap">Template render</span></div>
+            <p class="tool-desc">Render a Jinja2 template in a permission-scoped environment; templates can only reach entities the token can read.</p>
+            <dl><dt>params</dt><dd><code>template</code> (string, required)</dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Discovery & diagnostics ===== -->
+        <section class="tool-group" data-cap="discovery">
+          <div class="tool-group-head"><h2>Discovery &amp; diagnostics</h2>
+          <p>Read-only, scoped to accessible entities. Per-object lookups return an identical "not found" for a missing object and one the token cannot see, so they cannot probe for existence.</p></div>
+
+          <article class="tool" data-cap="discovery" data-search="check_config validate_config validate configuration">
+            <div class="tool-head"><span class="tool-name">check_config</span><span class="tool-name">validate_config</span><span class="badge badge-cap">Diagnostics</span></div>
+            <p class="tool-desc"><code>check_config</code> validates the HA configuration files. <code>validate_config</code> validates an automation or script config without saving and reports, per referenced entity, whether it is accessible to the token (entities outside the token's scope are reported as inaccessible and not visible).</p>
+            <dl><dt>params</dt><dd><code>check_config</code> takes none. <code>validate_config</code>: <code>type</code> (required; <code>automation</code> or <code>script</code>), <code>config</code> (required; the config to validate)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="compare_state two times recorder">
+            <div class="tool-head"><span class="tool-name">compare_state</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Compare accessible entities' states between two times, backed by the recorder (the tool fails when the Recorder integration is disabled).</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>t1</code> (required; ISO or relative like <code>24h</code>), <code>t2</code> (default now)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="describe_area floor entities grouped">
+            <div class="tool-head"><span class="tool-name">describe_area</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">One area, its floor, and accessible entities grouped by domain.</p>
+            <dl><dt>params</dt><dd><code>area</code> (required; an area name, alias, or area_id)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="describe_entity comprehension summary control_mode">
+            <div class="tool-head"><span class="tool-name">describe_entity</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Comprehension summary of one entity: state, area, the services in its domain, what references it, and its MESA <code>control_mode</code> when MESA is active. A configuration or diagnostic entity is flagged with <code>entity_category</code>, so an agent can tell a device's setup and health entities from its primary controls.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="find_available_actions services domain gates">
+            <div class="tool-head"><span class="tool-name">find_available_actions</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">The services in an entity's domain and whether the token can invoke each one now, accounting for write access, physical and dual gates, and the entity's MESA <code>control_mode</code>.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_automation_traces execution traces">
+            <div class="tool-head"><span class="tool-name">get_automation_traces</span><span class="badge badge-cap">Automation traces</span></div>
+            <p class="tool-desc">Execution traces for an accessible automation. Optional <code>run_id</code> and <code>summary</code> (highlights the error and last step).</p>
+            <dl><dt>params</dt><dd><code>automation_id</code> (required), <code>run_id</code>, <code>summary</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_overview home summary counts mesa_mode restrictions prohibited read_only safety">
+            <div class="tool-head"><span class="tool-name">get_overview</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Compact home summary: total accessible entities, counts by domain and area, the unavailable count, and the deployment <code>mesa_mode</code>. When MESA is active and the token has Config Read, it also includes the operator-set prohibited and read-only entities (the &ldquo;do not operate&rdquo; list), so the agent learns what is off-limits in one call.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_relationships references automations scripts scenes">
+            <div class="tool-head"><span class="tool-name">get_relationships</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Reverse references (automations, scripts, scenes that reference the entity) and forward references, scoped to what the token can access.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_system_health version integrations">
+            <div class="tool-head"><span class="tool-name">get_system_health</span><span class="badge badge-cap">Diagnostics</span></div>
+            <p class="tool-desc">Home Assistant version and per-integration system health. Secret-keyed values and URL-embedded credentials in the integration data are scrubbed before they are returned, as are network-topology details (LAN IP addresses, hostnames inside URLs, and filesystem paths) that Phoenix MCP withholds elsewhere. This is an elevated read; treat <code>cap_diagnostics</code> accordingly.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_esphome_overview esphome firmware update bluetooth proxy device builder actions">
+            <div class="tool-head"><span class="tool-name">get_esphome_overview</span><span class="badge badge-cap">Diagnostics</span></div>
+            <p class="tool-desc">Status of the ESPHome devices this token can see: firmware version and build time, online state, Bluetooth proxy connection slots (free of limit), and the user-defined API actions each device declares along with the Home Assistant action name each maps to. When the ESPHome Device Builder add-on is set up, each device also reports its configuration filename and whether a firmware update is available. A device appears only if the token can access at least one of its entities; MAC addresses, the API encryption key, and the device's network address are never returned, and Device Builder configurations belonging to devices outside the token's scope are reported as a count only.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_radio_network get_radio_device zigbee radio lqi rssi signal mesh neighbors channel z2m zha zigbee2mqtt">
+            <div class="tool-head"><span class="tool-name">get_radio_network</span><span class="tool-name">get_radio_device</span><span class="badge badge-cap">Diagnostics</span></div>
+            <p class="tool-desc">Radio-network health (Zigbee2MQTT or ZHA, auto-detected). <code>get_radio_network</code> reports every radio network present: channel, PAN id, coordinator, and whether the pairing window is open. <code>get_radio_device</code> reports one device's signal quality (LQI/RSSI), availability, power source, interview state, and (ZHA) mesh neighbors, with out-of-scope neighbor identifiers redacted. Network keys never appear in any response.</p>
+            <dl><dt>params</dt><dd><code>get_radio_network</code>: none; <code>get_radio_device</code>: <code>device_id</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="list_areas list_floors list_zones list_devices get_device registry enumeration">
+            <div class="tool-head"><span class="tool-name">list_areas</span><span class="tool-name">list_floors</span><span class="tool-name">list_zones</span><span class="tool-name">list_devices</span><span class="tool-name">get_device</span><span class="badge badge-cap">Registry read</span></div>
+            <p class="tool-desc">Registry enumeration restricted to areas, floors, zones, and devices that contain at least one accessible entity. <code>get_device</code> returns one device plus its accessible entities; it takes <code>device_id</code> (required), the list tools take none.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="list_scenes list_helpers list_automations list_scripts">
+            <div class="tool-head"><span class="tool-name">list_automations</span><span class="tool-name">list_scripts</span><span class="tool-name">list_scenes</span><span class="tool-name">list_helpers</span><span class="badge badge-cap">Registry read</span></div>
+            <p class="tool-desc">Enumerate accessible automations, scripts, scenes, and helpers. The automation and script listings carry the id each one's read and edit tools take (<code>get_automation</code> / <code>get_script</code>), alongside the entity id, alias, and current state.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="recent_activity changed minutes">
+            <div class="tool-head"><span class="tool-name">recent_activity</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Accessible entities that changed in the last N minutes, newest first.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="search_entities filter find">
+            <div class="tool-head"><span class="tool-name">search_entities</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Filter accessible entities by query, domain, area, device class, state, and staleness. A multi-word <code>query</code> matches entities containing all the words and results are ranked by relevance, so the best matches lead. If that exact matching finds nothing, a typo-tolerant fallback retries against entity id and friendly name, tagging the response <code>fuzzy_fallback: true</code>. Each row carries <code>control_mode</code> when its MESA nature is non-default, so restricted entities are visible without a follow-up call, and <code>entity_category</code> when the entity is a configuration or diagnostic entity rather than a primary control.</p>
+            <dl><dt>params</dt><dd><code>query</code>, <code>domain</code>, <code>area</code>, <code>device_class</code>, <code>state</code>, <code>unavailable</code>, <code>stale_hours</code>, <code>limit</code> (all optional)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="whatif predict automations fire hypothetical">
+            <div class="tool-head"><span class="tool-name">whatif</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Predict which automations would fire if an accessible entity changed to a hypothetical state, without changing anything. State and numeric_state triggers are evaluated best-effort.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>hypothetical_state</code> (required)</dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Files, YAML, integrations & system ===== -->
+        <section class="tool-group" data-cap="system">
+          <div class="tool-group-head"><h2>Files, YAML, integrations &amp; system</h2></div>
+
+          <article class="tool" data-cap="system" data-search="get_esphome_yaml set_esphome_yaml esphome device yaml config secrets redacted placeholder">
+            <div class="tool-head"><span class="tool-name">get_esphome_yaml</span><span class="tool-name">set_esphome_yaml</span><span class="badge badge-cap">ESPHome device YAML</span></div>
+            <p class="tool-desc">Read and edit ESPHome device configuration files in their own jail under <code>esphome/</code>, deliberately separate from <code>cap_filesystem</code>: device YAML embeds C++ lambdas and, in practice, inline credentials, so widening a filesystem grant must never reach it. Call <code>get_esphome_yaml</code> with no argument to list the files this token can see, or with <code>file</code> to read one.</p>
+            <p class="tool-desc">Credentials are masked, not exposed. API encryption keys, wifi/OTA/MQTT passwords, anything under a credential-shaped key, and any value that also appears in the ESPHome <code>secrets.yaml</code> come back as <code>__PHOENIX_REDACTED__&lt;path&gt;__</code> placeholders. Leave a placeholder where it is and the real value is spliced back on write, so an edit round-trips without the agent, the approval record, or the diff ever holding the secret. Comments and formatting outside those spans survive byte-for-byte.</p>
+            <p class="tool-desc">A credential cannot be changed to a new literal value. Replacing one with a <code>!secret</code> reference <em>is</em> allowed and is the supported migration; the key must already exist in the ESPHome <code>secrets.yaml</code>, which <code>defined_secrets</code> lists. That file is never readable or writable through any tool. The freeze is not only about disclosure: an API encryption key must keep matching what Home Assistant stored, and an OTA password governs the next upload, so a blind change can leave a device unreachable until someone reflashes it over a cable.</p>
+            <p class="tool-desc">Writing never flashes anything. The file lands on disk and the device keeps running its current firmware until a build is installed, which is a separate tool behind a separate capability. <code>content_hash</code> is taken over the real file, so <code>expected_hash</code> still guards against a change during an approval window, and every write is versioned for rollback in the Changes tab.</p>
+            <p class="tool-desc"><strong>New credentials are generated, not invented.</strong> A device that does not have an API encryption key or OTA password yet is a real problem for an agent: it needs a value, and a language model cannot produce cryptographic randomness, so anything it makes up is guessable. Writing <code>!phoenix_generate</code> as the value solves it from the other side. Phoenix substitutes a genuinely random one as the file is written, so the secret exists only on disk, is masked on every later read, and never reaches the agent, the approval record, or the diff, which shows the tag and therefore the <em>intent</em>. You read the value from the ESPHome dashboard when Home Assistant asks for it. It is refused on a credential that already exists, because rotating a key a device is currently running strands it until Home Assistant is re-keyed, and refused outright on the wifi ssid and password, which belong to the house rather than the device.</p>
+            <dl><dt>params</dt><dd><code>get_esphome_yaml</code>: <code>file</code> (omit to list); <code>set_esphome_yaml</code>: <code>file</code>, <code>content</code>, <code>expected_hash</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="validate_esphome_yaml get_esphome_board get_esphome_component get_esphome_automations esphome device builder validate board pins component schema">
+            <div class="tool-head"><span class="tool-name">validate_esphome_yaml</span><span class="tool-name">get_esphome_board</span><span class="tool-name">get_esphome_component</span><span class="tool-name">get_esphome_automations</span><span class="badge badge-cap">ESPHome device YAML</span></div>
+            <p class="tool-desc">Four read-only lookups served by the ESPHome Device Builder add-on, which turn ESPHome authoring from recall into reference. They are hidden from a token's tool list entirely when the add-on is not installed, and a call made while it is merely stopped fails with a clear message rather than a silent empty answer. Phoenix MCP speaks a hardcoded command allowlist to the add-on; the add-on has no permission model of its own, so that allowlist is the boundary and is pinned by test.</p>
+            <p class="tool-desc"><code>validate_esphome_yaml</code> runs ESPHome's configuration check over one device file, without compiling or flashing. It validates the file <em>as it is on disk</em>, never caller-supplied content, and that is a security boundary rather than a convenience: ESPHome evaluates configuration at validation time and a config carrying <code>external_components</code> fetches and executes remote code to do it, so accepting an arbitrary payload would be an unreviewed code-execution path. A file on disk got there through <code>set_esphome_yaml</code>, which is capability-gated and can require approval. The validator quotes offending lines back, which can include a credential the file carries inline, so its output is scrubbed of every known secret before it is returned.</p>
+            <p class="tool-desc"><code>get_esphome_board</code> returns a board's full pin map (which GPIOs exist, which are already occupied, and any warnings) plus its hardware and platform details, or searches the board catalog. <code>get_esphome_component</code> returns a component's real configuration schema, searches the catalog, or lists categories. <code>get_esphome_automations</code> lists the triggers, actions and conditions available inside one device's YAML, scoped to the components that device actually loads. The two file-bound tools follow the same jail and entity scoping as <code>get_esphome_yaml</code>, and an out-of-scope file is indistinguishable from a missing one. The automation catalog is projected through a per-section field allowlist, dropping prose, editor-only flags, and display names that merely restate the id: the raw payload measured 64KB for one real device, which is enough to swamp an agent's context. Every entry is kept, only the fields are trimmed.</p>
+            <dl><dt>params</dt><dd><code>validate_esphome_yaml</code>: <code>file</code>; <code>get_esphome_board</code>: <code>board_id</code>, <code>query</code>, <code>platform</code>, <code>offset</code>, <code>limit</code>; <code>get_esphome_component</code>: <code>component_ids</code>, <code>query</code>, <code>category</code>, <code>exclude_category</code>, <code>platform</code>, <code>board_id</code>, <code>offset</code>, <code>limit</code>; <code>get_esphome_automations</code>: <code>file</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="compile_esphome_firmware install_esphome_firmware get_esphome_job wait_for_esphome_job cancel_esphome_job esphome compile build flash firmware ota install job progress">
+            <div class="tool-head"><span class="tool-name">compile_esphome_firmware</span><span class="tool-name">install_esphome_firmware</span><span class="tool-name">get_esphome_job</span><span class="tool-name">wait_for_esphome_job</span><span class="tool-name">cancel_esphome_job</span><span class="badge badge-cap">ESPHome device YAML</span><span class="badge badge-cap">ESPHome firmware flashing</span></div>
+            <p class="tool-desc">Build the firmware an agent just authored, and put it on the device. These close the loop that validation leaves open: validation catches schema and pin errors, but the C++ and lambda mistakes that actually break a model-written ESPHome config only surface in a real build.</p>
+            <p class="tool-desc"><strong>Building and flashing are separate capabilities.</strong> <code>compile_esphome_firmware</code> rides the same capability as editing the YAML, because compiling produces a binary and touches no device: the capability that authorized writing the file authorizes proving it builds. Flashing is its own grant, <em>ESPHome firmware flashing</em>, which is denied by default in every persona except <code>esphome</code>, where it is set to Confirm. So a token can iterate on firmware all day without being able to put any of it on hardware.</p>
+            <p class="tool-desc">A build takes minutes, so nothing here waits for one. Both tools enqueue a job in the Device Builder and return a <code>job_id</code> straight away; <code>get_esphome_job</code> polls it. That is not only about agent latency: approving a flash runs it inline in the panel's request, and a tool that blocked for eight minutes would hang the Approve button. The jobs live in the add-on and survive its restart, so Phoenix MCP keeps no build state of its own.</p>
+            <p class="tool-desc"><strong>A finished compile is not a flashed device.</strong> An install enqueues two jobs, a compile and an upload held behind it, and returns only the first. <code>get_esphome_job</code> resolves the second and reports <code>flashed</code> as true only once that upload has actually completed. If the device was offline, there is no upload job at all and the flash is armed for its next wake, which is reported as exactly that rather than as success. Phoenix MCP always installs over the air and ignores any port a caller supplies.</p>
+            <p class="tool-desc"><strong>Watching it happen.</strong> The build tools return instantly, so <code>wait_for_esphome_job</code> is what holds a call open while the job runs. It waits up to five minutes, returns the moment the job is done, and reports lines like <code>Compiling living-room: 70%</code> as it goes. For an install it follows the whole chain, compile and then upload, so a single call covers the lot and returning means the device really was flashed. In Agent Chat those lines appear live under the running tool, visible even with verbose output switched off. An external MCP client sees them only if it asks for progress on the call and renders progress notifications; where it does not, the percentage is still in every poll for the agent to relay in its own words.</p>
+            <p class="tool-desc">Two smaller safeguards worth knowing. Starting a second build for a file that is already building does not queue behind the first, it cancels it and discards its log, so Phoenix MCP refuses and points at the running job instead. And a <code>job_id</code> is scoped by the file it names, so it is not a way to read another device's build log: an id that does not exist and an id you cannot see return the same answer. Build logs are scrubbed of every known credential and bounded, since a real one runs thousands of lines.</p>
+            <dl><dt>params</dt><dd><code>compile_esphome_firmware</code>, <code>install_esphome_firmware</code>: <code>file</code> (required). <code>get_esphome_job</code>: <code>job_id</code>, or <code>file</code> for that file's newest job (one of the two is required; a job id only exists in the conversation that started the build, so a voice or Assist follow-up asks by file). <code>cancel_esphome_job</code>: <code>job_id</code> (required). <code>wait_for_esphome_job</code>: <code>job_id</code> (required), <code>timeout</code>.</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="delete_esphome_yaml clean_esphome_build rename_esphome_device esphome delete remove clean cache rebuild rename hostname lifecycle">
+            <div class="tool-head"><span class="tool-name">delete_esphome_yaml</span><span class="tool-name">clean_esphome_build</span><span class="tool-name">rename_esphome_device</span><span class="badge badge-cap">ESPHome device YAML</span><span class="badge badge-cap">ESPHome firmware flashing</span></div>
+            <p class="tool-desc">The housekeeping that otherwise sends you to the ESPHome panel in the middle of a task: removing a configuration you no longer want, clearing a build that has gone wrong in a way a rebuild cannot fix, and renaming a device.</p>
+            <p class="tool-desc"><strong>Deleting is restorable, which is why Phoenix MCP owns it.</strong> <code>delete_esphome_yaml</code> snapshots the file into version history before removing it, so a mistaken delete is an ordinary Restore in the Changes tab. The add-on's own delete would bypass that entirely. Deleting a configuration does <em>not</em> touch the device: it keeps running its current firmware, keeps its Home Assistant entities, and is not unadopted. Both the result and the approval card say so, because that is the consequence people expect to be different from what it is.</p>
+            <p class="tool-desc"><strong>Cleaning is cheap to authorize, not free to run.</strong> <code>clean_esphome_build</code> discards a configuration's cached build artifacts, changes no file and reaches no device, so it needs no approval. It is not fully contained, though: it also clears the shared PlatformIO cache, so the next build of every device is slower, which is why it is worth trying the obvious explanations before reaching for it. If a build is currently running it refuses rather than killing it, and points at <code>cancel_esphome_job</code>. The add-on's fleet-wide equivalent, which cancels every job and wipes the shared build environment, is permanently unreachable.</p>
+            <p class="tool-desc"><strong>Renaming compiles and flashes, so it needs the flashing capability, not the YAML one.</strong> Entities, entity ids, areas, history, and MESA profiles all survive a rename, because Home Assistant identifies ESPHome entities by the device's MAC address rather than its name. What does not survive is the device's user-defined actions: their service names are built from the device name, so <code>esphome.old_name_action</code> becomes <code>esphome.new_name_action</code> and any automation calling one silently stops working. The approval card names those services. The device must be reachable: the add-on copies the configuration, compiles it, then flashes over the air, and if that flash fails it deletes the new copy so nothing is renamed at all. Both configurations are listed while the build runs, and only one survives it.</p>
+            <dl><dt>params</dt><dd><code>delete_esphome_yaml</code>, <code>clean_esphome_build</code>: <code>file</code>; <code>rename_esphome_device</code>: <code>file</code>, <code>new_name</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="get_esphome_device_logs decode_esphome_backtrace esphome logs console crash backtrace panic">
+            <div class="tool-head"><span class="tool-name">get_esphome_device_logs</span><span class="tool-name">decode_esphome_backtrace</span><span class="badge badge-cap">ESPHome device YAML</span></div>
+            <p class="tool-desc">What happened after the flash. <code>get_esphome_device_logs</code> captures a bounded window (15 seconds by default, 60 at most) of a device's live console, which is far more detailed than what reaches Home Assistant. The stream runs until it is killed rather than ending on its own, so the capture window is the request; an empty result means the device logged nothing, not that anything failed.</p>
+            <p class="tool-desc"><code>decode_esphome_backtrace</code> turns the hex panic dump an ESP32 prints when it crashes into a real stack trace with function names and source lines, resolved against that device's last build. It reports <code>stale_build</code> when the firmware has moved on since, so a trace is never silently read against the wrong binary. Both are reads needing only read access to the device, and both are scrubbed.</p>
+            <dl><dt>params</dt><dd><code>get_esphome_device_logs</code>: <code>file</code>, <code>seconds</code>; <code>decode_esphome_backtrace</code>: <code>file</code>, <code>lines</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="get_yaml_config set_yaml_config configuration.yaml packages include fragment key">
+            <div class="tool-head"><span class="tool-name">get_yaml_config</span><span class="tool-name">set_yaml_config</span><span class="badge badge-cap">Raw YAML edit</span></div>
+            <p class="tool-desc">Read and edit <code>configuration.yaml</code> directly. Confirm-eligible. <code>get_yaml_config</code> reads <code>configuration.yaml</code> by default, and with the optional <code>file</code> argument any other <code>.yaml</code>/<code>.yml</code> file in the configuration directory (an <code>!include</code> target, a packages file); <code>secrets.yaml</code> and hidden directories such as <code>.storage</code> are refused, and a symlink cannot launder either past the check. The optional <code>key</code> argument returns just one dotted mapping key instead of the whole file, tag-preserving, naming the target file when the value is an <code>!include</code>. Files are returned verbatim, so any <em>inline</em> secret enters the agent's context; grant this only to fully-trusted clients, and prefer <code>!secret</code> references (which Phoenix MCP preserves) over inline values.</p>
+            <p class="tool-desc">Concurrency guard: the read returns a <code>content_hash</code> fingerprint of the whole file, and <code>set_yaml_config</code> accepts an optional <code>expected_hash</code>; if the file changed since the read (including during an approval window), the write is refused with a re-read-and-reapply error instead of overwriting the other change. Omitting <code>expected_hash</code> skips the check.</p>
+            <p class="tool-desc"><strong>Trust-boundary keys are never writable.</strong> A write is refused outright if it adds, removes, or changes <code>homeassistant: auth_providers</code> / <code>auth_mfa_modules</code> / <code>packages</code>, <code>http: trusted_proxies</code> / <code>use_x_forwarded_for</code> / <code>cors_allowed_origins</code> / <code>ip_ban_enabled</code> / <code>login_attempts_threshold</code>, <code>frontend: extra_module_url</code>, or <code>lovelace: resources</code>. Copying them through unchanged always passes. These are not merely powerful keys (<code>shell_command</code> stays writable): each one redefines how Home Assistant itself authenticates, whom it trusts, or what JavaScript loads into your authenticated dashboard. The content must also parse as YAML, so a write cannot leave a syntactically broken file behind; that is a parse check only, not configuration validation, so YAML that parses but configures Home Assistant incorrectly is still written. The tool result tells the agent to run <code>check_config</code> afterward, which is the step that catches invalid configuration before a restart applies it.</p>
+            <p class="tool-desc"><strong>Deletions have to be declared.</strong> A write that removes a top-level key present in the current file is refused unless the optional <code>remove_keys</code> argument names that key. Intentional removals still work, they just have to be stated. This catches the whole-file-replace accident that nothing else would: dropping <code>automation: !include automations.yaml</code> disables every automation while <code>automations.yaml</code> sits untouched and <code>check_config</code> passes. Two cases are exempt from <em>this</em> check (both still go through the trust-boundary refusal above): a file on disk that is missing or does not parse, so a broken configuration stays repairable, and restoring an earlier version from the Changes tab. When a write does remove keys, the approval summary names the keys the write actually drops, not the ones it claimed.</p>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="list_backups create_backup no restore">
+            <div class="tool-head"><span class="tool-name">list_backups</span><span class="tool-name">create_backup</span><span class="badge badge-cap">Backup</span></div>
+            <p class="tool-desc">List and create backups. Restore is intentionally never exposed. Confirm-eligible. <code>list_backups</code> reports <code>total</code>, <code>returned</code> and a <code>truncated</code> flag, so a clipped page is distinguishable from the whole list.</p>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="list_files read_file write_file www themes custom_templates">
+            <div class="tool-head"><span class="tool-name">list_files</span><span class="tool-name">read_file</span><span class="tool-name">write_file</span><span class="badge badge-cap">Filesystem access</span></div>
+            <p class="tool-desc">Read and write files under <code>www/</code>, <code>themes/</code>, and <code>custom_templates/</code>. Confirm-eligible. Same concurrency guard as the YAML tools: <code>read_file</code> returns a <code>content_hash</code>, <code>write_file</code> accepts an optional <code>expected_hash</code> and refuses if the file changed since the read (a file that does not exist yet fingerprints as the empty string, so read-then-create is guarded too).</p>
+            <dl><dt>params</dt><dd><code>path</code> (required for read/write; relative to the allowed directories), <code>content</code> (required for write), <code>expected_hash</code> (write, optional)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="list_integrations set_integration_enabled enable disable">
+            <div class="tool-head"><span class="tool-name">list_integrations</span><span class="tool-name">set_integration_enabled</span><span class="badge badge-cap">Integration management</span></div>
+            <p class="tool-desc">List integrations and enable or disable them. Confirm-eligible.</p>
+            <dl><dt>params</dt><dd><code>set_integration_enabled</code>: <code>entry_id</code> (required; from <code>list_integrations</code>), <code>enabled</code> (required; boolean)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="set_entity delete_entity registry rename area icon orphan">
+            <div class="tool-head"><span class="tool-name">set_entity</span><span class="tool-name">delete_entity</span><span class="badge badge-cap">Registry write</span></div>
+            <p class="tool-desc">Edit an entity's registry metadata (friendly name, icon, area) or delete a stale/duplicate registry entry. Requires write access to the entity and <code>cap_registry_write</code>; Confirm-eligible and version-captured. Renaming the entity_id is not exposed; a deleted entry cannot be re-created through Phoenix MCP.</p>
+            <dl><dt>params</dt><dd><code>set_entity</code>: <code>entity_id</code> + one of <code>name</code> / <code>icon</code> / <code>area_id</code>; <code>delete_entity</code>: <code>entity_id</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="permit_zigbee_join reconfigure_zigbee_device remove_zigbee_device zigbee radio pair join z2m zha zigbee2mqtt">
+            <div class="tool-head"><span class="tool-name">permit_zigbee_join</span><span class="tool-name">reconfigure_zigbee_device</span><span class="tool-name">remove_zigbee_device</span><span class="badge badge-cap">Radio management</span></div>
+            <p class="tool-desc">Manage the Zigbee network (Zigbee2MQTT or ZHA, auto-detected). Open the pairing window for up to 254 seconds or close it with duration 0, re-interview a misbehaving device, or remove one from the network (re-pairing required to rejoin). Requires <code>cap_radio_write</code>; Confirm-eligible. Device-scoped writes need write access to at least one of the device's entities, and the coordinator can never be targeted.</p>
+            <dl><dt>params</dt><dd><code>permit_zigbee_join</code>: <code>duration</code> (0-254, default 60), optional <code>device_id</code> (router) and <code>backend</code>; others: <code>device_id</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="restart_ha restart home assistant">
+            <div class="tool-head"><span class="tool-name">restart_ha</span><span class="badge badge-cap">HA restart / stop</span></div>
+            <p class="tool-desc">Restart Home Assistant. Pass-through-exempt: even pass-through tokens must have this flag enabled.</p>
+          </article>
+        </section>
+
+        <!-- ===== MESA profiles ===== -->
+        <section class="tool-group" data-cap="mesa">
+          <div class="tool-group-head"><h2 id="mesa-tools">MESA profiles</h2>
+          <p>Token-scoped reads of the per-entity safety profiles, plus the advisory lease pair. All require <strong>Config read</strong>, only ever see entities the token can read, and return an identical "not found" for a missing or out-of-scope entity, so they cannot probe for existence. See <a href="mesa.html">MESA</a>.</p></div>
+
+          <article class="tool" data-cap="read mesa" data-search="mesa_explain_profile why resolved conflict inheritance">
+            <div class="tool-head"><span class="tool-name">mesa_explain_profile</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Field-by-field explanation of why an accessible entity resolved the way it did, including any conflicts between levels.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>show_conflicts</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read mesa" data-search="mesa_get_caller_context caller">
+            <div class="tool-head"><span class="tool-name">mesa_get_caller_context</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">The MESA context for the current caller.</p>
+          </article>
+
+          <article class="tool" data-cap="read mesa" data-search="mesa_get_profile entity stored effective profile semantic moments triggers">
+            <div class="tool-head"><span class="tool-name">mesa_get_profile</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">The stored and effective profile for one accessible entity. With <code>include_semantic_moments: true</code>, also the purpose-specific triggers and conditions the entity participates in (Home Assistant 2026.7+), read live from Home Assistant; informational only, and omitted on older versions. A profile that declared what would invalidate it (an entity it depends on, or the integration or Home Assistant version it was written against) is checked against the live deployment, so an invalidated one reports <code>staleness_status: stale</code> with a warning naming what changed, rather than continuing to describe itself as current.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>include_diagnostic</code>, <code>include_semantic_moments</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read mesa" data-search="mesa_query_profiles list filter profiles domain tag area">
+            <div class="tool-head"><span class="tool-name">mesa_query_profiles</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">List the profiles in scope, filterable by domain, tag (any or all), area, intent, and origin, with pagination. Tag and intent filters match the effective (resolved) profile. Counts and cursors are relative to the token's scope.</p>
+          </article>
+
+          <article class="tool" data-cap="read mesa" data-search="mesa_request_lease lease coordination advisory announce">
+            <div class="tool-head"><span class="tool-name">mesa_request_lease</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Announce a short operation on specific entities (up to 30 seconds) so MESA-aware components can coordinate. A lease is advice, not a lock, and grants no authority: every action stays gated by scope, capabilities, and MESA. Covers only entities the token could already control; entities under protected or critical automation control are denied. Lease endings fire an <code>phoenix_mcp_mesa_lease_expired</code> event.</p>
+            <dl><dt>params</dt><dd><code>entities</code> (required; list of entity ids), <code>duration_seconds</code> (required; max 30), <code>intent</code>, <code>priority_level</code>, <code>caller_priority</code>, <code>preemption_handling</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read mesa" data-search="mesa_release_lease lease release early">
+            <div class="tool-head"><span class="tool-name">mesa_release_lease</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Release a lease early when the work finishes ahead of its expiry. A token can only release its own leases.</p>
+            <dl><dt>params</dt><dd><code>lease_id</code> (required)</dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Native control tools ===== -->
+        <section class="tool-group" data-cap="control">
+          <div class="tool-group-head"><h2>Native control tools</h2>
+          <p>Identical to the native HA MCP server: same names, parameters, and <code>action_done</code> responses. Targeting parameters resolve to an explicit entity list, then filter to WRITE access: <code>area</code>, <code>floor</code>, and <code>name</code> are strings, while <code>domain</code> and <code>device_class</code> are arrays of strings. Each one is published with a description of the shape it expects and a note that at least one targeting parameter is required, which Home Assistant's own schemas do not carry. If nothing matches, they return "No accessible entities matched your request." without revealing why.</p></div>
+
+          <article class="tool" data-cap="control" data-search="HassBroadcast announcement assist satellite">
+            <div class="tool-head"><span class="tool-name">HassBroadcast</span><span class="badge badge-cap">Broadcast</span></div>
+            <p class="tool-desc">Send an announcement through Assist satellite devices. Satellites are subject to MESA like any other entity, so one marked read-only or prohibited is skipped.</p>
+            <dl><dt>params</dt><dd><code>message</code> (string, required)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassCancelAllTimers timers area canceled">
+            <div class="tool-head"><span class="tool-name">HassCancelAllTimers</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Cancel all running timers in an area (or everywhere if <code>area</code> is omitted). Always returns <code>speech_slots: { "canceled": N }</code>, even when N is 0. N counts the timers actually cancelled: a timer MESA holds back is not included, so the number always matches what happened.</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassClimateSetTemperature target temperature">
+            <div class="tool-head"><span class="tool-name">HassClimateSetTemperature</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Set a climate device's target temperature.</p>
+            <dl><dt>params</dt><dd><code>temperature</code> (required), plus <code>area</code> / <code>floor</code> / <code>name</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassFanSetSpeed percentage">
+            <div class="tool-head"><span class="tool-name">HassFanSetSpeed</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Set fan speed by percentage.</p>
+            <dl><dt>params</dt><dd><code>percentage</code> (0-100, required), plus <code>area</code> / <code>floor</code> / <code>name</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassLightSet brightness color temperature">
+            <div class="tool-head"><span class="tool-name">HassLightSet</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Set brightness, color, or color temperature of accessible lights.</p>
+            <dl><dt>params</dt><dd><code>area</code>, <code>floor</code>, <code>name</code>, <code>brightness</code> (0-100), <code>color</code>, <code>temperature</code> (kelvin)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassMediaPause HassMediaUnpause HassMediaNext HassMediaPrevious mute unmute playback">
+            <div class="tool-head"><span class="tool-name">HassMediaPause</span><span class="tool-name">HassMediaUnpause</span><span class="tool-name">HassMediaNext</span><span class="tool-name">HassMediaPrevious</span><span class="tool-name">HassMediaPlayerMute</span><span class="tool-name">HassMediaPlayerUnmute</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Control playback on an accessible media player by <code>area</code>, <code>floor</code>, or <code>name</code>. Each gates on the player's current state before calling the service.</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassMediaSearchAndPlay search play media">
+            <div class="tool-head"><span class="tool-name">HassMediaSearchAndPlay</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Search and play media on a player.</p>
+            <dl><dt>params</dt><dd><code>search_query</code> (required), <code>media_class</code>, plus <code>area</code> / <code>floor</code> / <code>name</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassSetPosition cover blinds valve position">
+            <div class="tool-head"><span class="tool-name">HassSetPosition</span><span class="badge badge-cap">Physical control</span></div>
+            <p class="tool-desc">Set the position of covers, blinds, or valves (0-100); each target is routed to its own domain service. Needs the physical-control capability.</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassSetVolume HassSetVolumeRelative media player volume">
+            <div class="tool-head"><span class="tool-name">HassSetVolume</span><span class="tool-name">HassSetVolumeRelative</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Set or adjust media player volume. <code>HassSetVolume</code> takes <code>volume_level</code> (0-100); <code>HassSetVolumeRelative</code> takes <code>volume_step</code> (<code>"up"</code>, <code>"down"</code>, or a signed percentage).</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassVacuumStart HassVacuumReturnToBase vacuum clean dock">
+            <div class="tool-head"><span class="tool-name">HassVacuumStart</span><span class="tool-name">HassVacuumReturnToBase</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Start a vacuum, or send it back to its dock. Targeted by <code>name</code>, <code>area</code>, or <code>floor</code>; only vacuums that report supporting the operation are targeted, so a vacuum that cannot dock is left out rather than asked and failing.</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassVacuumCleanArea vacuum clean room area">
+            <div class="tool-head"><span class="tool-name">HassVacuumCleanArea</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Send a vacuum to clean a named area. <code>area</code> is required and names the area to clean, which is passed to the service as the cleaning target rather than filtering which vacuum is used; optional <code>name</code> picks a single vacuum, and omitting it uses every accessible vacuum that supports cleaning a named area. An area that matches nothing returns the same response as no accessible match.</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassStopMoving stop cover">
+            <div class="tool-head"><span class="tool-name">HassStopMoving</span><span class="badge badge-cap">Physical control</span></div>
+            <p class="tool-desc">Stop a moving cover or similar device.</p>
+          </article>
+
+          <article class="tool" data-cap="control" data-search="HassTurnOn HassTurnOff on off">
+            <div class="tool-head"><span class="tool-name">HassTurnOn</span><span class="tool-name">HassTurnOff</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Turn entities on or off by area, name, floor, or domain.</p>
+            <dl><dt>params</dt><dd><code>area</code>, <code>floor</code>, <code>name</code> (strings), <code>domain</code>, <code>device_class</code> (string arrays), all optional</dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Query & entity access ===== -->
+        <section class="tool-group" data-cap="read">
+          <div class="tool-group-head"><h2>Query &amp; entity access</h2></div>
+
+          <article class="tool" data-cap="read" data-search="get_history state history time">
+            <div class="tool-head"><span class="tool-name">get_history</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Historical state changes for an entity, read from the Recorder integration (enabled by default in Home Assistant; this tool fails when it is disabled). Accepts relative times (<code>24h</code>, <code>7d</code>, <code>2w</code>, <code>1m</code>). Ranges over 7 days are clamped. Returns <code>entity_id</code>, <code>mode</code>, <code>count</code>, and <code>history</code> (each entry's <code>state</code> and <code>when</code>); the REST proxy additionally returns the queried range in <code>X-Phoenix-History-Start/End</code> headers.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_state single entity">
+            <div class="tool-head"><span class="tool-name">get_state</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Current state of a single entity. Returns a compact, domain-aware view by default (key attributes only); pass <code>detailed=true</code> for the full state, or <code>fields=[...]</code> to select exact fields. Requires READ or WRITE on the entity. Sensitive attributes are always scrubbed.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (string, required), <code>fields</code> (array, optional), <code>detailed</code> (boolean, optional)</dd><dt>returns</dt><dd>by default <code>entity_id</code>, <code>state</code>, and key <code>attributes</code>; the full state with <code>detailed=true</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_states all entities">
+            <div class="tool-head"><span class="tool-name">get_states</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">All entity states the token can read, as a compact domain-aware view per entity by default (<code>detailed=true</code> or <code>fields=[...]</code> to change). Pass-through tokens receive every non-Phoenix entity.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_statistics long term numeric">
+            <div class="tool-head"><span class="tool-name">get_statistics</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Long-term statistics for numeric entities, aggregated by 5-minute, hour, day, week, or month. Statistics come from the Recorder integration, and only entities that produce Recorder statistics have any; a merely numeric state is not enough.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>period</code>, <code>statistic_types</code> (subset of the return fields)</dd><dt>returns</dt><dd><code>min</code>, <code>max</code>, <code>mean</code>, <code>sum</code>, <code>state</code> per period</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_calendar_events calendar appointments">
+            <div class="tool-head"><span class="tool-name">get_calendar_events</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Events from an accessible <code>calendar.*</code> entity within a time window (defaults to the next 7 days). Requires READ access to the calendar entity.</p>
+            <dl><dt>params</dt><dd><code>calendar_id</code> (required), <code>start_time</code> (default now), <code>end_time</code> (default start + 7 days)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="GetDateTime date time timezone">
+            <div class="tool-head"><span class="tool-name">GetDateTime</span><span class="badge badge-success">no capability</span></div>
+            <p class="tool-desc">Current date, time, and timezone. Always available, no permission required.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="GetLiveContext yaml snapshot llm">
+            <div class="tool-head"><span class="tool-name">GetLiveContext</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">YAML snapshot of accessible entity states, optimized for LLM context. Filtered by the token's permissions; pass-through tokens get the same output as the native server.</p>
+          </article>
+        </section>
+
+        <!-- ===== Realtime ===== -->
+        <section class="tool-group" data-cap="read">
+          <div class="tool-group-head"><h2>Realtime subscriptions</h2></div>
+          <article class="tool" data-cap="read" data-search="watch_entity blocking 30s">
+            <div class="tool-head"><span class="tool-name">watch_entity</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Bounded blocking subscription (max 30 seconds) that waits for an accessible entity to change state, then returns it.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>timeout</code> (seconds, max 30)</dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Scenes, helpers & dashboards ===== -->
+        <section class="tool-group" data-cap="write">
+          <div class="tool-group-head"><h2>Scenes, helpers &amp; dashboards</h2></div>
+
+          <article class="tool" data-cap="write" data-search="create_helper edit_helper delete_helper input_ counter timer">
+            <div class="tool-head"><span class="tool-name">create_helper</span><span class="tool-name">edit_helper</span><span class="tool-name">delete_helper</span><span class="badge badge-cap">Helper write</span></div>
+            <p class="tool-desc">Manage helpers (input_*, counter, timer). Confirm-eligible. Created helpers appear in the Helpers UI and persist in HA's storage collection, which HA flushes on a short (~10&nbsp;second) debounce. A graceful restart (including <code>restart_ha</code> or the <code>homeassistant.restart</code> service) flushes the pending write first, so the helper survives; only an abrupt restart or crash within a few seconds of creation can lose it. If one is lost that way, you can restore it from the Changes tab, since the create was recorded in version history immediately.</p>
+            <dl><dt>params</dt><dd><code>helper_type</code> (required), <code>config</code> (required for create/edit), <code>helper_id</code> (required for edit/delete)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="get_scene create_scene edit_scene delete_scene expected_hash">
+            <div class="tool-head"><span class="tool-name">get_scene</span><span class="tool-name">create_scene</span><span class="tool-name">edit_scene</span><span class="tool-name">delete_scene</span><span class="badge badge-cap">Scene write</span></div>
+            <p class="tool-desc">Read and manage scenes. Confirm-eligible (the read is not: reads are never approval-gated). Split configurations (<code>!include</code> and <code>!include_dir_*</code> layouts in <code>configuration.yaml</code>) are followed to the correct leaf file, the same include-graph handling as the automation tools. <code>get_scene</code> returns the scene's current name and entity map plus a <code>content_hash</code> for <code>edit_scene</code>'s optional <code>expected_hash</code>; since edit replaces the whole scene, read it first or you will drop members you did not resend. A scene controlling any entity this token cannot write is refused identically to one that does not exist, so a scene id is never an existence oracle.</p>
+            <dl><dt>params</dt><dd><code>scene_id</code> (required except for create), <code>config</code> (required for create/edit), <code>expected_hash</code> (edit, optional)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="list_dashboards create_dashboard edit_dashboard delete_dashboard get_dashboard_config set_dashboard_config lovelace">
+            <div class="tool-head"><span class="tool-name">list_dashboards</span><span class="tool-name">create_dashboard</span><span class="tool-name">edit_dashboard</span><span class="tool-name">delete_dashboard</span><span class="tool-name">get_dashboard_config</span><span class="tool-name">set_dashboard_config</span><span class="badge badge-cap">Dashboard write</span></div>
+            <p class="tool-desc">List and manage Lovelace dashboards, and read or replace a dashboard's view/card layout. <code>get_dashboard_config</code> redacts out-of-scope entities; <code>set_dashboard_config</code> writes storage-mode dashboards and is versioned. Confirm-eligible. Concurrency guard: the read returns a <code>content_hash</code> over the stored layout, and the write accepts an optional <code>expected_hash</code>, refusing if the layout changed since the read (checked again at approval time, so a change made while the write sat in the approval queue also fails closed). An auto-generated dashboard has no stored layout, so any <code>expected_hash</code> against it is a conflict. <code>set_dashboard_config</code> walks the whole layout and warns about any <code>custom:</code> card type that is not installed, advisory only. Note that a saved layout is display config, not automatic execution: a card action (for example a <code>call-service</code> tap action) runs under the viewing user's session when they click it, the same <a href="permissions.html#indirect-control-risk">indirect control risk</a> as authored automations, so a layout can reference entities outside the token's scope.</p>
+            <dl><dt>params</dt><dd><code>create_dashboard</code>/<code>edit_dashboard</code>: <code>config</code> (required; title etc.) plus <code>dashboard_id</code> (required for edit); <code>delete_dashboard</code>: <code>dashboard_id</code> (required); the config read/write pair: <code>url_path</code> (omit for the default dashboard), <code>config</code> (required for set), <code>expected_hash</code> (optional)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="list_dashboard_cards custom cards hacs catalog lovelace card picker installed">
+            <div class="tool-head"><span class="tool-name">list_dashboard_cards</span><span class="badge badge-cap">Dashboard write</span></div>
+            <p class="tool-desc">List the custom dashboard cards actually installed on this instance (HACS plugins and cards shipped by integrations), so an agent can pick the best-suited card instead of guessing. Each entry carries the card's own name and one-line description, its documentation URL where it publishes one, and, on request, a worked example config taken from the card's own <code>getStubConfig</code>. This matters because a card type that is not installed is not rejected at write time, it renders as an error on the dashboard, and because custom cards publish no config schema, so a working example is the only reliable basis for authoring one. Read-only and never approval-gated, like the other dashboard reads. The catalog is built by the Phoenix MCP panel in a browser rather than read from disk: a card registers itself on <code>window.customCards</code> at runtime, and many card sets build their type names by string concatenation, so those names do not exist anywhere in the shipped files. Until a browser has opened the panel at least once the catalog reports itself as un-harvested, which means the installed cards are <em>unknown</em>, not absent.</p>
+            <dl><dt>params</dt><dd><code>type</code> (optional; one card type, with or without the <code>custom:</code> prefix, returned in full with its example config), <code>detailed</code> (optional; include every card's example config, verbose on an instance with many plugins)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="add_dashboard_card edit_dashboard_card delete_dashboard_card lovelace card">
+            <div class="tool-head"><span class="tool-name">add_dashboard_card</span><span class="tool-name">edit_dashboard_card</span><span class="tool-name">delete_dashboard_card</span><span class="badge badge-cap">Dashboard write</span></div>
+            <p class="tool-desc">Add, replace, or remove a single card on a dashboard view (or a section, for a sections-type view) by index, without resending the whole layout the way <code>set_dashboard_config</code> does. Confirm-eligible and versioned like a full layout write; the target dashboard must already have a stored layout (create one first with <code>set_dashboard_config</code>; strategy views, strategy dashboards, and auto-generated dashboards are refused up front). The full operation is validated against the current layout before it gates, and re-validated at apply time, so a layout change during the approval window fails closed instead of landing on the wrong index. If the card names a <code>custom:</code> type that is not in the harvested card catalog (or whose element did not load), the result carries a <code>warnings</code> entry saying so. It is advisory and never blocks the write: the catalog is a cache, so refusing would block a legitimate card whenever it is cold or one plugin install stale. Prefer these over <code>set_dashboard_config</code> for a single-card change, both because it is simpler for the agent and because echoing an entire dashboard back in one tool call can exceed some models' output limits.</p>
+            <dl><dt>params</dt><dd><code>url_path</code> (omit for the default dashboard), <code>view_index</code>, <code>section_index</code> (required when the target view uses sections, rejected otherwise), <code>card</code> (the card object, for add/edit), <code>position</code> (add; omit to append) or <code>card_index</code> (edit/delete), and optional <code>expected_hash</code> from a prior read, strongly recommended since card indexes shift when the layout changes. Unlike the whole-layout writers, each result returns the layout's new <code>content_hash</code>, so several card operations can be chained without re-reading.</dd></dl>
+          </article>
+        </section>
+
+        <!-- ===== Service execution ===== -->
+        <section class="tool-group" data-cap="service">
+          <div class="tool-group-head"><h2>Service execution</h2></div>
+
+          <article class="tool" data-cap="service" data-search="call_service call any service domain">
+            <div class="tool-head"><span class="tool-name">call_service</span><span class="badge badge-neutral">tree-scoped</span></div>
+            <p class="tool-desc">Call any Home Assistant service. <code>device_id</code> and <code>area_id</code> are flattened to an explicit entity list first; denied entities are silently dropped, and if all resolve to denied the call returns 403. Device and area expansion also skips configuration, diagnostic, and hidden entities (matching Home Assistant's own bulk-call behavior), so a "turn off every switch in the bedroom" sweep does not flip a child-lock or LED-indicator switch; naming an <code>entity_id</code> directly is never filtered this way. Targets belong in the <code>entity_id</code> / <code>device_id</code> / <code>area_id</code> parameters, not in <code>service_data</code>: any target selector found there is stripped, since the resolved entity list is what decides the call's reach. Response data is scanned and inaccessible entity IDs are replaced with <code>&lt;redacted&gt;</code>. Physical-control and restart services need their capabilities, and the core config-reload family (<code>automation.reload</code>, <code>script.reload</code>, <code>scene.reload</code>, and the other domain reloads) is gated on <code>cap_yaml_edit</code> and is Confirm-eligible, the same capability that authorizes editing the raw YAML those reloads apply.</p>
+            <dl><dt>params</dt><dd><code>domain</code> and <code>service</code> (two separate fields, both required, e.g. <code>light</code> and <code>turn_on</code>), <code>entity_id</code>, <code>device_id</code>, <code>area_id</code>, <code>service_data</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="service" data-search="dry_run_service preview predicted outcome mesa">
+            <div class="tool-head"><span class="tool-name">dry_run_service</span><span class="badge badge-cap">Search &amp; discovery</span></div>
+            <p class="tool-desc">Preview a service call without running it. Resolves and flattens targets, reports the MESA verdict per entity, and returns a single <code>predicted_outcome</code> of <code>allowed</code>, <code>pending_approval</code>, or <code>denied</code>, folding the capability gate and MESA together. Same parameter shape as <code>call_service</code>: <code>domain</code> and <code>service</code> required, plus the optional targets and <code>service_data</code>.</p>
+          </article>
+        </section>
+
+        <!-- ===== Token introspection ===== -->
+        <section class="tool-group" data-cap="read">
+          <div class="tool-group-head"><h2>Token introspection</h2>
+          <p>Each token can always inspect its own state. No capability required, and you only ever see your own data.</p></div>
+
+          <article class="tool" data-cap="read" data-search="get_approval_status pending approvals confirm">
+            <div class="tool-head"><span class="tool-name">get_approval_status</span><span class="badge badge-success">no capability</span></div>
+            <p class="tool-desc">Check a Confirm-gated action you submitted. With an <code>approval_id</code>, returns its status and result; without one, lists all of this token's pending approvals, useful after a reconnect.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="wait_for_approval block long poll pending confirm">
+            <div class="tool-head"><span class="tool-name">wait_for_approval</span><span class="badge badge-success">no capability</span></div>
+            <p class="tool-desc">Block until one of your pending approvals resolves, instead of polling. Returns immediately if already resolved, otherwise waits server-side (up to a capped timeout) for a human to approve or reject, then returns the status and result; on timeout it returns still-pending so you can call again.</p>
+            <dl><dt>params</dt><dd><code>approval_id</code> (required), <code>timeout</code> (seconds)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_audit_summary own audit entries">
+            <div class="tool-head"><span class="tool-name">get_audit_summary</span><span class="badge badge-success">no capability</span></div>
+            <p class="tool-desc">This token's own recent audit entries (request_id, time, method, resource, outcome), newest first, with an optional outcome filter.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_capability_summary persona tools gate map">
+            <div class="tool-head"><span class="tool-name">get_capability_summary</span><span class="badge badge-success">no capability</span></div>
+            <p class="tool-desc">This token's persona, effective capabilities, Confirm-gated capabilities, write scope, rate limits, and a tool-level gate map (<code>tools.usable</code> / <code>tools.needs_approval</code> / <code>tools.unavailable</code>).</p>
+          </article>
+        </section>
+
+        <div class="callout note">
+          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
+          <div class="callout-body"><p class="callout-title">Helpers, dashboards, and backups run over a vetted command set</p><p>These tools hold no long-lived token and open no socket. Phoenix MCP dispatches a fixed allowlist of Home Assistant WebSocket commands in-process (helper create / update / delete, Lovelace dashboard CRUD, and backup info / generate), validates each payload against the command's own schema, and runs it as an admin. Commands outside the allowlist are refused, and <code>restore_backup</code> is deliberately not included.</p></div>
+        </div>
+
+        <div class="callout warn">
+          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M16 4.5 21 3l-1.5 5"/></svg>
+          <div class="callout-body"><p class="callout-title">Reconnect when the tool list changes</p><p>A token only sees the tools its capabilities unlock, so moving a capability between <code>deny</code> and <code>allow</code>/<code>confirm</code> (or changing write scope or <code>announce_all_tools</code>) changes the list and your MCP client must reconnect to pick it up. Switching a capability between <code>allow</code> and <code>confirm</code> takes effect on the next call with no reconnect needed, though some clients cache tool metadata. In Claude Code, open <code>/mcp</code> and select <strong>Reconnect</strong>.</p><p>The agent is told, too: when a token's capabilities, permissions, or settings preset change after its client last fetched the tool list, Phoenix MCP appends a one-time notice to the next tool response telling the agent its tool list may be stale, to check <code>get_capability_summary</code>, and to ask you to reconnect. Enforcement never depends on this: the per-call gates always reflect the current settings.</p></div>
+        </div>
+
+        <nav class="pager" id="pager" aria-label="Page navigation"></nav>
+      </div>
+    </main>
+  </div>
+
+  <footer class="site-footer" id="site-footer"></footer>
+  <script src="assets/site.js"></script>
+</body>
+</html>

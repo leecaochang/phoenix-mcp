@@ -1,0 +1,15 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Phoenix MCP 已配置。"
+    },
+    "create_entry": {
+      "default": "请在 Phoenix MCP 面板中管理您的令牌"
+    },
+    "step": {
+      "user": {
+        "description": "点击“提交”即可安装 Phoenix MCP 集成。请注意，同一时间只能配置一个实例"
+      }
+    }
+  }
+}

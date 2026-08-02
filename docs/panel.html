@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+  <title>Panel guide &middot; Phoenix MCP docs</title>
+  <meta name="description" content="A tour of the Phoenix MCP panel: managing tokens, painting the permission tree, bulk select, the emulator, entity hints, the approvals queue, MESA, audit, configuration history, and settings." />
+  <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400..700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="assets/phoenix-mcp-docs.css" />
+</head>
+<body data-page="panel" data-toc>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header" id="site-header"></header>
+  <div class="sidebar-backdrop" data-close-nav></div>
+
+  <div class="layout" id="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main" id="main">
+      <div class="content prose">
+
+        <header class="page-head">
+          <p class="breadcrumb"><a href="index.html">Docs</a> / Guides / Panel guide</p>
+          <h1>Panel guide</h1>
+          <p class="lede">Everything Phoenix MCP does happens in its sidebar panel. It has six tabs, Tokens, Approvals, Changes, MESA, Audit Logs, and Settings. This guide walks through each, and the panel-only tools that make scoping a token quick.</p>
+        </header>
+
+        <h2 id="tokens-tab">Tokens</h2>
+        <p>The Tokens tab lists every active token with its status and last use. From here you create tokens, open one to edit it, or launch the guided setup that walks a first-timer all the way to a tested connection (see <a href="quickstart.html">Quick start</a>).</p>
+        <p>Opening a token shows its detail page: the capability matrix, the permission tree, and lifecycle actions (rotate the raw value, revoke the token). The capability matrix is where you pick a <a href="capabilities.html#personas">persona</a> or set individual capabilities to deny, allow, or confirm.</p>
+
+        <h3 id="presets">Settings presets (optional)</h3>
+        <p>With the <strong>Token settings presets</strong> toggle enabled in Settings, each token gains a Presets card: named snapshots of its complete configuration (capabilities, permissions, rate limits, pass-through) you can switch between, for example a locked-down daily preset and a broader maintenance one on the same token. Enabling the toggle saves every token's current settings as its first preset ("Default preset", renameable inline).</p>
+        <p>The token is always "in" one preset, and edits you make are that preset's unsaved changes: switching to another preset first saves them into the outgoing preset (the dialog lists exactly what), then applies the target, so nothing is lost and there are no save prompts. Applying the preset you are already in does the opposite: it reverts the token to the preset's saved state, discarding the listed unsaved changes. The active preset cannot be deleted, and applying a preset that would enable pass-through asks for the same confirmation as enabling it by hand. Switching is admin-only; a connected agent cannot change its own preset, and after a switch the agent is nudged in-band to refresh its tool list (see the audit log's preset column for per-request attribution).</p>
+        <figure class="screenshot">
+          <img src="assets/token-panel.png" alt="A token detail page showing the capability matrix and persona" loading="lazy" />
+          <figcaption>A token's detail page: capabilities and persona.</figcaption>
+        </figure>
+
+        <h2 id="permission-tree">Painting the permission tree</h2>
+        <p>The tree groups entities by domain and device. You rarely set every node: the usual pattern is to set a whole domain or device, leave the children grey so they inherit, then use RED to carve out exceptions. See <a href="permissions.html">Permissions</a> for how the states resolve. Three panel tools make this faster.</p>
+        <p>Each row also carries a small MESA control, a <code>+</code> to create a profile or <code>MESA</code> when one already exists, which opens the profile editor over the tab without losing your place. It writes at the level of the row you clicked: a domain group authors a domain profile, a device group authors a device profile covering every entity that device owns, and an entity row authors an entity profile. Permissions and MESA are independent, so a profile written here changes what any token may do with that entity by nature, not just this one. The <a href="mesa.html">MESA</a> page covers what the levels mean.</p>
+
+        <h3 id="select-by">Select by Area or Label</h3>
+        <p>The <strong>Select by Area or Label</strong> button bulk-applies one state to a group of entities at once. Pick a tab (Area or Label), choose the group, choose the state to apply (Read, Write, Deny, or Remove grant), and Phoenix MCP sets each matching entity.</p>
+        <div class="callout warn">
+          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 6 4-14 2 8h6"/></svg>
+          <div class="callout-body"><p class="callout-title">It applies to the entities in the group now, not forever</p><p>Select-by grants access to the entities <em>currently</em> in the chosen area or label, one entity at a time. Entities added to that area or label later are <strong>not</strong> picked up automatically. For coverage that follows future entities, set a domain-level grant instead.</p></div>
+        </div>
+        <figure class="screenshot">
+          <img src="assets/token-area.png" alt="The Select by Area or Label dialog grouping entities by area" loading="lazy" />
+          <figcaption>The bulk-apply dialog, grouping by area or label.</figcaption>
+        </figure>
+
+        <h3 id="emulator">The effective-permission emulator</h3>
+        <p>The emulator shows what Phoenix MCP will actually decide for any entity. Type an entity ID, or click one in the tree or summary, and Phoenix MCP runs the full two-pass resolver, then shows the result, which ancestor decided it, and the hint text if one is set. If a result surprises you, the path output names the ancestor that is overriding it.</p>
+        <figure class="screenshot">
+          <img src="assets/token-epe.png" alt="The effective-permission emulator showing a result and the deciding ancestor" loading="lazy" />
+          <figcaption>The emulator, showing the deciding ancestor.</figcaption>
+        </figure>
+
+        <h3 id="summary">The permission summary</h3>
+        <p>A compact, sortable table of every node set to something other than GREY. It lists the node type, friendly name, ID, and current state. Clicking a row loads that entity into the emulator. An empty summary means no grants exist and the token has no access to anything.</p>
+
+        <h3 id="entity-hints">Entity hints</h3>
+        <p>After granting access to an entity, you can attach an optional hint that is surfaced to the connected AI, to clarify what an entity represents, for example <em>"This lamp is on Rachel's desk, not the ceiling light."</em> Hints are capped at 200 characters and come in two scopes:</p>
+        <dl class="kv">
+          <div class="kv-row"><dt>This token only</dt><dd>A per-token hint, stored on the permission node. It is visible only to this token and takes precedence over a global hint.</dd></div>
+          <div class="kv-row"><dt>All tokens</dt><dd>A global hint for the entity, applied to every token that can see it. Useful when the clarification is about the entity itself, not one agent's view of it.</dd></div>
+        </dl>
+        <figure class="screenshot">
+          <img src="assets/token-entity-hint.png" alt="The entity hint editor with the token-only and all-tokens scope toggle" loading="lazy" />
+          <figcaption>The hint editor, with the token-only / all-tokens toggle.</figcaption>
+        </figure>
+
+        <h2 id="approvals-tab">Approvals</h2>
+        <p>When a capability or a MESA entity is set to confirm, the held action lands in the Approvals queue. The tab badge shows the pending count, and a notification can deep-link straight to a specific approval. Each row shows the requesting token, the action, and a review payload (for file and YAML writes, a redacted before/after diff). Approve to run the saved action, or reject with an optional reason.</p>
+        <p>The same approval appears here, in Agent Chat, and as a Home Assistant notification. Acting on it in one takes the buttons away in the other two immediately. While it runs it reads <strong>Being processed</strong> and offers nothing, and becomes actionable again if the action fails.</p>
+        <p>A dashboard layout change also offers a <strong>Diff | Preview</strong> switch in the diff's toolbar, rendering the proposed cards with live entity states (Home Assistant's own card renderer, so it looks exactly as it would on the dashboard, in your active theme) instead of just the raw config; the cards are display-only, so nothing you click in a preview can actuate a device.</p>
+        <p>Every before/after diff, on this tab and on Changes, also has a <strong>code editor</strong> button in the same toolbar. It hands both panes to Home Assistant's own editor, the one you already see in the ESPHome add-on, with syntax colours and line numbers, which makes a long device YAML far easier to read than a plain monospace block. The trade is stated in the toolbar when you switch: the code view cannot tint changed lines, so use the line diff when the question is what changed and the code view when the question is what the file says. The choice is remembered separately from the side-by-side and stacked setting.</p>
+        <p>If a proposed card fails to render (Home Assistant's "Configuration error" card), a <strong>Reject with error message</strong> button appears next to Approve/Reject that rejects with that error as the reason in one click, so the agent knows exactly what to fix. Rejection reasons are relayed to the agent and shown on the Agent Chat approval card, not just a bare "rejected". A reason typed here but not submitted is kept with that approval, so rejecting from the Agent Chat card (which has no reason box of its own) still sends it.</p>
+        <p>The panel subscribes to Home Assistant's event bus, so a new or resolved approval refreshes the queue immediately; the pending-count badge and the queue also poll every few seconds as a backstop in case an event is missed.</p>
+        <figure class="screenshot">
+          <img src="assets/token-mesa-confirm.png" alt="A pending MESA confirmation approval with its diff and approve or reject actions" loading="lazy" />
+          <figcaption>A pending approval awaiting review.</figcaption>
+        </figure>
+
+        <h2 id="mesa-tab">MESA</h2>
+        <p>The MESA tab is where you author the per-entity safety profiles. It lists profiles by control mode and lets you edit profiles at the entity, device, area, integration, domain, and deployment-default levels, with canonical-tag autocomplete and a validation view for issues and orphans. A <a href="mesa.html#suggestions">Suggested profiles</a> section scans for under-protected entities, risky devices with no coverage, and automations whose actions reach them, and offers each profile as a one-click Apply, a prefilled Review, or a persistent Dismiss. The concept, the modes, and the editor's guardrails are covered on the <a href="mesa.html">MESA</a> page.</p>
+
+        <h2 id="audit-tab">Audit Logs</h2>
+        <p>The Audit Logs tab is a filterable view of the request log: request ID, time, token, method, resource, outcome, and client IP. Filter by token or outcome to trace what an agent did. The log's retention and storage are described in <a href="operations.html#audit-log">Operations</a>.</p>
+
+        <h2 id="changes-tab">Changes</h2>
+        <p>The Changes tab is the configuration history for everything an agent builds. It opens on a feed of recent create, edit, and delete actions across automations, scripts, scenes, helpers, blueprints, dashboards, entity-registry edits, ESPHome device YAML, the raw <code>configuration.yaml</code>, and scoped file writes, and refreshes live as new changes land. Rows carry a one-line description of what actually changed where the resource name alone would not say: a dashboard card operation shows the card and its position ("added custom:apexcharts-card (view 0, section 6)"), a whole-layout or raw file write shows the card-count or size movement, and an entity edit lists the changed fields.</p>
+
+        <p>Selecting a row opens that version's before/after diff directly, rendered as YAML for structured resources or as a line-highlighted text diff for raw <code>configuration.yaml</code> and file writes, with the resource's other versions in a timeline beside it so you can step through its history.</p>
+
+        <p>Each pane has its own <strong>Restore this configuration</strong> button, so you re-apply the Before (to undo a bad edit) or the After (to re-apply the change) explicitly. A button is hidden when restoring it would do nothing: an empty pane, like the Before of a freshly created resource, or the After of the resource's latest version, which is already its current config. A raw snapshot too large to have been stored shows a notice and cannot be restored.</p>
+
+        <p>Restore edits the resource if it still exists, or recreates it if it was deleted, and is itself recorded as a rollback you can undo in turn. Automations, scripts, scenes, and blueprints come back under their original id, so re-restoring the same delete is idempotent; a recreated helper gets a fresh id, because Home Assistant's storage collection assigns it. A few snapshots refuse to restore rather than restore incorrectly: a config whose snapshot contains YAML tags such as <code>!secret</code>, and a deleted entity-registry entry, which belongs to its integration and cannot be recreated; the <a href="admin-api.html#versions">admin API reference</a> lists these. Storage and retention are described in <a href="operations.html#configuration-history">Operations</a>.</p>
+        <p>A dashboard version also offers the same <strong>Preview</strong> toggle as the Approvals tab, with a Before/After switch so you can see what the layout looked like on either side of the change, not just the config difference; unlike the Approvals card (which previews only the proposed After layout), a version records both sides, so you can preview the Before as well whenever the version has one. A side with no snapshot is disabled, the same rule as the Restore buttons: a resource's first-ever layout has no Before, and a deletion has no After. Restore stays a diff-view action.</p>
+
+        <h2 id="settings-tab">Settings</h2>
+        <p>The Settings tab holds the global, deployment-wide options: the kill switch, logging controls, the rate-limit notification, the MESA mode, the audit buffer size, and the experimental toggles (in-context MESA profile buttons, and <a href="#presets">token settings presets</a>). These are detailed in <a href="operations.html#global-settings">Operations</a>. It also holds the <strong>Agent Chat</strong> card, where you configure an Anthropic, DeepSeek, OpenAI, Gemini, Grok, Kimi, Meta, MiniMax, OpenRouter, NVIDIA, Ollama, or Ollama Cloud provider and set the chat memory limit and the steps-before-check-in limit for the in-panel chat.</p>
+        <p>Three more cards on this tab connect Phoenix MCP to Home Assistant's own AI features rather than an external client. The <strong>Voice Agent</strong> and <strong>Assist Tool Provider</strong> cards are two ways to put Phoenix MCP behind <a href="connect.html#assist">Assist</a>: the first runs Phoenix MCP's own model as a conversation agent, the second hands a bound token's tools to a model another integration supplies. The <strong>AI Task</strong> card registers Phoenix MCP as an <a href="connect.html#ai-task">AI Task</a> entity so automations can generate data through it. Each runs on a token you choose, with the same scope, approvals, and audit as the rest of Phoenix MCP.</p>
+        <h3 id="language">Language and theme</h3>
+        <p>The <strong>Integration information</strong> card carries two display preferences. Both are per-browser rather than deployment-wide, so each admin sets their own and neither is written to Phoenix MCP's storage or shared between users.</p>
+        <p><strong>Language</strong> chooses the panel language. Phoenix MCP ships English and Simplified Chinese (<code>zh-Hans</code>). <strong>Auto</strong> is the default and follows the language set on your Home Assistant user profile, so in most cases there is nothing to choose; pick a specific language only when you want the panel to differ from the rest of Home Assistant. Every option is named in its own script, so you can find yours whatever the panel happens to be showing. The choice applies to the Agent Chat window and the in-context MESA buttons as well, and takes effect immediately without a reload.</p>
+        <p>A few things stay in English on purpose rather than being missed. The six per-token sensors keep English names, because Home Assistant builds their <code>entity_id</code> from the display name the first time they are registered and a translated name would give a fresh install different entity ids from every other install. Agent-facing text is also never translated: tool descriptions, the skill document, and the errors an agent reads stay English so a model's behaviour does not change with your display language. The name <strong>Phoenix MCP</strong> itself is a brand mark and stays in Latin script in every language, which is also how Home Assistant treats its own name; several places name this integration inside Home Assistant's own interface, where it cannot be localized at all.</p>
+        <p><strong>Theme</strong> is light, dark, or follow-the-system, and behaves the same way.</p>
+
+        <h2 id="agentcli">Agent Chat</h2>
+        <p>The Agent Chat window lets you talk to Home Assistant without an external client: Phoenix MCP runs the agent itself on a token you pick, with the same scoping, capabilities, and approvals. By default it floats over the whole Home Assistant interface, not just the Phoenix MCP panel. Open it from the <strong>Agent Chat</strong> button in the panel header. The <strong>Create Token</strong> dialog offers a <strong>Set up Agent Chat</strong> option that opens Settings so you can add a provider account first, and it is the recommended path through the guided setup's <a href="quickstart.html#path-chat">"Choose how to connect" step</a>, which sets up a provider account and opens the window for you. See the <a href="agentcli.html">Agent Chat guide</a>.</p>
+
+        <nav class="pager" id="pager" aria-label="Page navigation"></nav>
+      </div>
+    </main>
+    <aside class="toc" id="toc"></aside>
+  </div>
+
+  <footer class="site-footer" id="site-footer"></footer>
+  <script src="assets/site.js"></script>
+</body>
+</html>

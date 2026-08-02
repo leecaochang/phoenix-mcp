@@ -1,0 +1,6 @@
+{
+  "_comment": "MESA inheritance levels a profile can be authored at, most specific first. Pinned against const.MESA_SCOPES, the panel's MesaProfileScope union, its label maps and list table, and the in-context injector's own scope set. Deployment defaults are not a keyed level and are deliberately absent.",
+  "mesa_scopes": ["entity", "device", "area", "integration", "domain"],
+  "_injector_comment": "The subset the in-context injector decorates on Home Assistant's own pages. Entity scope rides the config data tables; device, area and integration are subpage-header buttons. Domain has no Home Assistant page to hang one on.",
+  "mesa_injector_scopes": ["entity", "device", "area", "integration"]
+}

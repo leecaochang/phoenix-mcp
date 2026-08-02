@@ -1,0 +1,141 @@
+import { useState } from "react";
+import type { ArchivedTokenRecord } from "../types";
+import { api } from "../api";
+import { formatDate, tokenStatusLabel } from "../utils";
+import { t } from "../i18n";
+
+type SortKey = "name" | "status" | "created" | "archived" | "last_used";
+type SortDir = "asc" | "desc";
+
+interface Props {
+  tokens: ArchivedTokenRecord[];
+  onDeleted: (id: string) => void;
+}
+
+function SortArrow({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
+  const active = col === sortKey;
+  return <span className={`sort-arrow${active ? " active" : ""}`}>{active ? (sortDir === "asc" ? "↑" : "↓") : "↕"}</span>;
+}
+
+export function ArchivedTokenTable({ tokens, onDeleted }: Props) {
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("archived");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("asc"); }
+  }
+
+  function ariaSort(key: SortKey): "ascending" | "descending" | "none" {
+    if (sortKey !== key) return "none";
+    return sortDir === "asc" ? "ascending" : "descending";
+  }
+
+  const sorted = [...tokens].sort((a, b) => {
+    let va: string = "";
+    let vb: string = "";
+    switch (sortKey) {
+      case "name":      va = a.name.toLowerCase();         vb = b.name.toLowerCase(); break;
+      case "status":    va = a.revoked ? "revoked" : "expired"; vb = b.revoked ? "revoked" : "expired"; break;
+      case "created":   va = a.created_at ?? "";            vb = b.created_at ?? ""; break;
+      case "archived":  va = a.revoked_at ?? "";            vb = b.revoked_at ?? ""; break;
+      case "last_used": va = a.last_used_at ?? "";          vb = b.last_used_at ?? ""; break;
+    }
+    if (va < vb) return sortDir === "asc" ? -1 : 1;
+    if (va > vb) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  async function deletePermanently(id: string) {
+    setDeleting(id);
+    setError(null);
+    try {
+      await api.deleteArchivedToken(id);
+      onDeleted(id);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : t("tokens.archivedDeleteFailed"));
+    } finally {
+      setDeleting(null);
+      setConfirmId(null);
+    }
+  }
+
+  if (tokens.length === 0) {
+    return <p className="archived-empty">{t("tokens.archivedEmpty")}</p>;
+  }
+
+  function th(key: SortKey, label: string) {
+    return (
+      <th className={`sortable${sortKey === key ? " sort-active" : ""}`} aria-sort={ariaSort(key)}>
+        <button type="button" className="table-sort-btn" onClick={() => handleSort(key)}>
+          {label} <SortArrow col={key} sortKey={sortKey} sortDir={sortDir} />
+        </button>
+      </th>
+    );
+  }
+
+  return (
+    <div>
+      {error && <div className="banner banner-error mb-8">{error}</div>}
+      <table className="data-table archived-table">
+        <thead>
+          <tr>
+            {th("name", t("tokens.colName"))}
+            {th("status", t("tokens.colStatus"))}
+            {th("created", t("tokens.colCreated"))}
+            {th("archived", t("tokens.colArchivedOn"))}
+            {th("last_used", t("tokens.colLastUsed"))}
+            <th>{t("tokens.colActions")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((tok) => {
+            const status = tok.revoked ? "Revoked" : "Expired";
+            return (
+              <tr key={tok.id}>
+                <td>{tok.name}</td>
+                <td>
+                  <span className={`badge ${status === "Revoked" ? "badge-red" : "badge-grey"}`}>
+                    {tokenStatusLabel(status)}
+                  </span>
+                </td>
+                <td>{formatDate(tok.created_at)}</td>
+                <td>{formatDate(tok.revoked_at)}</td>
+                <td>{formatDate(tok.last_used_at)}</td>
+                <td>
+                  {confirmId === tok.id ? (
+                    <span className="row-actions">
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => deletePermanently(tok.id)}
+                        disabled={deleting === tok.id}
+                      >
+                        {deleting === tok.id ? "..." : t("tokens.confirmDelete")}
+                      </button>
+                      <button
+                        className="btn btn-text btn-sm"
+                        onClick={() => setConfirmId(null)}
+                      >
+                        {t("tokens.cancel")}
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => setConfirmId(tok.id)}
+                    >
+                      {t("tokens.deletePermanently")}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}

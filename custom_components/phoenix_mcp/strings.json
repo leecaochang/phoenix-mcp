@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Phoenix MCP",
+        "description": "Click Submit to install the Phoenix MCP integration. Please note only one instance can be configured at a time"
+      }
+    },
+    "abort": {
+      "already_configured": "Phoenix MCP is already configured."
+    },
+    "create_entry": {
+      "default": "Use the Phoenix MCP panel to manage your tokens"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      },
+      "request_count": {
+        "name": "Request Count"
+      },
+      "denied_count": {
+        "name": "Denied Count"
+      },
+      "rate_limit_hits": {
+        "name": "Rate Limit Hits"
+      },
+      "last_access": {
+        "name": "Last Access"
+      },
+      "expires_in": {
+        "name": "Expires In"
+      }
+    }
+  }
+}

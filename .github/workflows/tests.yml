@@ -1,0 +1,70 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: Python (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # Matches the pinned test stack in requirements_test.txt
+          # (pytest-homeassistant-custom-component -> homeassistant 2026.7.x).
+          python-version: "3.14"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_test.txt
+      - name: Lint (pyflakes)
+        # Every target must be TRACKED: pyflakes exits 1 on a missing path, so
+        # linting an ignored directory passes locally and fails on a clean
+        # checkout. scripts/ holds the vendoring and release tooling.
+        run: python -m pyflakes custom_components/phoenix_mcp tests scripts
+      - name: Typecheck (mypy)
+        # Config, including the per-module ratchet, lives in pyproject.toml so the
+        # local run and CI agree. Non-strict on purpose: this exists to catch HA
+        # drift (a renamed attribute, a wrong argument) now that `hass` is typed
+        # as HomeAssistant rather than Any, not to enforce full annotations.
+        run: python -m mypy
+      - name: Run pytest with coverage
+        # fail_under lives in pyproject.toml so the local run and CI agree.
+        run: python -m pytest -q --cov --cov-report=term-missing:skip-covered
+
+  frontend:
+    name: Frontend (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          # Sourced from .nvmrc so CI, local dev, and the lockfile stay on one
+          # Node major. It must match the npm that generated package-lock.json
+          # (npm 11 / Node 24); an older npm resolves the tree differently and
+          # makes `npm ci` reject the lockfile as out of sync.
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: Run vitest
+        run: npm run test
+      - name: Audit shipped dependencies
+        # Production tree only: the dev toolchain is not installed alongside the
+        # integration, so a dev-only advisory must not fail a release check.
+        run: npm audit --omit=dev
+      - name: Production build
+        # The panel is shipped as a committed bundle, so a build that only
+        # breaks in production would otherwise go unnoticed until deploy.
+        run: npm run build
+      - name: Committed bundles are current
+        # The build overwrites the committed bundles and succeeds either way,
+        # so building alone proves nothing about what is shipped. This fails if
+        # frontend_src changed without the rebuilt bundles being committed.
+        run: git diff --exit-code -- custom_components/phoenix_mcp/frontend

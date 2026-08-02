@@ -1,0 +1,92 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, fireEvent, waitFor } from "@testing-library/react";
+import { AuditView } from "../views/AuditView";
+import { api } from "../api";
+import type { AuditEntry } from "../types";
+
+vi.mock("../api", () => ({
+  api: { getAudit: vi.fn() },
+}));
+
+function entry(over: Partial<AuditEntry> = {}): AuditEntry {
+  return {
+    request_id: "r1",
+    timestamp: "2026-01-01T00:00:00Z",
+    token_id: "t1",
+    token_name: "my_token",
+    method: "tools/call",
+    resource: "create_automation",
+    outcome: "allowed",
+    client_ip: "127.0.0.1",
+    pass_through: false,
+    ...over,
+  };
+}
+
+describe("AuditView", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("loads the first page and shows Load more only while more rows remain", async () => {
+    vi.mocked(api.getAudit).mockResolvedValue({
+      entries: [entry({ request_id: "r1" })],
+      total: 3,
+    });
+
+    const { findByText, queryByText } = render(<AuditView tokens={[]} />);
+    await findByText("create_automation");
+
+    expect(api.getAudit).toHaveBeenCalledWith({
+      outcome: undefined, token_id: undefined, since: undefined,
+      method: undefined, resource: undefined, ip: undefined,
+      limit: 100, offset: 0,
+    });
+    expect(queryByText("Load more")).toBeTruthy();
+  });
+
+  it("Load more appends the next page at the accumulated offset", async () => {
+    vi.mocked(api.getAudit)
+      .mockResolvedValueOnce({ entries: [entry({ request_id: "r1", resource: "first" })], total: 2 })
+      .mockResolvedValueOnce({ entries: [entry({ request_id: "r2", resource: "second" })], total: 2 });
+
+    const { findByText, getByText, queryByText } = render(<AuditView tokens={[]} />);
+    await findByText("first");
+
+    fireEvent.click(getByText("Load more"));
+    await findByText("second");
+
+    expect(api.getAudit).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1, limit: 100 }));
+    // Both pages of a two-total feed are now shown, so Load more disappears.
+    expect(queryByText("Load more")).toBeNull();
+  });
+
+  it("changing a dropdown filter reloads from offset 0 with the filter applied", async () => {
+    vi.mocked(api.getAudit).mockResolvedValue({ entries: [entry()], total: 1 });
+    const { findByText, getByLabelText } = render(<AuditView tokens={[]} />);
+    await findByText("create_automation");
+
+    fireEvent.change(getByLabelText("Filter by outcome"), { target: { value: "denied" } });
+
+    await waitFor(() =>
+      expect(api.getAudit).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "denied", offset: 0 })),
+    );
+  });
+
+  it("debounces the method/resource/ip text filters instead of firing per keystroke", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.getAudit).mockResolvedValue({ entries: [], total: 0 });
+    const { getByLabelText } = render(<AuditView tokens={[]} />);
+    await vi.waitFor(() => expect(api.getAudit).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(getByLabelText("Filter by method"), { target: { value: "c" } });
+    fireEvent.change(getByLabelText("Filter by method"), { target: { value: "cr" } });
+    fireEvent.change(getByLabelText("Filter by method"), { target: { value: "cre" } });
+    // Still just the initial load - no request fired per keystroke yet.
+    expect(api.getAudit).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() =>
+      expect(api.getAudit).toHaveBeenLastCalledWith(expect.objectContaining({ method: "cre" })),
+    );
+    vi.useRealTimers();
+  });
+});

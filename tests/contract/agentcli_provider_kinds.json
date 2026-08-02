@@ -1,0 +1,16 @@
+{
+  "agentcli_provider_kinds": [
+    "chatgpt",
+    "claude",
+    "deepseek",
+    "gemini",
+    "grok",
+    "kimi",
+    "meta",
+    "minimax",
+    "nvidia",
+    "ollama",
+    "ollama_cloud",
+    "openrouter"
+  ]
+}

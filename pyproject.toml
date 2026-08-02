@@ -1,0 +1,62 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["custom_components/phoenix_mcp"]
+# mesa_core is a vendored copy of a separate, read-only project. Its coverage
+# is not ours to move, and including it drags the measured total below what our
+# own tests actually cover, which would make the CI threshold meaningless.
+omit = ["custom_components/phoenix_mcp/mesa_core/*"]
+
+[tool.coverage.report]
+# A ratchet, not a target: set just below the measured first-party figure so a
+# change that drops coverage fails, without requiring new tests to land today.
+# Raise it as coverage improves; never lower it to make a red build pass.
+fail_under = 80
+
+[tool.mypy]
+# Phoenix MCP's coupling to HA internals is its top maintenance risk, and until
+# now `hass: Any` on 313 signatures meant every hass.states / hass.services /
+# hass.data access in the package was checked against nothing at all. This runs
+# NON-STRICT on purpose: the goal is to catch real drift (a renamed HA attribute,
+# a wrong argument) rather than to chase full annotation coverage on a codebase
+# that was never type-checked.
+# Deliberately NOT pinned to Phoenix's own 3.12 floor: mypy applies python_version
+# when parsing dependencies too, and Home Assistant itself uses syntax far newer
+# than that floor (unparenthesized except groups in hundreds of files, plus type
+# parameter defaults), which stops the run before it checks anything. It therefore
+# follows the interpreter. Phoenix's own floor is enforced per-file by an AST parse
+# at that feature version, which is the only check that sees our source alone.
+files = ["custom_components/phoenix_mcp"]
+# HA and its dependency tree ship incomplete stubs; without this every import
+# would be an error and the real findings would be buried.
+ignore_missing_imports = true
+# mesa_core is a vendored copy of a separate, read-only project (same reasoning
+# as the coverage omit above). It also resolves under two module names, which
+# stops mypy before it checks anything of ours.
+exclude = "custom_components/phoenix_mcp/mesa_core/"
+explicit_package_bases = true
+mypy_path = "."
+# Deliberately off: the package predates type checking, so demanding annotated
+# defs everywhere would produce thousands of findings and bury the useful ones.
+disallow_untyped_defs = false
+check_untyped_defs = false
+warn_unused_ignores = true
+
+# NO RATCHET. Every first-party module type-checks clean. It started at 296
+# findings across 18 modules; do not reintroduce a per-module ignore_errors to
+# make a red build pass, fix the finding.
+#
+# For the record, because the number looked much worse than it was: the single
+# largest cause was not a Phoenix defect. HomeAssistantView does not declare
+# `hass` while Phoenix assigns it at registration, so every `self.hass` in all
+# 69 views read as attr-defined. The typed PhoenixView base in view_base.py
+# cleared 141 of those in one change.
+
+# Vendored read-only copy of a separate project (the coverage omit and the
+# exclude above say the same thing); it is reachable by import even when
+# excluded from discovery.
+[[tool.mypy.overrides]]
+module = ["custom_components.phoenix_mcp.mesa_core.*"]
+ignore_errors = true

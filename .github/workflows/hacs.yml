@@ -1,0 +1,21 @@
+name: HACS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily, so an upstream HACS rule change is caught even with no commits.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: HACS Action
+        uses: hacs/action@main
+        with:
+          category: integration

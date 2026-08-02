@@ -1,0 +1,25 @@
+name: Hassfest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily, so a new Home Assistant manifest rule is caught even with no commits.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Hassfest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Hassfest
+        # Runs with no exclusions, which is also what hacs/default runs against a
+        # submission (its own workflow clones the repo and runs the same image),
+        # so this job passing is the thing that predicts that one passing. That is
+        # why Phoenix's own operator-facing catalogs live in catalogs/ rather than
+        # translations/: hassfest validates translations/en.json against a closed
+        # set of Home Assistant categories and errors on anything else.
+        uses: home-assistant/actions/hassfest@master

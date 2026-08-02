@@ -1,0 +1,1201 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, fireEvent, screen, waitFor } from "@testing-library/react";
+
+// Mock the API module: agentCliChat drives the window's event handling, and the
+// admin api methods back the model list + approval buttons.
+const agentCliChat = vi.fn();
+const getAgentCliModels = vi.fn();
+const approveApproval = vi.fn();
+const rejectApproval = vi.fn();
+
+vi.mock("../api", () => ({
+  agentCliChat: (...args: unknown[]) => agentCliChat(...args),
+  api: {
+    getAgentCliModels: (...args: unknown[]) => getAgentCliModels(...args),
+    approveApproval: (...args: unknown[]) => approveApproval(...args),
+    rejectApproval: (...args: unknown[]) => rejectApproval(...args),
+  },
+}));
+
+import {
+  AgentCliWindow,
+  trimTurns,
+  memoryMessages,
+  buildOptions,
+  modelCaps,
+  snapResizeRect,
+  clampPosToViewport,
+  fmtTokens,
+  type Turn,
+} from "../components/AgentCliWindow";
+import { getDurable, patchDurable, __resetAgentCliState } from "../utils/agentcli_state";
+import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
+import type { AgentCliInstance, TokenRecord } from "../types";
+import { setFormatLocale } from "../i18n";
+
+const TOKENS = [
+  { id: "t1", name: "alpha" } as TokenRecord,
+  { id: "t2", name: "beta" } as TokenRecord,
+];
+const INSTANCES: AgentCliInstance[] = [
+  { id: "i-claude", kind: "claude", name: "Claude", model: "claude-opus-4-8" },
+];
+
+function mkTurn(lines: number, msgs: unknown[]): Turn {
+  return { entries: [], messages: msgs, lines };
+}
+
+describe("agentCLI resize snapping (snapResizeRect)", () => {
+  const VW = 1000, VH = 800, M = 8;
+  // A window snapped to the top-left, small.
+  const o = { x: 8, y: 8, w: 400, h: 300 };
+
+  it("snaps the bottom edge to the viewport margin when stretched past it", () => {
+    // Drag the south edge far down (dy huge) -> bottom edge clamps to VH - M.
+    const r = snapResizeRect("s", o, 0, 5000, VW, VH);
+    expect(r.y).toBe(8);              // top edge unchanged
+    expect(r.y + r.h).toBe(VH - M);   // bottom edge pinned to the margin
+  });
+
+  it("snaps the right edge to the viewport margin when stretched past it", () => {
+    const r = snapResizeRect("e", o, 5000, 0, VW, VH);
+    expect(r.x).toBe(8);
+    expect(r.x + r.w).toBe(VW - M);
+  });
+
+  it("snaps the left and top edges to the margin, keeping the opposite edge fixed", () => {
+    const start = { x: 400, y: 400, w: 400, h: 300 };
+    const rightAnchor = start.x + start.w, bottomAnchor = start.y + start.h;
+    const r = snapResizeRect("nw", start, -5000, -5000, VW, VH);
+    expect(r.x).toBe(M);                       // left edge snapped to margin
+    expect(r.y).toBe(M);                       // top edge snapped to margin
+    expect(r.x + r.w).toBe(rightAnchor);       // right edge stayed put
+    expect(r.y + r.h).toBe(bottomAnchor);      // bottom edge stayed put
+  });
+
+  it("does not snap when the edge is nowhere near the boundary", () => {
+    const r = snapResizeRect("se", o, 100, 50, VW, VH);
+    expect(r.w).toBe(500);   // 400 + 100, no clamp
+    expect(r.h).toBe(350);   // 300 + 50, no clamp
+  });
+
+  it("never shrinks below the minimum window size", () => {
+    const r = snapResizeRect("se", o, -5000, -5000, VW, VH);
+    expect(r.w).toBe(320);
+    expect(r.h).toBe(280);
+  });
+});
+
+describe("agentCLI pill remembers its own position", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+  });
+
+  function dialog(): HTMLElement {
+    return screen.getByRole("dialog", { name: "Agent Chat" });
+  }
+
+  it("renders the minimized pill at its own remembered position, not the window's", async () => {
+    // Window lives top-left; the pill was last left in the middle.
+    patchDurable({ open: true, minimized: true, pos: { x: 8, y: 8 }, pillPos: { x: 400, y: 300 } });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    const el = dialog();
+    expect(el.style.left).toBe("400px");
+    expect(el.style.top).toBe("300px");
+  });
+
+  it("restoring then minimizing again returns the pill to where it was", async () => {
+    patchDurable({ open: true, minimized: true, pos: { x: 8, y: 8 },
+                   size: { w: 440, h: 560 }, pillPos: { x: 400, y: 300 } });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    // Restore: the window returns to its own position (8,8), not the pill's.
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(dialog().style.width).toBe("440px"));
+    expect(dialog().style.left).toBe("8px");
+
+    // Minimize again: the pill comes back to its remembered spot.
+    fireEvent.click(screen.getByRole("button", { name: "Minimize" }));
+    const el = dialog();
+    expect(el.style.left).toBe("400px");
+    expect(el.style.top).toBe("300px");
+    expect(el.style.width).toBe("");  // pill: no inline width, CSS drives it
+  });
+});
+
+describe("agentCLI restore repositioning (clampPosToViewport)", () => {
+  const VW = 1000, VH = 800, M = 8;
+
+  it("pins a full-size window to the top-left margin (maximized case)", () => {
+    // A maximized window (fills the viewport) whose pill was dragged to the
+    // middle must unfold back into the corner, not off-screen from the middle.
+    const size = { w: VW - 2 * M, h: VH - 2 * M };
+    const np = clampPosToViewport({ x: 500, y: 400 }, size, VW, VH);
+    expect(np).toEqual({ x: M, y: M });
+  });
+
+  it("shifts an off-screen but fittable window just enough to fit", () => {
+    const size = { w: 400, h: 300 };
+    // Dragged near the bottom-right; restore shifts it left/up to sit fully in.
+    const np = clampPosToViewport({ x: 900, y: 700 }, size, VW, VH);
+    expect(np).toEqual({ x: VW - 400 - M, y: VH - 300 - M });
+  });
+
+  it("leaves an already-fitting window where it is", () => {
+    const size = { w: 400, h: 300 };
+    const np = clampPosToViewport({ x: 120, y: 90 }, size, VW, VH);
+    expect(np).toEqual({ x: 120, y: 90 });
+  });
+});
+
+describe("agentCLI scrollback / memory bounds", () => {
+  it("scrollback 0 keeps only the last turn for display and sends no memory", () => {
+    const turns = [mkTurn(3, [{ a: 1 }]), mkTurn(3, [{ b: 2 }])];
+    expect(trimTurns(turns, 0)).toEqual([turns[1]]);
+    expect(memoryMessages(turns, 0)).toEqual([]);
+  });
+
+  it("scrollback N keeps whole newest turns within the line budget", () => {
+    const turns = [mkTurn(4, [{ a: 1 }]), mkTurn(4, [{ b: 2 }]), mkTurn(4, [{ c: 3 }])];
+    // budget 6 -> only the last turn fits without exceeding (4 <= 6; +4 would be 8)
+    expect(trimTurns(turns, 6)).toEqual([turns[2]]);
+    // budget 10 -> last two turns (8 <= 10). Memory is the flattened kept turns
+    // (the component always stores turns already trimmed to budget).
+    const kept = trimTurns(turns, 10);
+    expect(kept).toEqual([turns[1], turns[2]]);
+    expect(memoryMessages(kept, 10)).toEqual([{ b: 2 }, { c: 3 }]);
+  });
+
+  it("always keeps at least one turn even if it exceeds the budget", () => {
+    const turns = [mkTurn(50, [{ big: true }])];
+    expect(trimTurns(turns, 10)).toEqual([turns[0]]);
+  });
+});
+
+const vals = (caps: ReturnType<typeof modelCaps>) => caps.thinking.map((t) => t.value);
+
+describe("agentCLI model capabilities (real per-provider levels)", () => {
+  it("claude: off + low..max effort, no temperature", () => {
+    const c = modelCaps("claude", "claude-opus-4-8", true);
+    expect(c.style).toBe("effort");
+    expect(c.temperature).toBe(false);
+    expect(vals(c)).toEqual(["off", "low", "medium", "high", "xhigh", "max"]);
+  });
+  it("deepseek: off/high/max; temperature only when thinking off; reasoner has no toggle", () => {
+    expect(vals(modelCaps("deepseek", "deepseek-chat", true))).toEqual(["off", "high", "max"]);
+    expect(modelCaps("deepseek", "deepseek-chat", true).temperature).toBe(false);
+    expect(modelCaps("deepseek", "deepseek-chat", false).temperature).toBe(true);
+    const r = modelCaps("deepseek", "deepseek-reasoner", true);
+    expect(r.thinking).toEqual([]);
+    expect(r.note).toBeTruthy();
+  });
+  it("chatgpt: gpt-5 none..high, o-series low..high, plain gpt-* no thinking + temperature", () => {
+    expect(vals(modelCaps("chatgpt", "gpt-5", false))).toEqual(["none", "minimal", "low", "medium", "high"]);
+    expect(vals(modelCaps("chatgpt", "o3-mini", false))).toEqual(["low", "medium", "high"]);
+    expect(modelCaps("chatgpt", "o3-mini", false).temperature).toBe(false);
+    const g = modelCaps("chatgpt", "gpt-4o", false);
+    expect(g.thinking).toEqual([]);
+    expect(g.temperature).toBe(true);
+  });
+  it("ollama: boolean on/off + temperature", () => {
+    const o = modelCaps("ollama", "llama3", false);
+    expect(o.style).toBe("boolean");
+    expect(vals(o)).toEqual(["off", "on"]);
+    expect(o.temperature).toBe(true);
+  });
+  it("gemini: 2.5/3.x expose thinking_level (minimal..high), never temperature", () => {
+    for (const model of ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-3-pro"]) {
+      const g = modelCaps("gemini", model, false);
+      expect(vals(g)).toEqual(["minimal", "low", "medium", "high"]);
+      expect(g.temperature).toBe(false);
+    }
+    const g15 = modelCaps("gemini", "gemini-1.5-pro", false);
+    expect(g15.thinking).toEqual([]);
+    expect(g15.temperature).toBe(false);
+  });
+  it("grok: off/low/high effort; temperature only when thinking off", () => {
+    const off = modelCaps("grok", "grok-4", false);
+    expect(off.style).toBe("effort");
+    expect(vals(off)).toEqual(["off", "low", "high"]);
+    expect(off.temperature).toBe(true);
+    expect(modelCaps("grok", "grok-4", true).temperature).toBe(false);
+  });
+  it("kimi: k3 effort levels, k2 boolean toggle, moonshot-v1 temperature only", () => {
+    // K3 always reasons, so there is no off; low/high/max are the levels it takes.
+    const k3 = modelCaps("kimi", "kimi-k3", true);
+    expect(k3.style).toBe("effort");
+    expect(vals(k3)).toEqual(["low", "high", "max"]);
+    expect(k3.temperature).toBe(false);
+    // The 1M-context variant is the same model family.
+    expect(vals(modelCaps("kimi", "kimi-k3[1m]", true))).toEqual(["low", "high", "max"]);
+    // K2.x has no effort levels, just a thinking toggle.
+    const k2 = modelCaps("kimi", "kimi-k2.6", true);
+    expect(k2.style).toBe("boolean");
+    expect(vals(k2)).toEqual(["off", "on"]);
+    expect(k2.temperature).toBe(false);
+    // Only the legacy models take temperature, and they have no thinking control.
+    const legacy = modelCaps("kimi", "moonshot-v1-128k", false);
+    expect(legacy.thinking).toEqual([]);
+    expect(legacy.temperature).toBe(true);
+  });
+  it("meta: effort levels with no off and no max, never temperature", () => {
+    // Muse Spark rejects reasoning_effort "none", and "max" is not a Meta level.
+    const caps = modelCaps("meta", "muse-spark-1.1", true);
+    expect(caps.style).toBe("effort");
+    expect(vals(caps)).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+    expect(caps.temperature).toBe(false);
+  });
+  it("minimax: boolean thinking toggle, never temperature", () => {
+    const caps = modelCaps("minimax", "MiniMax-M2", true);
+    expect(caps.style).toBe("boolean");
+    expect(vals(caps)).toEqual(["off", "on"]);
+    expect(caps.temperature).toBe(false);
+  });
+  it("ollama cloud matches local: boolean think + temperature", () => {
+    const caps = modelCaps("ollama_cloud", "gpt-oss:120b", false);
+    expect(caps.style).toBe("boolean");
+    expect(vals(caps)).toEqual(["off", "on"]);
+    expect(caps.temperature).toBe(true);
+  });
+  it("openrouter: no thinking control, temperature only", () => {
+    const caps = modelCaps("openrouter", "meta-llama/llama-3.3-70b-instruct", false);
+    expect(caps.thinking).toEqual([]);
+    expect(caps.temperature).toBe(true);
+  });
+  it("nvidia: no thinking control, temperature only", () => {
+    const caps = modelCaps("nvidia", "meta/llama-3.3-70b-instruct", false);
+    expect(caps.thinking).toEqual([]);
+    expect(caps.temperature).toBe(true);
+  });
+});
+
+describe("agentCLI generation options mapping", () => {
+  it("claude sends thinking + effort; verbose maps to show_thinking", () => {
+    const caps = modelCaps("claude", "claude-opus-4-8", true);
+    expect(buildOptions("claude", { thinking: true, effort: "xhigh", temperature: "", verbose: false }, caps))
+      .toEqual({ thinking: true, effort: "xhigh", show_thinking: false });
+  });
+  it("deepseek: thinking on -> toggle + effort, no temperature; off -> temperature", () => {
+    const on = modelCaps("deepseek", "deepseek-chat", true);
+    expect(buildOptions("deepseek", { thinking: true, effort: "max", temperature: "0.4", verbose: true }, on))
+      .toEqual({ thinking: true, effort: "max", show_thinking: true });
+    const off = modelCaps("deepseek", "deepseek-chat", false);
+    expect(buildOptions("deepseek", { thinking: false, effort: "high", temperature: "0.4", verbose: false }, off))
+      .toEqual({ thinking: false, temperature: 0.4, show_thinking: false });
+  });
+  it("chatgpt reasoning model sends reasoning effort only; plain model sends temperature", () => {
+    const reason = modelCaps("chatgpt", "o3-mini", false);
+    expect(buildOptions("chatgpt", { thinking: true, effort: "high", temperature: "0.5", verbose: false }, reason))
+      .toEqual({ effort: "high", show_thinking: false });
+    const plain = modelCaps("chatgpt", "gpt-4o", false);
+    expect(buildOptions("chatgpt", { thinking: true, effort: "high", temperature: "0.5", verbose: false }, plain))
+      .toEqual({ temperature: 0.5, show_thinking: false });
+  });
+  it("ollama sends thinking + temperature", () => {
+    const caps = modelCaps("ollama", "llama3", false);
+    expect(buildOptions("ollama", { thinking: false, effort: "high", temperature: "0.2", verbose: false }, caps))
+      .toEqual({ thinking: false, temperature: 0.2, show_thinking: false });
+  });
+  it("gemini sends reasoning effort only, never temperature", () => {
+    const caps = modelCaps("gemini", "gemini-3.5-flash", false);
+    expect(buildOptions("gemini", { thinking: true, effort: "high", temperature: "0.3", verbose: false }, caps))
+      .toEqual({ effort: "high", show_thinking: false });
+  });
+  it("kimi sends effort for k3 and the thinking flag for k2, never both", () => {
+    // The two families take different API fields, so exactly one must be sent:
+    // a thinking flag on K3 or an effort on K2 would be rejected upstream.
+    const k3 = modelCaps("kimi", "kimi-k3", true);
+    expect(buildOptions("kimi", { thinking: true, effort: "max", temperature: "0.5", verbose: false }, k3))
+      .toEqual({ effort: "max", show_thinking: false });
+    const k2 = modelCaps("kimi", "kimi-k2.6", true);
+    expect(buildOptions("kimi", { thinking: true, effort: "max", temperature: "0.5", verbose: false }, k2))
+      .toEqual({ thinking: true, show_thinking: false });
+    const legacy = modelCaps("kimi", "moonshot-v1-128k", false);
+    expect(buildOptions("kimi", { thinking: true, effort: "max", temperature: "0.5", verbose: false }, legacy))
+      .toEqual({ temperature: 0.5, show_thinking: false });
+  });
+  it("meta sends reasoning effort only, never temperature", () => {
+    const caps = modelCaps("meta", "muse-spark-1.1", true);
+    expect(buildOptions("meta", { thinking: true, effort: "xhigh", temperature: "0.5", verbose: false }, caps))
+      .toEqual({ effort: "xhigh", show_thinking: false });
+  });
+  it("grok: thinking on -> effort, no temp; off -> temperature", () => {
+    const on = modelCaps("grok", "grok-4", true);
+    expect(buildOptions("grok", { thinking: true, effort: "high", temperature: "0.5", verbose: false }, on))
+      .toEqual({ thinking: true, effort: "high", show_thinking: false });
+    const off = modelCaps("grok", "grok-4", false);
+    expect(buildOptions("grok", { thinking: false, effort: "high", temperature: "0.5", verbose: false }, off))
+      .toEqual({ thinking: false, temperature: 0.5, show_thinking: false });
+  });
+  it("minimax sends the thinking toggle only, never effort or temperature", () => {
+    const caps = modelCaps("minimax", "MiniMax-M2", true);
+    expect(buildOptions("minimax", { thinking: true, effort: "high", temperature: "0.5", verbose: true }, caps))
+      .toEqual({ thinking: true, show_thinking: true });
+  });
+});
+
+describe("agentCLI token formatting (fmtTokens)", () => {
+  it("formats counts compactly across magnitudes", () => {
+    // CLDR's short form, not the old hand-rolled ladder: the suffix is a
+    // capital K in English, and in a locale that groups by another magnitude
+    // the NUMBER changes too (see i18n_format.test.ts). Locale pinned here so
+    // this asserts the format rather than the test runner's environment.
+    setFormatLocale({}, "en-US");
+    expect(fmtTokens(0)).toBe("0");
+    expect(fmtTokens(812)).toBe("812");
+    expect(fmtTokens(2680)).toBe("2.7K");
+    expect(fmtTokens(48_200)).toBe("48.2K");
+    expect(fmtTokens(482_000)).toBe("482K");
+    expect(fmtTokens(1_234_000)).toBe("1.2M");
+  });
+});
+
+describe("AgentCliWindow streaming", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    clearReasonDraft("ap9");
+    clearReasonDraft("ap10");
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+  });
+
+  it("streams a turn: user, assistant text, tool call/result, and approval flow", async () => {
+    approveApproval.mockResolvedValue({});
+    // Scripted event sequence delivered synchronously when a message is sent.
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("ready", { provider: "claude", model: "claude-opus-4-8" });
+      onEvent("assistant_delta", { text: "Turning on " });
+      onEvent("assistant_delta", { text: "the light." });
+      onEvent("tool_call", { id: "tc1", name: "call_service", arguments: {} });
+      onEvent("approval_required", { approval_id: "ap1", tool_name: "call_service", review_url: "/x" });
+      onEvent("approval_resolved", { approval_id: "ap1", status: "approved" });
+      onEvent("tool_result", { id: "tc1", name: "call_service", is_error: false, summary: "applied" });
+      onEvent("messages", { messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "ok" }] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "turn on the light" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalledTimes(1));
+    // User bubble + streamed assistant text. The completed reply also appears
+    // in the sr-only live announcer, hence getAllByText.
+    expect(screen.getByText("turn on the light")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/Turning on the light\./).length).toBeGreaterThan(0));
+    // The finished reply is announced to assistive tech via the status region.
+    const announcer = document.querySelector(".agentcli-window .sr-only[role='status']");
+    expect(announcer?.textContent).toBe("Turning on the light.");
+    // The approval card resolved (buttons replaced by the status label, which
+    // is the catalog's, never the server's raw slug).
+    await waitFor(() => expect(screen.getByText("Approved")).toBeInTheDocument());
+    // Verbose is off by default: the tool-result detail is hidden.
+    expect(screen.queryByText(/applied/)).toBeNull();
+  });
+
+  it("pauses at the round-cap checkpoint and resumes with continue:true on Continue", async () => {
+    // First turn ends with continue_required; second turn (Continue) must send
+    // continue:true and no new user message, re-sending the held conversation.
+    agentCliChat
+      .mockImplementationOnce(async (_body, onEvent: (n: string, p: unknown) => void) => {
+        onEvent("tool_call", { id: "tc1", name: "get_history", arguments: {} });
+        onEvent("tool_result", { id: "tc1", name: "get_history", is_error: false, summary: "…" });
+        onEvent("continue_required", { iterations: 20 });
+        onEvent("messages", { messages: [{ role: "user", content: "why" }, { role: "assistant", content: "looking" }] });
+        onEvent("done", { stop_reason: "tool_use" });
+      })
+      .mockImplementationOnce(async (_body, onEvent: (n: string, p: unknown) => void) => {
+        onEvent("assistant_delta", { text: "It was the PIR automation." });
+        onEvent("messages", { messages: [] });
+        onEvent("done", { stop_reason: "end_turn" });
+      });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "why did the light turn on" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    // The checkpoint control appears with the round count.
+    const continueBtn = await screen.findByRole("button", { name: "Continue" });
+    expect(screen.getByText(/Paused after 20 steps/)).toBeInTheDocument();
+
+    fireEvent.click(continueBtn);
+
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalledTimes(2));
+    const secondBody = agentCliChat.mock.calls[1][0] as Record<string, unknown>;
+    expect(secondBody.continue).toBe(true);
+    expect(secondBody.user).toBeUndefined();
+    // The held conversation from the paused turn is re-sent.
+    expect((secondBody.messages as unknown[]).length).toBe(2);
+    // The resumed answer streams in, and the checkpoint control is gone.
+    await waitFor(() => expect(screen.getAllByText(/It was the PIR automation\./).length).toBeGreaterThan(0));
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  });
+
+  it("shows the rejection reason and the approved-but-failed detail on resolved approvals", async () => {
+    // A bare "rejected" hid WHY (live-found: an admin's Approve whose executor
+    // failed read as a refusal); the resolved card must carry the reason.
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("approval_required", { approval_id: "ap1", tool_name: "add_dashboard_card", review_url: "/x" });
+      onEvent("approval_resolved", { approval_id: "ap1", status: "rejected", reason: "wrong sensor, use the outdoor one" });
+      onEvent("approval_required", { approval_id: "ap2", tool_name: "edit_dashboard_card", review_url: "/x" });
+      onEvent("approval_resolved", { approval_id: "ap2", status: "execution_failed", reason: "This configuration changed since you last read it" });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "add the card" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText(/Rejected/)).toBeInTheDocument());
+    expect(screen.getByText(/wrong sensor, use the outdoor one/)).toBeInTheDocument();
+    // The same label also reaches the live region now that the announcement
+    // resolves the status through the catalog, so scope this to the card.
+    const statuses = Array.from(document.querySelectorAll(".agentcli-approval-status"));
+    expect(statuses.map((n) => n.textContent).join(" ")).toContain("approved, but execution failed");
+    expect(screen.getByText(/changed since you last read it/)).toBeInTheDocument();
+  });
+
+  it("shows tool activity only when verbose output is enabled", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("tool_call", { id: "tc1", name: "get_overview", arguments: {} });
+      onEvent("tool_result", { id: "tc1", name: "get_overview", is_error: false, summary: "90 entities" });
+      onEvent("assistant_delta", { text: "You have 9 lights." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    // Enable verbose via the gear popover.
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show verbose output"));
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "how many lights?" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText(/You have 9 lights\./)).toBeInTheDocument());
+    // With verbose on, the tool call + result detail are visible.
+    expect(screen.getAllByText("get_overview").length).toBeGreaterThan(0);
+    expect(screen.getByText(/90 entities/)).toBeInTheDocument();
+  });
+
+  it("token-usage footer accumulates across turns, resets on /clear, and hides via the gear toggle", async () => {
+    // Turn 1: two usage events (turn-cumulative from the server); the footer
+    // shows the newest totals plus the newest call's context size. Locale
+    // pinned because the footer now renders CLDR's compact form, which differs
+    // per language (48.2K in English, 4.8万 in Chinese).
+    setFormatLocale({}, "en-US");
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("usage", { input_tokens: 1000, output_tokens: 50, context_tokens: 1000 });
+      onEvent("assistant_delta", { text: "Hi." });
+      onEvent("usage", { input_tokens: 2600, output_tokens: 80, context_tokens: 1600 });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    // Enabled by default, rendered even before any usage arrives.
+    expect(screen.getByText(/Session 0 tokens/)).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "hello" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText(/Session 2\.7K tokens · context 1\.6K/)).toBeInTheDocument());
+
+    // Turn 2 adds onto the session base (2600 in + 80 out carried over).
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("usage", { input_tokens: 3000, output_tokens: 100, context_tokens: 3000 });
+      onEvent("assistant_delta", { text: "Again." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    fireEvent.change(textarea, { target: { value: "more" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    // 2680 + 3100 = 5780 total; context is the newest call's input.
+    await waitFor(() => expect(screen.getByText(/Session 5\.8K tokens · context 3K/)).toBeInTheDocument());
+
+    // /clear resets the counter with the conversation.
+    fireEvent.change(textarea, { target: { value: "/clear" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText(/Session 0 tokens/)).toBeInTheDocument());
+
+    // The gear toggle hides the footer and persists the choice.
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show token usage"));
+    expect(screen.queryByText(/Session 0 tokens/)).toBeNull();
+    expect(getDurable().showUsage).toBe(false);
+  });
+
+  it("timestamps are off by default and appear on message bubbles via the gear toggle", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("assistant_delta", { text: "Hello there." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "hi" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getAllByText("Hello there.").length).toBeGreaterThan(0));
+    // Default off: no timestamp elements anywhere.
+    expect(document.querySelector(".agentcli-ts")).toBeNull();
+
+    // Toggle on: both the user and assistant bubbles show a time, and the
+    // choice persists.
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show timestamps"));
+    await waitFor(() => expect(document.querySelectorAll(".agentcli-ts").length).toBe(2));
+    for (const el of document.querySelectorAll(".agentcli-ts")) {
+      expect(el.textContent?.trim()).toBeTruthy();
+    }
+    expect(getDurable().showTimestamps).toBe(true);
+  });
+
+  it("token-usage footer says so when a provider reports no usage, and recovers when one does", async () => {
+    // A completed turn with no usage events marks the footer (a forever-zero
+    // counter would read as broken); a later turn that DOES report replaces it.
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("assistant_delta", { text: "Quiet provider." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "hi" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("No usage data available from this provider")).toBeInTheDocument());
+
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("usage", { input_tokens: 500, output_tokens: 20, context_tokens: 500 });
+      onEvent("assistant_delta", { text: "Chatty provider." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    fireEvent.change(textarea, { target: { value: "again" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText(/Session 520 tokens · context 500/)).toBeInTheDocument());
+    expect(screen.queryByText("No usage data available from this provider")).toBeNull();
+  });
+
+  it("Cancel keeps the partial turn in the transcript instead of wiping it", async () => {
+    // Live-found: a long agentic exchange is one turn, and Cancel dropped the
+    // live entries, erasing the whole visible conversation. Cancel must fold
+    // the partial turn into the transcript, flip any still-pending approval
+    // card to cancelled (matching the server's orphan cleanup), and add a
+    // Cancelled marker, while still restoring the query for editing.
+    agentCliChat.mockImplementation((_body, onEvent: (n: string, p: unknown) => void, signal) => {
+      onEvent("assistant_delta", { text: "Working on it." });
+      onEvent("approval_required", { approval_id: "ap1", tool_name: "add_dashboard_card", review_url: "/x" });
+      // Stay in flight until aborted, like a real streaming request.
+      return new Promise((_resolve, reject) => {
+        (signal as AbortSignal).addEventListener("abort",
+          () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "add a chart card" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("Working on it.")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // The partial turn stays visible with a Cancelled marker appended. The
+    // user bubble is asserted via its class because the restored textarea
+    // value also matches the raw text.
+    expect(document.querySelector(".agentcli-msg-user")?.textContent).toBe("add a chart card");
+    expect(screen.getByText("Working on it.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Cancelled.")).toBeInTheDocument());
+    // The pending approval card resolved to cancelled: buttons gone.
+    expect(screen.getByText("Cancelled")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    // The query is restored to the input box for editing and resending.
+    expect((textarea as HTMLTextAreaElement).value).toBe("add a chart card");
+  });
+
+  it("the /clear slash command starts a new conversation without calling the model", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("assistant_delta", { text: "Hello there." });
+      onEvent("messages", { messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "ok" }] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "hi" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalledTimes(1));
+    // Transcript + sr-only announcer both carry the finished reply.
+    await waitFor(() => expect(screen.getAllByText("Hello there.").length).toBeGreaterThan(0));
+
+    // /clear wipes the transcript (including the live announcer), does not call
+    // the model, and is not itself rendered as a user message.
+    fireEvent.change(textarea, { target: { value: "/clear" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByText("Hello there.")).toBeNull());
+    expect(agentCliChat).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("/clear")).toBeNull();
+    expect((textarea as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("Claude thinking dropdown folds on/off with effort and persists", async () => {
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    fireEvent.click(screen.getByLabelText("Options"));
+    // Single dropdown (no separate effort control); the popover closes with "Close".
+    const sel = screen.getByLabelText("Thinking") as HTMLSelectElement;
+    expect(sel.value).toBe("high");
+    expect(screen.getByText("Close")).toBeInTheDocument();
+    fireEvent.change(sel, { target: { value: "off" } });
+    expect(getDurable().options.thinking).toBe(false);
+    fireEvent.change(sel, { target: { value: "low" } });
+    expect(getDurable().options).toMatchObject({ thinking: true, effort: "low" });
+  });
+
+  it("Approve button calls the approve endpoint", async () => {
+    approveApproval.mockResolvedValue({});
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("approval_required", { approval_id: "ap9", tool_name: "restart_ha", review_url: "/x" });
+      // Do not resolve; leave the buttons up so the test can click Approve.
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "tool_use" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "restart" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText("Approve")).toBeInTheDocument());
+    // The card also offers a Review link to the full approval in the panel.
+    expect(screen.getByText("Review…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Approve"));
+    expect(approveApproval).toHaveBeenCalledWith("ap9");
+  });
+
+  it("hides the buttons when the approval is acted on somewhere else", async () => {
+    // The bug this closes: the bubble learned about a resolution ONLY from the
+    // SSE stream, which rides the agent's turn resuming. Rejecting in the panel
+    // left Approve and Reject sitting here until the model answered, so the
+    // operator could click an action the server would only answer with a 409.
+    // Nothing is streamed here after approval_required, which is the point:
+    // the update has to arrive without the agent saying anything.
+    const handlers: Record<string, (ev: unknown) => void> = {};
+    const el = document.createElement("home-assistant");
+    (el as unknown as { hass: unknown }).hass = {
+      connection: {
+        subscribeEvents: (cb: (ev: unknown) => void, event: string) => {
+          handlers[event] = cb;
+          return Promise.resolve(() => {});
+        },
+      },
+    };
+    document.body.appendChild(el);
+    try {
+      agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+        onEvent("approval_required", { approval_id: "ap9", tool_name: "restart_ha", review_url: "/x" });
+        onEvent("messages", { messages: [] });
+        onEvent("done", { stop_reason: "tool_use" });
+      });
+
+      render(
+        <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                        initialTokenId="t1" onClose={() => {}} />,
+      );
+      await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+      const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+      fireEvent.change(textarea, { target: { value: "restart" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+      await waitFor(() => expect(screen.getByText("Approve")).toBeInTheDocument());
+
+      handlers["phoenix_mcp_approval_resolved"]({
+        data: { approval_id: "ap9", status: "rejected" },
+      });
+
+      await waitFor(() => expect(screen.queryByText("Approve")).toBeNull());
+      expect(rejectApproval).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+
+  it("shows an approval claimed elsewhere as in progress, and restores it on release", async () => {
+    // A claim is an admin's Approve executing its saved action inline, which has
+    // no SSE frame at all. Release means that execution failed and the approval
+    // is pending and actionable again, so the buttons have to come back.
+    const handlers: Record<string, (ev: unknown) => void> = {};
+    const el = document.createElement("home-assistant");
+    (el as unknown as { hass: unknown }).hass = {
+      connection: {
+        subscribeEvents: (cb: (ev: unknown) => void, event: string) => {
+          handlers[event] = cb;
+          return Promise.resolve(() => {});
+        },
+      },
+    };
+    document.body.appendChild(el);
+    try {
+      agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+        onEvent("approval_required", { approval_id: "ap9", tool_name: "restart_ha", review_url: "/x" });
+        onEvent("messages", { messages: [] });
+        onEvent("done", { stop_reason: "tool_use" });
+      });
+
+      render(
+        <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                        initialTokenId="t1" onClose={() => {}} />,
+      );
+      await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+      const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+      fireEvent.change(textarea, { target: { value: "restart" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+      await waitFor(() => expect(screen.getByText("Approve")).toBeInTheDocument());
+
+      handlers["phoenix_mcp_approval_claimed"]({ data: { approval_id: "ap9", claimed: true } });
+      await waitFor(() => expect(screen.queryByText("Approve")).toBeNull());
+
+      handlers["phoenix_mcp_approval_claimed"]({ data: { approval_id: "ap9", claimed: false } });
+      await waitFor(() => expect(screen.getByText("Approve")).toBeInTheDocument());
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+
+  it("Reject sends the reason drafted in the panel's approval modal, then clears it", async () => {
+    rejectApproval.mockResolvedValue({});
+    setReasonDraft("ap9", "put it on the Kitchen view instead");
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("approval_required", { approval_id: "ap9", tool_name: "add_dashboard_card", review_url: "/x" });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "tool_use" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "add a card" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText("Reject")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Reject"));
+    await waitFor(() => expect(rejectApproval).toHaveBeenCalledWith(
+      "ap9", { reason: "put it on the Kitchen view instead" }));
+    // Consumed: a later rejection of another approval does not inherit it.
+    await waitFor(() => expect(getReasonDraft("ap9")).toBe(""));
+  });
+
+  it("Reject with no drafted reason sends an empty body", async () => {
+    rejectApproval.mockResolvedValue({});
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("approval_required", { approval_id: "ap10", tool_name: "add_dashboard_card", review_url: "/x" });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "tool_use" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "add a card" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText("Reject")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Reject"));
+    await waitFor(() => expect(rejectApproval).toHaveBeenCalledWith("ap10", {}));
+  });
+
+  it("shows an empty-state prompt when no provider is configured", async () => {
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={[]} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    expect(screen.getByText(/No provider account is configured/i)).toBeInTheDocument();
+  });
+
+  it("Cancel stops the turn, restores the query, and keeps the partial output", async () => {
+    let signalRef: AbortSignal | undefined;
+    agentCliChat.mockImplementation((_body, onEvent: (n: string, p: unknown) => void, signal: AbortSignal) => {
+      signalRef = signal;
+      onEvent("assistant_delta", { text: "half an answer" });
+      // Hang until aborted (models can take many seconds; user hits Cancel).
+      return new Promise((_res, rej) => {
+        signal.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
+      });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const ta = screen.getByPlaceholderText(/Message Agent Chat/i) as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "do the thing" } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText(/half an answer/)).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Cancel"));
+
+    await waitFor(() => expect(screen.getByText("Send")).toBeInTheDocument());
+    expect(signalRef?.aborted).toBe(true);
+    expect(screen.getByText(/half an answer/)).toBeInTheDocument();  // partial kept in the transcript
+    expect(ta.value).toBe("do the thing");                           // query restored for editing
+  });
+
+  it("persists selections and restores them on a fresh mount", async () => {
+    getAgentCliModels.mockResolvedValue({ models: ["m-a", "m-b"] });
+    const { unmount } = render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("m-a"));
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "m-b" } });
+    fireEvent.change(screen.getByLabelText("Token"), { target: { value: "t2" } });
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show verbose output"));
+
+    await waitFor(() => expect(getDurable().model).toBe("m-b"));
+    expect(getDurable().tokenId).toBe("t2");
+    expect(getDurable().options.verbose).toBe(true);
+
+    unmount();
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    // Restored from persistence, not reset to defaults.
+    await waitFor(() => expect((screen.getByLabelText("Token") as HTMLSelectElement).value).toBe("t2"));
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("m-b");
+  });
+});
+
+describe("agentcli_state persistence", () => {
+  beforeEach(() => __resetAgentCliState());
+  it("round-trips durable fields through localStorage", () => {
+    patchDurable({ open: true, model: "x", options: { thinking: false, effort: "low", temperature: "0.2", verbose: true } });
+    const d = getDurable();
+    expect(d.open).toBe(true);
+    expect(d.model).toBe("x");
+    expect(d.options.verbose).toBe(true);
+    expect(d.options.effort).toBe("low");
+  });
+});
+
+describe("agentCLI cancellation on close/unmount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+    // A never-resolving promise keeps the request "in flight" so we can observe
+    // whether its abort signal is tripped by Close / unmount.
+    agentCliChat.mockReturnValue(new Promise(() => {}));
+  });
+
+  async function startTurn() {
+    patchDurable({ open: true });
+    const onClose = vi.fn();
+    const utils = render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={onClose} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("Message Agent Chat…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalled());
+    const signal = agentCliChat.mock.calls[0][2] as AbortSignal;
+    return { signal, onClose, utils };
+  }
+
+  it("Close aborts the in-flight request and calls onClose", async () => {
+    const { signal, onClose } = await startTurn();
+    expect(signal.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(signal.aborted).toBe(true);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("unmount aborts the in-flight request", async () => {
+    const { signal, utils } = await startTurn();
+    expect(signal.aborted).toBe(false);
+    utils.unmount();
+    expect(signal.aborted).toBe(true);
+  });
+});
+
+describe("unsent message box survives a panel remount", () => {
+  // The panel-hosted window is unmounted whenever the user navigates away from
+  // the Phoenix MCP panel in Home Assistant. The transcript survived that (it
+  // lives in the session tier) but the half-written prompt did not, so a user
+  // who typed, wandered off, and came back found the box emptied. The global
+  // floating window never unmounts, so it never showed this.
+  beforeEach(() => {
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+    patchDurable({ open: true, instanceId: "i-claude", model: "claude-opus-4-8" });
+  });
+
+  const box = () => screen.getByPlaceholderText(/message/i) as HTMLTextAreaElement;
+
+  function mount() {
+    return render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+  }
+
+  it("restores the draft after unmount and remount", async () => {
+    const first = mount();
+    fireEvent.change(box(), { target: { value: "turn off the kitchen lights" } });
+    await waitFor(() => expect(box().value).toBe("turn off the kitchen lights"));
+
+    first.unmount();            // navigating away from the panel
+    mount();                    // and back
+
+    await waitFor(() => expect(box().value).toBe("turn off the kitchen lights"));
+  });
+
+  it("does not resurrect a draft that was cleared before leaving", async () => {
+    const first = mount();
+    fireEvent.change(box(), { target: { value: "half a thought" } });
+    await waitFor(() => expect(box().value).toBe("half a thought"));
+    fireEvent.change(box(), { target: { value: "" } });
+
+    first.unmount();
+    mount();
+
+    await waitFor(() => expect(box().value).toBe(""));
+  });
+
+  it("the wizard prefill still wins over a stale draft", async () => {
+    const first = mount();
+    fireEvent.change(box(), { target: { value: "stale draft" } });
+    await waitFor(() => expect(box().value).toBe("stale draft"));
+    first.unmount();
+
+    patchDurable({ prefill: "How many lights are in my home?" });
+    mount();
+
+    await waitFor(() => expect(box().value).toBe("How many lights are in my home?"));
+  });
+});
+
+describe("AgentCliWindow held-tool progress", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+  });
+
+  async function stream(events: Array<[string, unknown]>) {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("ready", { provider: "claude", model: "claude-opus-4-8" });
+      for (const [name, payload] of events) onEvent(name, payload);
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "build it" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalledTimes(1));
+  }
+
+  it("shows build progress even with verbose off", async () => {
+    // Verbose is off by default, and that is exactly when this matters: without
+    // it a multi-minute firmware build shows the operator nothing at all.
+    await stream([
+      ["tool_call", { id: "tc1", name: "wait_for_esphome_job", arguments: {} }],
+      ["tool_progress", { id: "tc1", message: "Compiling rf-blaster2: 40%" }],
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Compiling rf-blaster2: 40%")).toBeInTheDocument());
+    // The tool call itself stays hidden; only the progress line surfaces.
+    expect(screen.queryByText(/calling/)).toBeNull();
+  });
+
+  it("replaces the line in place instead of stacking one per tick", async () => {
+    await stream([
+      ["tool_call", { id: "tc1", name: "wait_for_esphome_job", arguments: {} }],
+      ["tool_progress", { id: "tc1", message: "Compiling rf-blaster2: 20%" }],
+      ["tool_progress", { id: "tc1", message: "Compiling rf-blaster2: 80%" }],
+      ["tool_progress", { id: "tc1", message: "Flashing rf-blaster2: 50%" }],
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Flashing rf-blaster2: 50%")).toBeInTheDocument());
+    expect(screen.queryByText("Compiling rf-blaster2: 20%")).toBeNull();
+    expect(screen.queryByText("Compiling rf-blaster2: 80%")).toBeNull();
+    expect(document.querySelectorAll(".agentcli-progress").length).toBe(1);
+  });
+
+  it("keeps separate lines for separate calls", async () => {
+    await stream([
+      ["tool_progress", { id: "tc1", message: "Compiling a: 10%" }],
+      ["tool_progress", { id: "tc2", message: "Compiling b: 10%" }],
+    ]);
+
+    await waitFor(() =>
+      expect(document.querySelectorAll(".agentcli-progress").length).toBe(2));
+  });
+});
+
+describe("AgentCliWindow generic activity line", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+  });
+
+  // Held open, because the whole point of this line is what the operator sees
+  // WHILE a turn runs. A completed stream would strip it before any assertion.
+  async function running(events: Array<[string, unknown]>) {
+    agentCliChat.mockImplementation((_body, onEvent: (n: string, p: unknown) => void, signal) => {
+      onEvent("ready", { provider: "claude", model: "claude-opus-4-8" });
+      for (const [name, payload] of events) onEvent(name, payload);
+      return new Promise((_resolve, reject) => {
+        (signal as AbortSignal).addEventListener("abort",
+          () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "do a few things" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalledTimes(1));
+  }
+
+  it("names the running tool with verbose off, where there is otherwise nothing", async () => {
+    // The defect this closes: with verbose off the window rendered NOTHING for
+    // the entire run, so an operator could not tell working from hung and read
+    // the blank window as broken.
+    await running([["tool_call", { id: "tc1", name: "get_states", arguments: {} }]]);
+
+    await waitFor(() => expect(screen.getByText("Working: get_states")).toBeInTheDocument());
+    expect(screen.queryByText(/calling/)).toBeNull();
+  });
+
+  it("moves to the newest call instead of stacking one line per tool", async () => {
+    await running([
+      ["tool_call", { id: "tc1", name: "get_states", arguments: {} }],
+      ["tool_result", { id: "tc1", name: "get_states", is_error: false, summary: "ok" }],
+      ["tool_call", { id: "tc2", name: "search_entities", arguments: {} }],
+    ]);
+
+    await waitFor(() => expect(screen.getByText("Working: search_entities")).toBeInTheDocument());
+    expect(screen.queryByText("Working: get_states")).toBeNull();
+    expect(document.querySelectorAll(".agentcli-progress").length).toBe(1);
+  });
+
+  it("yields to a tool that reports its own progress", async () => {
+    // A build says "Compiling x: 40%", which is strictly more than "Working:",
+    // so the two must never be stacked together.
+    await running([
+      ["tool_call", { id: "tc1", name: "wait_for_esphome_job", arguments: {} }],
+      ["tool_progress", { id: "tc1", message: "Compiling rf-blaster2: 40%" }],
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText("Compiling rf-blaster2: 40%")).toBeInTheDocument());
+    expect(screen.queryByText(/^Working: /)).toBeNull();
+    expect(document.querySelectorAll(".agentcli-progress").length).toBe(1);
+  });
+
+  it("is gone once the turn finishes, leaving the reply and not a trail", async () => {
+    // It is a live indicator, not history: the transcript should read as the
+    // conversation, not as a log of how the answer was produced.
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("ready", { provider: "claude", model: "claude-opus-4-8" });
+      onEvent("tool_call", { id: "tc1", name: "get_states", arguments: {} });
+      onEvent("tool_result", { id: "tc1", name: "get_states", is_error: false, summary: "ok" });
+      onEvent("assistant_delta", { text: "Three lights are on." });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "which lights are on" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText("Three lights are on.")).toBeInTheDocument());
+    expect(screen.queryByText(/^Working: /)).toBeNull();
+    expect(document.querySelectorAll(".agentcli-progress").length).toBe(0);
+  });
+
+  it("stays hidden with verbose on, where the calling lines already say it", async () => {
+    await running([["tool_call", { id: "tc1", name: "get_states", arguments: {} }]]);
+    await waitFor(() => expect(screen.getByText("Working: get_states")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Options" }));
+    fireEvent.click(screen.getByLabelText("Show verbose output"));
+
+    await waitFor(() => expect(screen.queryByText("Working: get_states")).toBeNull());
+    expect(screen.getByText(/calling/)).toBeInTheDocument();
+  });
+});
