@@ -77,9 +77,10 @@ X-RateLimit-Reset: 1712345678</code></pre>
         </div>
 
         <h2 id="advanced-token-options">Advanced token options</h2>
-        <p>Two per-token options sit outside the capability matrix, in the panel's <strong>Tool Announcement</strong> card on the token detail page (and settable through <a href="admin-api.html#tokens">PATCH</a>).</p>
+        <p>Three per-token options sit outside the capability matrix, in the panel's <strong>Tool Announcement</strong> card on the token detail page (and settable through <a href="admin-api.html#tokens">PATCH</a>).</p>
         <dl class="kv">
           <div class="kv-row"><dt>Always announce all tools</dt><dd>Off by default: a token's <code>tools/list</code> advertises only the tools its capabilities unlock and hides the rest. Turn it on to advertise the full tool list regardless of gating. Calls are still gated, so this changes what a client sees, not what it can do.</dd></div>
+          <div class="kv-row"><dt>Inline approval wait</dt><dd>Off by default. A confirm-gated call returns <code>pending_approval</code> as soon as the approval is queued, so a run of writes reaches the Approvals queue in seconds and you clear them individually or as a batch; the agent asks for the outcome when it needs one. Choosing a duration instead makes the call hold the response open until you decide, which suits a client that never asks, at the cost of the next approval not being created until the previous call stops waiting. <strong>This affects external MCP clients only.</strong> Agent Chat, the Assist bridge, the voice agent and AI Task ignore it: they queue immediately and wait their own way, so testing the setting in Agent Chat will show no difference.</dd></div>
           <div class="kv-row"><dt>Limit to Assist-exposed entities</dt><dd>Pass-through tokens only, off by default. A pass-through token normally sees every non-Phoenix entity; enable this to additionally narrow it to the entities exposed to Home Assistant Assist. It is ignored for scoped tokens, which scope by the permission tree, so the toggle is disabled unless pass-through mode is on.</dd></div>
         </dl>
 
