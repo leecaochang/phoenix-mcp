@@ -175,6 +175,13 @@ const CAPS: CapDef[] = [
     confirmAvailable: true,
   },
   {
+    key: "cap_energy_write",
+    labelKey: "caps.cap_energy_write.label",
+    descriptionKey: "caps.cap_energy_write.description",
+    tier: "system",
+    confirmAvailable: true,
+  },
+  {
     key: "cap_backup",
     labelKey: "caps.cap_backup.label",
     descriptionKey: "caps.cap_backup.description",

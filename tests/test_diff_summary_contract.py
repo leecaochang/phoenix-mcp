@@ -135,7 +135,7 @@ def test_every_template_is_reachable() -> None:
     """
     computed_prefixes = (
         "blueprint.", "dashboard.", "dashboard_card.", "hass_turn.",
-        "patch_dashboard.", "patch.",
+        "patch_dashboard.", "patch.", "edit_energy_config.",
     )
     named = _keys_named_in_source() | set(_CARD_OP_VERSION_KEYS.values())
     orphans = [

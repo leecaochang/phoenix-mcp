@@ -45,6 +45,7 @@ export interface CapabilityFlagsMap {
   cap_lovelace_write: CapMode;
   cap_registry_write: CapMode;
   cap_radio_write: CapMode;
+  cap_energy_write: CapMode;
   cap_backup: CapMode;
   cap_filesystem: CapMode;
   cap_yaml_edit: CapMode;
@@ -446,6 +447,7 @@ export interface PatchTokenBody {
   cap_lovelace_write?: CapMode;
   cap_registry_write?: CapMode;
   cap_radio_write?: CapMode;
+  cap_energy_write?: CapMode;
   cap_backup?: CapMode;
   cap_filesystem?: CapMode;
   cap_yaml_edit?: CapMode;
@@ -577,6 +579,7 @@ export type VersionResourceType =
   | "entity"
   | "yaml_config"
   | "esphome_yaml"
+  | "energy"
   | "file";
 
 export interface VersionSummary {

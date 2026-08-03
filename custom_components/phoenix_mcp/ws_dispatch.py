@@ -68,6 +68,32 @@ ALLOWED_WS_COMMANDS: frozenset[str] = frozenset(
         # ABSENT: it fetches an operator-unseen URL from inside HA, which is an
         # SSRF primitive with LAN and supervisor reach. Callers pass literal YAML.
         "blueprint/save", "blueprint/delete",
+        # Energy dashboard preferences, READ ONLY. This is the only route to the
+        # mapping between a statistic and its Energy role (grid / solar / battery /
+        # gas / water / individual device): it lives in .storage/energy, which no
+        # filesystem tool can reach (FILESYSTEM_ALLOWED_DIRS is www/themes/
+        # custom_templates), and no state or registry read exposes it. Without it a
+        # caller removing an integration cannot see that it is about to orphan an
+        # Energy source, because nothing else in HA records that dependency.
+        # energy/save_prefs is @require_admin and each of its three top-level keys
+        # is a FULL REPLACE: sending "device_consumption" with a partial list
+        # silently deletes every other device the operator configured. That is why
+        # NOTHING here composes a payload from what an agent sent. tools/energy.py
+        # owns the only caller: it re-reads the current preferences UNREDACTED,
+        # applies one addressed mutation, verifies the result differs from the
+        # original in exactly the intended way, and sends ONLY the top-level keys
+        # that actually changed (HA's EnergyManager.async_update copies through any
+        # key the update omits, so an untouched key is never at risk).
+        # energy/validate stays absent: it validates whatever is already persisted
+        # rather than a submitted payload, so it cannot pre-flight a write.
+        # energy/validate is a READ despite the name: it validates what is already
+        # persisted, not a submitted payload, so it cannot pre-flight a write. What
+        # it can do is answer "is the Energy dashboard actually working", naming
+        # entries whose entity no longer exists or that record no statistics, which
+        # is the failure the operator otherwise only meets as a blank graph.
+        # energy/solar_forecast returns production forecasts for the config entries
+        # a solar source names, and {} when none does.
+        "energy/get_prefs", "energy/save_prefs", "energy/validate", "energy/solar_forecast",
     ]
 )
 

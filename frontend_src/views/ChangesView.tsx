@@ -41,7 +41,7 @@ const ACTION_BADGE: Record<string, string> = {
 
 // The backend records the action as a slug. Unknown slugs fall through to the
 // raw value rather than a blank pill, the same way REASON_LABELS degrades.
-const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
+export const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
   automation: "changes.typeAutomation",
   script: "changes.typeScript",
   scene: "changes.typeScene",
@@ -51,6 +51,7 @@ const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
   entity: "changes.typeEntity",
   yaml_config: "changes.typeYamlConfig",
   esphome_yaml: "changes.typeEsphomeYaml",
+  energy: "changes.typeEnergy",
   file: "changes.typeFile",
 };
 

@@ -101,6 +101,10 @@
         "label": "无线电设备管理",
         "description": "通过 Zigbee2MQTT 或 ZHA 配对、重新配置和移除 Zigbee 设备。"
       },
+      "cap_energy_write": {
+        "label": "管理能源仪表盘",
+        "description": "更改为能源仪表盘提供数据的统计项：电网、太阳能、电池、燃气、水以及各个设备。"
+      },
       "cap_registry_read": {
         "label": "读取注册表",
         "description": "列出包含可访问实体的区域、楼层、地点和设备。"
@@ -576,7 +580,8 @@
       "typeEntity": "实体",
       "typeYamlConfig": "YAML 配置",
       "typeEsphomeYaml": "ESPHome YAML",
-      "typeFile": "文件"
+      "typeFile": "文件",
+      "typeEnergy": "能源仪表盘"
     },
     "perms": {
       "addHint": "添加提示",
@@ -656,7 +661,8 @@
       "size.was": "{size}（原为 {before}）",
       "patch.set": "设置了 {subject}",
       "patch.append": "向 {subject} 追加了内容",
-      "patch.remove": "删除了 {subject}"
+      "patch.remove": "删除了 {subject}",
+      "energy.sources": "{count} 个来源，{devices} 个设备"
     },
     "diff": {
       "blueprint.create": "创建 {domain} 蓝图“{rel}”",
@@ -724,7 +730,14 @@
       "set_yaml_config.removing": "替换 configuration.yaml，移除顶层 {keys}",
       "patch_dashboard.set": "设置仪表盘“{label}”的 {path}",
       "patch_dashboard.append": "向仪表盘“{label}”的 {path} 追加内容",
-      "patch_dashboard.remove": "从仪表盘“{label}”删除 {path}"
+      "patch_dashboard.remove": "从仪表盘“{label}”删除 {path}",
+      "edit_energy_config.replace_statistic": "能源：将“{label}”指向 {new_statistic}（原为 {old_statistic}）",
+      "edit_energy_config.add_device": "能源：将“{label}”（{new_statistic}）作为单个设备进行统计",
+      "edit_energy_config.remove_device": "能源：停止统计“{label}”（{old_statistic}）",
+      "edit_energy_config.set_source.update": "能源：更新{source_type}来源（{fields}）",
+      "edit_energy_config.set_source.create": "能源：新增{source_type}来源（{fields}）",
+      "edit_energy_config.rename_device": "能源：将“{old_label}”重命名为“{label}”",
+      "edit_energy_config.remove_source": "能源：移除{source_type}来源（{old_statistic}）"
     },
     "approvals": {
       "approve": "批准并执行",
@@ -808,7 +821,14 @@
       "batchRunning": "正在批准…",
       "batchApplied": "已批准 {count} 项。",
       "batchStopped": "在 {tool} 处中止：{reason}",
-      "batchRemaining": "仍有 {count} 项待批准。"
+      "batchRemaining": "仍有 {count} 项待批准。",
+      "energySources": "来源",
+      "energyDevices": "单个设备",
+      "energyGrid": "电网",
+      "energySolar": "太阳能",
+      "energyBattery": "电池",
+      "energyGas": "燃气",
+      "energyWater": "水"
     },
     "tokens": {
       "advanced": "高级",

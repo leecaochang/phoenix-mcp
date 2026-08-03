@@ -290,6 +290,124 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_energy_config",
+        "description": (
+            "Read the Energy dashboard configuration: which statistics are registered as grid, solar, "
+            "battery, gas or water sources, and which appear as individual devices. Home Assistant "
+            "records this nowhere else, so call it before removing an integration or deleting an energy "
+            "sensor to see whether the Energy dashboard depends on it; referenced_entities lists every "
+            "entity the configuration points at. configured is false when Energy was never set up. "
+            "Read-only: this cannot change the Energy dashboard."
+        ),
+        "cap": "cap_config_read",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_solar_forecast",
+        "description": (
+            "Read solar production forecasts for the config entries the Energy dashboard's solar source "
+            "names. Returns an empty result when no solar source names a forecast integration, which is "
+            "the normal state without one installed."
+        ),
+        "cap": "cap_config_read",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "edit_energy_config",
+        "description": (
+            "Change one addressed part of the Energy dashboard. This never takes a whole configuration: "
+            "Home Assistant replaces a whole list at a time, so sending one would delete every entry you "
+            "did not resend. Pick an op. 'replace_statistic' points an existing entry at a different "
+            "statistic, everywhere it appears; address the old one with statistic, or with device_name "
+            "when get_energy_config showed it as <redacted> (a dead entry has no usable id, and the name "
+            "is the only handle left). 'add_device' starts tracking statistic as an individual device, "
+            "with an optional name. 'remove_device' drops one entry, addressed the same two ways. "
+            "'rename_device' changes the label on an existing entry. 'remove_source' drops the source named by "
+            "source_type, and refuses when there is more than one of that type rather than guessing which. "
+            "'set_source' updates the grid, solar, battery, gas or water source named by source_type, "
+            "creating it if there is none, and sets only the fields you pass: stat_energy_from and "
+            "stat_energy_to (grid import/export, battery discharge/charge), number_energy_price and "
+            "number_energy_price_export. Call get_energy_config first to see what is there."
+        ),
+        "cap": "cap_energy_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": [
+                        "replace_statistic", "add_device", "remove_device",
+                        "rename_device", "set_source", "remove_source",
+                    ],
+                    "description": "Which change to make.",
+                },
+                "statistic": {
+                    "type": "string",
+                    "description": (
+                        "Entity id (or external statistic id) addressing an existing entry, and the "
+                        "entity to track for add_device."
+                    ),
+                },
+                "device_name": {
+                    "type": "string",
+                    "description": (
+                        "Address a device entry by its display name instead of its statistic. Use this "
+                        "for an entry get_energy_config returned as <redacted>."
+                    ),
+                },
+                "new_statistic": {
+                    "type": "string",
+                    "description": "For replace_statistic: the entity id to point the entry at.",
+                },
+                "name": {"type": "string", "description": "For add_device: the label shown on the dashboard."},
+                "source_type": {
+                    "type": "string",
+                    "enum": ["grid", "solar", "battery", "gas", "water"],
+                    "description": "For set_source: which source to update or create.",
+                },
+                "stat_energy_from": {
+                    "type": "string",
+                    "description": "For set_source: grid import, solar production, battery discharge, or the gas/water meter.",
+                },
+                "stat_energy_to": {
+                    "type": "string",
+                    "description": "For set_source: grid export or battery charge. Not accepted on solar, gas or water.",
+                },
+                "number_energy_price": {
+                    "type": ["number", "null"],
+                    "description": "For set_source: a fixed price per unit consumed. Grid, gas and water only.",
+                },
+                "number_energy_price_export": {
+                    "type": ["number", "null"],
+                    "description": "For set_source: a fixed price per unit exported. Grid only.",
+                },
+                "entity_energy_price": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "For set_source: an entity publishing the current price per unit, for a "
+                        "time-of-use tariff. Use instead of number_energy_price. Grid, gas and water only."
+                    ),
+                },
+                "entity_energy_price_export": {
+                    "type": ["string", "null"],
+                    "description": "For set_source: an entity publishing the current export price. Grid only.",
+                },
+                "stat_cost": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "For set_source: an existing cost statistic to use instead of letting Home "
+                        "Assistant derive cost from a price. Grid, gas and water only."
+                    ),
+                },
+                "stat_compensation": {
+                    "type": ["string", "null"],
+                    "description": "For set_source: an existing statistic of export compensation received. Grid only.",
+                },
+            },
+            "required": ["op"],
+        },
+    },
+    {
         "name": "render_template",
         "description": (
             "Render a Jinja2 template in Home Assistant. Templates are scoped to this token: states() of "
@@ -2420,6 +2538,12 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "get_audit_summary": _annot(True, False, True),
     # System reads.
     "get_config": _annot(True, False, True),
+    "get_energy_config": _annot(True, False, True),
+    "get_solar_forecast": _annot(True, False, True),
+    # Destructive: replace_statistic, set_source and remove_device all overwrite or
+    # drop something that was in another state. Idempotent: repeating any of the
+    # four leaves the same end state (a repeat is refused as already-applied).
+    "edit_energy_config": _annot(False, True, True),
     "render_template": _annot(True, False, True),
     "list_automations": _annot(True, False, True),
     "get_automation": _annot(True, False, True),

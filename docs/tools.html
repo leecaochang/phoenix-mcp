@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 109 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 112 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 108 of its own, 128 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 112 of its own, 135 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 132 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 135 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -82,6 +82,30 @@
           <article class="tool" data-cap="read" data-search="get_config configuration data">
             <div class="tool-head"><span class="tool-name">get_config</span><span class="badge badge-cap">Config read</span></div>
             <p class="tool-desc">Read a curated subset of Home Assistant's configuration: version, time zone, unit system, location name, and the list of loaded integrations. Precise home coordinates, internal/external URLs, and host filesystem paths are withheld.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_energy_config energy dashboard grid solar battery gas water consumption statistics">
+            <div class="tool-head"><span class="tool-name">get_energy_config</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Read the Energy dashboard configuration: which statistics are registered as grid, solar, battery, gas or water sources, and which appear as individual devices. <code>referenced_entities</code> flattens the whole configuration into one list of the entities it points at, so you can check whether the Energy dashboard depends on an entity before deleting it or removing its integration. Nothing else in Home Assistant records that dependency, and removing the integration behind an energy source breaks it silently. <code>issues</code> reports what is already broken: an entry whose entity no longer exists, one recording no long-term statistics, or one whose device class, state class or unit means it will silently produce nothing. It is <code>null</code> when the check could not run, which is not the same as an empty list. <code>configured</code> is <code>false</code> when the Energy dashboard was never set up. Entities the token cannot access are redacted and are left out of <code>referenced_entities</code>. Read-only: this tool cannot change the Energy dashboard.</p>
+          </article>
+
+          <article class="tool" data-cap="read" data-search="get_solar_forecast solar production forecast energy">
+            <div class="tool-head"><span class="tool-name">get_solar_forecast</span><span class="badge badge-cap">Config read</span></div>
+            <p class="tool-desc">Read solar production forecasts for the config entries your Energy dashboard's solar source names. Returns an empty result when no solar source names a forecast integration, which is the normal state without one installed.</p>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="edit_energy_config energy dashboard grid solar battery gas water device consumption statistics">
+            <div class="tool-head"><span class="tool-name">edit_energy_config</span><span class="badge badge-cap">Manage Energy dashboard</span></div>
+            <p class="tool-desc">Change one addressed part of the Energy dashboard. This never takes a whole configuration: Home Assistant replaces a whole list at a time, so a tool that sent one would delete every entry it did not resend. Phoenix MCP re-reads the current preferences, applies your one change, checks the result differs only in the intended way, and sends only the list that actually changed. Every call is recorded in Changes and can be rolled back.</p>
+            <dl>
+              <dt>params</dt>
+              <dd><code>op</code> (required; <code>replace_statistic</code>, <code>add_device</code>, <code>remove_device</code>, <code>rename_device</code>, <code>set_source</code>, or <code>remove_source</code>)</dd>
+              <dd><code>statistic</code> (entity id addressing an existing entry, and the entity to track for <code>add_device</code>), <code>device_name</code> (address a device entry by its display name instead)</dd>
+              <dd><code>new_statistic</code> (for <code>replace_statistic</code>), <code>name</code> (for <code>add_device</code> and <code>rename_device</code>)</dd>
+              <dd><code>source_type</code> (for <code>set_source</code>; <code>grid</code>, <code>solar</code>, <code>battery</code>, <code>gas</code>, or <code>water</code>), <code>stat_energy_from</code>, <code>stat_energy_to</code>, <code>number_energy_price</code>, <code>number_energy_price_export</code>, <code>entity_energy_price</code>, <code>entity_energy_price_export</code>, <code>stat_cost</code>, <code>stat_compensation</code></dd>
+            </dl>
+            <p class="tool-desc">Address a device entry by <code>device_name</code> when <code>get_energy_config</code> returned its statistic as <code>&lt;redacted&gt;</code>. That happens when the entity no longer exists, which is exactly the entry worth fixing, and the name is the only handle it has left. A statistic you are writing must be an entity this token can use; one you are only addressing need not be.</p>
+            <p class="tool-desc"><code>set_source</code> updates the source named by <code>source_type</code>, or creates it if there is none, and sets only the fields you pass. Each source type accepts different fields: <code>stat_energy_to</code> is grid export or battery charge and is not accepted on solar, gas or water, and <code>number_energy_price_export</code> is grid only. Price comes either from a fixed number (<code>number_energy_price</code>) or from a sensor publishing the current rate (<code>entity_energy_price</code>) for a time-of-use tariff; <code>stat_cost</code> points at an existing cost statistic instead of letting Home Assistant derive one. Pass <code>null</code> to clear any of them. A price is either/or: setting a fixed number and a price entity on the same side is refused, so clear the one you do not want in the same call. A price cannot be applied to an external statistic at all; set the cost statistic instead. A grid source must always keep at least one meter. <code>remove_source</code> refuses when you have more than one source of that type rather than guessing which meter to stop counting.</p>
           </article>
 
           <article class="tool" data-cap="read" data-search="list_blueprints blueprint automation script">
@@ -337,12 +361,13 @@
           <article class="tool" data-cap="read mesa" data-search="mesa_query_profiles list filter profiles domain tag area">
             <div class="tool-head"><span class="tool-name">mesa_query_profiles</span><span class="badge badge-cap">Config read</span></div>
             <p class="tool-desc">List the profiles in scope, filterable by domain, tag (any or all), area, intent, and origin, with pagination. Tag and intent filters match the effective (resolved) profile. Counts and cursors are relative to the token's scope.</p>
+            <dl><dt>params</dt><dd><code>domain</code>, <code>tags_any</code>, <code>tags_all</code>, <code>area</code>, <code>intent</code>, <code>min_origin_authority</code> (<code>inferred_ai</code>, <code>hybrid</code>, <code>user</code>, <code>developer</code>; profiles below the level you name are excluded), <code>limit</code>, <code>cursor</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="read mesa" data-search="mesa_request_lease lease coordination advisory announce">
             <div class="tool-head"><span class="tool-name">mesa_request_lease</span><span class="badge badge-cap">Config read</span></div>
             <p class="tool-desc">Announce a short operation on specific entities (up to 30 seconds) so MESA-aware components can coordinate. A lease is advice, not a lock, and grants no authority: every action stays gated by scope, capabilities, and MESA. Covers only entities the token could already control; entities under protected or critical automation control are denied. Lease endings fire an <code>phoenix_mcp_mesa_lease_expired</code> event.</p>
-            <dl><dt>params</dt><dd><code>entities</code> (required; list of entity ids), <code>duration_seconds</code> (required; max 30), <code>intent</code>, <code>priority_level</code>, <code>caller_priority</code>, <code>preemption_handling</code></dd></dl>
+            <dl><dt>params</dt><dd><code>entities</code> (required; list of entity ids), <code>duration_seconds</code> (required; max 30), <code>intent</code>, <code>priority_level</code> (<code>deferential</code>, <code>cooperative</code>, <code>assertive</code>), <code>caller_priority</code>, <code>preemption_handling</code> (<code>rollback_abort</code> or <code>continue_ignore</code>)</dd></dl>
           </article>
 
           <article class="tool" data-cap="read mesa" data-search="mesa_release_lease lease release early">
@@ -436,7 +461,7 @@
           <article class="tool" data-cap="read" data-search="get_history state history time">
             <div class="tool-head"><span class="tool-name">get_history</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Historical state changes for an entity, read from the Recorder integration (enabled by default in Home Assistant; this tool fails when it is disabled). Accepts relative times (<code>24h</code>, <code>7d</code>, <code>2w</code>, <code>1m</code>). Ranges over 7 days are clamped. Returns <code>entity_id</code>, <code>mode</code>, <code>count</code>, and <code>history</code> (each entry's <code>state</code> and <code>when</code>); the REST proxy additionally returns the queried range in <code>X-Phoenix-History-Start/End</code> headers.</p>
-            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code></dd></dl>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>mode</code> (<code>transitions</code>, the default, returns one entry per state change; <code>raw</code> returns every recorded sample)</dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_state single entity">
@@ -453,7 +478,7 @@
           <article class="tool" data-cap="read" data-search="get_statistics long term numeric">
             <div class="tool-head"><span class="tool-name">get_statistics</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Long-term statistics for numeric entities, aggregated by 5-minute, hour, day, week, or month. Statistics come from the Recorder integration, and only entities that produce Recorder statistics have any; a merely numeric state is not enough.</p>
-            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>period</code>, <code>statistic_types</code> (subset of the return fields)</dd><dt>returns</dt><dd><code>min</code>, <code>max</code>, <code>mean</code>, <code>sum</code>, <code>state</code> per period</dd></dl>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>period</code> (<code>5minute</code>, <code>hour</code> the default, <code>day</code>, <code>week</code>, <code>month</code>), <code>statistic_types</code> (subset of the return fields)</dd><dt>returns</dt><dd><code>min</code>, <code>max</code>, <code>mean</code>, <code>sum</code>, <code>state</code> per period</dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_calendar_events calendar appointments">

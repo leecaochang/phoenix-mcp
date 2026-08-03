@@ -107,7 +107,14 @@
       "tabHistory": "History",
       "tabPending": "Pending",
       "tabPendingCount": "Pending ({count})",
-      "tablist": "Approval views"
+      "tablist": "Approval views",
+      "energySources": "Sources",
+      "energyDevices": "Individual devices",
+      "energyGrid": "Grid",
+      "energySolar": "Solar",
+      "energyBattery": "Battery",
+      "energyGas": "Gas",
+      "energyWater": "Water"
     },
     "caps": {
       "cap_config_read": {
@@ -189,6 +196,10 @@
       "cap_radio_write": {
         "label": "Radio management",
         "description": "Pair, re-interview, and remove Zigbee devices through Zigbee2MQTT or ZHA."
+      },
+      "cap_energy_write": {
+        "label": "Manage Energy dashboard",
+        "description": "Change which statistics feed the Energy dashboard: grid, solar, battery, gas, water, and individual devices."
       },
       "cap_backup": {
         "label": "Backup",
@@ -597,6 +608,7 @@
       "typeDashboard": "Dashboard",
       "typeEntity": "Entity",
       "typeEsphomeYaml": "ESPHome YAML",
+      "typeEnergy": "Energy dashboard",
       "typeFile": "File",
       "typeHelper": "Helper",
       "typeScene": "Scene",
@@ -1300,6 +1312,13 @@
       "delete_scene": "Delete scene '{scene_id}'",
       "delete_script": "Delete script '{script_id}'",
       "edit_automation": "Edit automation '{automation_id}'",
+      "edit_energy_config.add_device": "Energy: track '{label}' ({new_statistic}) as an individual device",
+      "edit_energy_config.remove_device": "Energy: stop tracking '{label}' ({old_statistic})",
+      "edit_energy_config.remove_source": "Energy: remove the {source_type} source ({old_statistic})",
+      "edit_energy_config.rename_device": "Energy: rename '{old_label}' to '{label}'",
+      "edit_energy_config.replace_statistic": "Energy: point '{label}' at {new_statistic} (was {old_statistic})",
+      "edit_energy_config.set_source.create": "Energy: add a {source_type} source ({fields})",
+      "edit_energy_config.set_source.update": "Energy: update the {source_type} source ({fields})",
       "edit_helper": "Edit {helper_type} helper '{helper_id}'",
       "edit_scene": "Edit scene '{scene_id}'",
       "edit_script": "Edit script '{script_id}'",
@@ -1343,6 +1362,7 @@
       "card.edited": "edited {subject} ({where})",
       "cards": "{count} cards",
       "cards.was": "{count} cards (was {before})",
+      "energy.sources": "{count} sources, {devices} devices",
       "entity.changed": "changed: {fields}",
       "entity.removed": "registry entry removed",
       "loc.card": "card {index}",

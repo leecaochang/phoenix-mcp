@@ -4,6 +4,7 @@ import { CASCADING_SCOPES, EDITOR_SCOPES } from "../views/MesaView";
 import { QUICK_ADD_SCOPES } from "../inject/QuickAdd";
 import { SUBPAGE_SURFACES } from "../inject/dom";
 import { KINDS } from "../components/AgentCliSettings";
+import { RESOURCE_TYPE_LABEL_KEYS } from "../views/ChangesView";
 import contract from "../../tests/contract/token_record_keys.json";
 import versionContract from "../../tests/contract/version_resource_types.json";
 import providerContract from "../../tests/contract/agentcli_provider_kinds.json";
@@ -54,6 +55,7 @@ const TOKEN_RECORD_KEYS = {
   cap_lovelace_write: true,
   cap_registry_write: true,
   cap_radio_write: true,
+  cap_energy_write: true,
   cap_backup: true,
   cap_filesystem: true,
   cap_yaml_edit: true,
@@ -85,6 +87,7 @@ const VERSION_RESOURCE_TYPES = {
   entity: true,
   yaml_config: true,
   esphome_yaml: true,
+  energy: true,
   file: true,
 } satisfies Record<VersionResourceType, true>;
 
@@ -93,6 +96,18 @@ describe("frontend/backend version resource type contract", () => {
     expect(Object.keys(VERSION_RESOURCE_TYPES).sort()).toEqual(
       [...versionContract.version_resource_types].sort(),
     );
+  });
+
+  // The union above is a TYPE. It says nothing about whether Changes can RENDER
+  // the value, and resourceTypeLabel falls through to the raw slug rather than
+  // failing, so a missing entry ships as a row labelled `energy` that an operator
+  // scanning for "Energy dashboard" does not recognise. Live-hit exactly that way
+  // on 2026-08-03: the rows were there and were reported as absent.
+  it("every resource type has a label key, so no row renders as a raw slug", () => {
+    const missing = Object.keys(VERSION_RESOURCE_TYPES).filter(
+      (rt) => !(rt in RESOURCE_TYPE_LABEL_KEYS),
+    );
+    expect(missing).toEqual([]);
   });
 });
 

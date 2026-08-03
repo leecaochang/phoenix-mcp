@@ -2345,3 +2345,39 @@ hui-card { display: block; min-width: 0; }
 .post-create-choice:hover { background: var(--phx-accent-lt); border-color: var(--phx-accent); }
 .post-create-choice-title { font-size: 14px; font-weight: 600; color: var(--phx-accent); }
 .post-create-choice-sub { font-size: 12px; color: var(--phx-text-2); line-height: 1.4; }
+
+/* Energy approval preview. Renders the preferences themselves rather than a
+   Lovelace layout (Energy has none), so it borrows the diff palette but not the
+   hui-card panes. Rows carry their own semantics via ::before markers rather
+   than colour alone, so an added and a removed row are still distinguishable
+   without colour vision. */
+.energy-preview { display: flex; flex-direction: column; gap: 16px; }
+.energy-preview-section { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.energy-preview-heading {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--phx-text-2); margin-bottom: 4px;
+}
+.energy-preview-empty { color: var(--phx-text-2); font-style: italic; font-size: 13px; }
+.energy-preview-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; align-items: baseline;
+  padding: 5px 8px 5px 22px; border-radius: var(--phx-radius-xs); position: relative; min-width: 0;
+}
+.energy-preview-row::before {
+  position: absolute; left: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+}
+.energy-preview-row.is-added { background: var(--phx-success-bg); }
+.energy-preview-row.is-added::before { content: "+"; color: var(--phx-success); }
+.energy-preview-row.is-removed,
+.energy-preview-row.is-changed { background: var(--phx-error-bg); }
+.energy-preview-row.is-removed::before,
+.energy-preview-row.is-changed::before { content: "-"; color: var(--phx-error); }
+.energy-preview-name { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.energy-preview-stat {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  color: var(--phx-text-2); overflow-wrap: anywhere;
+}
+.approval-preview-toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+@media (max-width: 560px) {
+  .energy-preview-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}

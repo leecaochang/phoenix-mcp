@@ -62,10 +62,18 @@ VERSION_STORAGE_VERSION = 1
 # Per-resource FIFO retention: the newest N versions per (resource_type,
 # resource_id) are kept; older ones are evicted on write.
 MAX_VERSIONS_PER_RESOURCE = 20
-# Resource types eligible for version history.
+# Resource types eligible for version history. VersionStore.record RAISES on
+# anything absent here, and _record_version swallows that (history must never
+# break a write), so a type missing from this set loses its whole rollback path
+# SILENTLY, with only a log line. Adding a _record_version call site means adding
+# the type here AND to tests/contract/version_resource_types.json;
+# tests/test_frontend_contract.py pins this set against that fixture in both
+# directions, because the two drifted exactly this way on 2026-08-03 (`energy`
+# reached the fixture and the TS union but not here, and every energy version
+# silently failed to record).
 VERSIONED_RESOURCE_TYPES = frozenset(
     {"automation", "script", "scene", "helper", "dashboard", "yaml_config", "file", "entity",
-     "blueprint", "esphome_yaml"}
+     "blueprint", "esphome_yaml", "energy"}
 )
 
 # Dashboard card catalog. Which Lovelace cards this instance can actually render,
@@ -540,6 +548,7 @@ CAPABILITY_NAMES = (
     "cap_lovelace_write",
     "cap_registry_write",
     "cap_radio_write",
+    "cap_energy_write",
     "cap_backup",
     "cap_filesystem",
     "cap_yaml_edit",
@@ -570,6 +579,11 @@ CAPABILITY_TIERS: dict[str, str] = {
     "cap_lovelace_write": "system",
     "cap_registry_write": "system",
     "cap_radio_write": "system",
+    # Energy dashboard preferences: instance-wide dashboard configuration, so it
+    # sits with cap_lovelace_write rather than in config_write, which holds the
+    # things that define BEHAVIOUR (automations, scripts, scenes). Nothing here
+    # actuates a device; a wrong write costs you the Energy setup, not the house.
+    "cap_energy_write": "system",
     "cap_backup": "irreversible",
     "cap_filesystem": "irreversible",
     "cap_yaml_edit": "irreversible",
@@ -594,6 +608,7 @@ CONFIRM_AVAILABLE_CAPS = frozenset({
     "cap_lovelace_write",
     "cap_registry_write",
     "cap_radio_write",
+    "cap_energy_write",
     "cap_backup",
     "cap_filesystem",
     "cap_yaml_edit",
@@ -618,6 +633,7 @@ PASS_THROUGH_EXEMPT_CAPS = frozenset({
     "cap_lovelace_write",
     "cap_registry_write",
     "cap_radio_write",
+    "cap_energy_write",
     "cap_backup",
     "cap_filesystem",
     "cap_yaml_edit",
@@ -1064,6 +1080,15 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "dashboard_card.edit.section": "Replace card {card_index} on dashboard '{label}' (view {view_index}, section {section_index})",
     "dashboard_card.delete": "Delete card {card_index} from dashboard '{label}' (view {view_index})",
     "dashboard_card.delete.section": "Delete card {card_index} from dashboard '{label}' (view {view_index}, section {section_index})",
+    # Energy dashboard. Each names the human-visible thing, never the JSON path:
+    # an operator reviewing these knows their appliances, not HA's prefs schema.
+    "edit_energy_config.replace_statistic": "Energy: point '{label}' at {new_statistic} (was {old_statistic})",
+    "edit_energy_config.add_device": "Energy: track '{label}' ({new_statistic}) as an individual device",
+    "edit_energy_config.remove_device": "Energy: stop tracking '{label}' ({old_statistic})",
+    "edit_energy_config.rename_device": "Energy: rename '{old_label}' to '{label}'",
+    "edit_energy_config.remove_source": "Energy: remove the {source_type} source ({old_statistic})",
+    "edit_energy_config.set_source.update": "Energy: update the {source_type} source ({fields})",
+    "edit_energy_config.set_source.create": "Energy: add a {source_type} source ({fields})",
     "patch_dashboard.set": "Set {path} on dashboard '{label}'",
     "patch_dashboard.append": "Append to {path} on dashboard '{label}'",
     "patch_dashboard.remove": "Remove {path} from dashboard '{label}'",
@@ -1120,6 +1145,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "loc.view": "view {index}",
     "loc.section": "section {index}",
     "loc.card": "card {index}",
+    "energy.sources": "{count} sources, {devices} devices",
     "patch.set": "set {subject}",
     "patch.append": "appended to {subject}",
     "patch.remove": "removed {subject}",

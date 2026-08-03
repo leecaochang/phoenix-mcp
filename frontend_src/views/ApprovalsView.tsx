@@ -895,6 +895,10 @@ function DiffView({ record, onConfigErrors }: {
   }, [record.id, record.tool_name, showsBeforeFirst]);
 
   const isWholeLayout = record.tool_name === "set_dashboard_config";
+  // Energy previews render the configuration itself rather than a Lovelace
+  // layout, so they bypass the hui-card readiness gate entirely.
+  const energyPreview = (diff.preview as Record<string, unknown> | undefined)?.energy as
+    { before?: unknown; after?: unknown } | undefined;
   const isCardOp = CARD_OP_TOOLS.has(record.tool_name) || isCardPatchRecord(record);
   // Whole-layout writes: only args.config (the full proposed layout) is
   // previewable. diff.before/after are truncated strings and the record
@@ -917,11 +921,11 @@ function DiffView({ record, onConfigErrors }: {
     before: beforeCardConfig !== null && collectPreviewViews(beforeCardConfig) !== null,
     after: afterCardConfig !== null && collectPreviewViews(afterCardConfig) !== null,
   };
-  const canPreview = huiReady && (
+  const canPreview = !!energyPreview || (huiReady && (
     isWholeLayout ? collectPreviewViews(wholeConfig) !== null
     : isCardOp ? (cardSideOk.before || cardSideOk.after)
     : false
-  );
+  ));
   // If the selected side is not actually previewable for this op (e.g. "after"
   // on a delete, which has none), fall back to whichever side is.
   const previewSide = cardSideOk[side] ? side : (cardSideOk.before ? "before" : "after");
@@ -941,6 +945,14 @@ function DiffView({ record, onConfigErrors }: {
       // Diff mode: the Diff|Preview switch rides in the diff's own toolbar,
       // right next to the side-by-side/stacked layout toggle.
       return <BeforeAfter before={diff.before ?? null} after={diff.after ?? null} toolbarExtra={modeToggle} />;
+    }
+    if (energyPreview) {
+      return (
+        <div className="approval-preview-pane">
+          {modeToggle && <div className="approval-preview-toolbar">{modeToggle}</div>}
+          <EnergyPreview energy={energyPreview as { before?: EnergyRows; after?: EnergyRows }} />
+        </div>
+      );
     }
     const showSideToggle = isCardOp && cardSideOk.before && cardSideOk.after;
     return (
@@ -1029,6 +1041,96 @@ function MesaPreviewBlock({ mesa }: { mesa: Record<string, unknown> }) {
           {warnings.map((w, i) => <li key={i}>{w}</li>)}
         </ul>
       )}
+    </div>
+  );
+}
+
+// The visual Preview for an Energy edit. Energy has no Lovelace layout, so the
+// hui-card machinery the dashboard preview uses has nothing to render, and HA's
+// own energy cards read preferences from the backend collection rather than from
+// card config, so one embedded here would show the CURRENT dashboard regardless
+// of what the approval proposes. Showing the operator something that is not what
+// they are approving is worse than showing no picture, the same rule that limits
+// patch_dashboard's preview to card paths. So this renders the configuration
+// itself, with what changed marked.
+type EnergySourceRow = { type?: string; name?: string; meters?: Array<[string, string]> };
+type EnergyDeviceRow = { name?: string; statistic?: string };
+type EnergyRows = { sources?: EnergySourceRow[]; devices?: EnergyDeviceRow[] };
+
+// A raw slug interpolated into the UI stays English in every locale, so the type
+// resolves through the catalog like every other server-side enum in this panel.
+const ENERGY_SOURCE_LABEL_KEYS: Record<string, string> = {
+  grid: "approvals.energyGrid",
+  solar: "approvals.energySolar",
+  battery: "approvals.energyBattery",
+  gas: "approvals.energyGas",
+  water: "approvals.energyWater",
+};
+
+type EnergyRow = { key: string; state: "added" | "removed" | "changed" | "same"; title: string; line: string };
+
+/** Pair before/after rows into one ordered, diffed list.
+ *
+ * Keyed by STATISTIC for devices and by TYPE for sources, never by display name:
+ * a rename would otherwise read as an unrelated removal plus addition instead of
+ * the one substitution it is. Removed keys keep their original position so the
+ * old and new values render adjacent rather than pages apart.
+ */
+function diffEnergyRows<T>(
+  before: T[], after: T[], key: (r: T) => string, title: (r: T) => string, line: (r: T) => string,
+): EnergyRow[] {
+  const keys: string[] = [];
+  for (const r of [...before, ...after]) if (!keys.includes(key(r))) keys.push(key(r));
+  const out: EnergyRow[] = [];
+  for (const k of keys) {
+    const b = before.find((r) => key(r) === k);
+    const a = after.find((r) => key(r) === k);
+    if (b && !a) out.push({ key: k, state: "removed", title: title(b), line: line(b) });
+    else if (a && !b) out.push({ key: k, state: "added", title: title(a), line: line(a) });
+    else if (a && b && (title(a) !== title(b) || line(a) !== line(b))) {
+      // Shown twice, old then new, so the operator reads the substitution rather
+      // than having to infer it from one highlighted row.
+      out.push({ key: `${k}-b`, state: "changed", title: title(b), line: line(b) });
+      out.push({ key: `${k}-a`, state: "added", title: title(a), line: line(a) });
+    } else if (a) out.push({ key: k, state: "same", title: title(a), line: line(a) });
+  }
+  return out;
+}
+
+function EnergyPreviewSection({ label, rows }: { label: string; rows: EnergyRow[] }) {
+  return (
+    <div className="energy-preview-section">
+      <div className="energy-preview-heading">{label}</div>
+      {rows.length === 0 && <div className="energy-preview-empty">{t("common.none")}</div>}
+      {rows.map((r) => (
+        <div key={r.key} className={`energy-preview-row is-${r.state}`}>
+          <span className="energy-preview-name">{r.title}</span>
+          <code className="energy-preview-stat">{r.line}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function EnergyPreview({ energy }: { energy: { before?: EnergyRows; after?: EnergyRows } }) {
+  const before = energy.before ?? {};
+  const after = energy.after ?? {};
+  const sourceTitle = (r: EnergySourceRow) =>
+    r.name || (r.type ? t(ENERGY_SOURCE_LABEL_KEYS[r.type] ?? "") || r.type : "");
+  const sourceLine = (r: EnergySourceRow) =>
+    (r.meters ?? []).map(([, stat]) => stat).join(t("common.listSeparator"));
+  return (
+    <div className="energy-preview">
+      <EnergyPreviewSection
+        label={t("approvals.energySources")}
+        rows={diffEnergyRows(before.sources ?? [], after.sources ?? [],
+          (r) => r.type ?? "", sourceTitle, sourceLine)}
+      />
+      <EnergyPreviewSection
+        label={t("approvals.energyDevices")}
+        rows={diffEnergyRows(before.devices ?? [], after.devices ?? [],
+          (r) => r.statistic ?? "", (r) => r.name || r.statistic || "", (r) => r.statistic ?? "")}
+      />
     </div>
   );
 }

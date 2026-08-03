@@ -119,6 +119,71 @@ def test_required_params_are_marked_required_in_single_tool_articles() -> None:
     assert gaps == [], "\n".join(gaps)
 
 
+# (tool, parameter) pairs whose enum values are deliberately not spelled out in
+# the docs, each with the reason. An exemption is a claim that listing the values
+# would make the page WORSE, which is a higher bar than "it would be tedious".
+_ENUM_DOC_EXEMPT: dict[tuple[str, str], str] = {
+    ("HassMediaSearchAndPlay", "media_class"): (
+        "Home Assistant's own 20-value media taxonomy (album/artist/episode/genre/"
+        "podcast/season/track/tv_show/...). It is a value domain, not a set of "
+        "behaviours: no reader is choosing between them from the docs, and listing "
+        "twenty nouns would bury the one sentence that says what the tool does."
+    ),
+}
+
+
+def test_every_enum_value_is_named_in_its_article() -> None:
+    """An enum value a parameter accepts must appear in the tool's article.
+
+    The gap this closes: the checks above derive from the TOOL list and the
+    REQUIRED list, so a whole new operation added to an existing tool's `op` enum
+    is invisible to every one of them. `edit_energy_config` gained `rename_device`
+    and `remove_source` on an already-documented, already-required parameter, and
+    nothing would have failed had the article not been updated with them. An enum
+    value is not an implementation detail; it is a thing the tool DOES, which is
+    exactly what a reader is looking for.
+
+    Deliberately NOT extended to optional parameters. There are hundreds across
+    135 tools, many of them narrow refinements whose place is the schema rather
+    than the prose, and forcing each into the docs would trade this drift for
+    noise. Enum values are bounded and each one names a distinct behaviour.
+
+    Values are matched case-insensitively and only where the enum is a list of
+    strings, so a numeric or mixed enum is skipped rather than producing a
+    nonsense expectation. Exemptions carry a written reason, per house style, so
+    the next one has to be argued for rather than quietly added.
+
+    Its first run found five real gaps: get_history never named either value of
+    `mode`, get_statistics's prose said "5-minute" while the value you actually
+    pass is `5minute`, mesa_query_profiles had no parameter list at all, and
+    mesa_request_lease named two enums without ever saying what they accept.
+    """
+    articles = _tools_articles()
+    gaps: list[str] = []
+    checked = 0
+    for d in _all_defs():
+        props = ((d.get("inputSchema") or {}).get("properties") or {})
+        block = articles.get(d["name"], "")
+        for param, spec in props.items():
+            if (d["name"], param) in _ENUM_DOC_EXEMPT:
+                continue
+            values = spec.get("enum") if isinstance(spec, dict) else None
+            if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                continue
+            for value in values:
+                checked += 1
+                if not re.search(rf"\b{re.escape(value)}\b", block, re.IGNORECASE):
+                    gaps.append(
+                        f"{d['name']}: '{param}' accepts '{value}' but its article never names it"
+                    )
+    assert gaps == [], "\n".join(gaps)
+    # Floor, per the module docstring: a refactor that stops finding enums must
+    # fail loudly rather than pass by checking nothing. Set below the real count
+    # (49 at the time of writing, after the exemption above removes 20) with room
+    # for a tool to be retired, but far above what a broken extraction returns.
+    assert checked >= 40, f"only {checked} enum values found; the extraction is probably broken"
+
+
 def test_admin_api_documents_every_capability() -> None:
     html = (DOCS / "admin-api.html").read_text(encoding="utf-8")
     missing = sorted(c for c in CAPABILITY_NAMES if c not in html)

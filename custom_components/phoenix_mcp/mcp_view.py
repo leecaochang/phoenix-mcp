@@ -71,6 +71,13 @@ from .tools.radio import (
     _tool_reconfigure_zigbee_device,
     _tool_remove_zigbee_device,
 )
+from .tools.energy import (
+    _execute_edit_energy_config,
+    _tool_edit_energy_config,
+    _tool_get_energy_config,
+    _tool_get_solar_forecast,
+    async_restore_energy_prefs,
+)
 from .tools.discovery import _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_search_entities, _tool_validate_config, _tool_whatif
 from .tools.native import (
     _UNTRUSTED_DATA_BOUNDARY,
@@ -1813,6 +1820,12 @@ async def async_restore_version(
                 {"url_path": None if resource_id == "lovelace" else resource_id, "config": target},
                 token, hass, data,
             )
+        if resource_type == "energy":
+            # Energy is restore-only and deliberately WHOLESALE: the snapshot IS
+            # the operator's chosen state, so reproducing it is the operation. The
+            # addressed-write rule edit_energy_config enforces does not apply here,
+            # exactly as rule 31 exempts a YAML restore from its removal check.
+            return await async_restore_energy_prefs(target, token, hass, data)
         if resource_type in ("yaml_config", "file", "esphome_yaml", "blueprint"):
             restorable = target.get("content")
             if not isinstance(restorable, str):
@@ -3677,6 +3690,7 @@ _register_executor("add_dashboard_card", _execute_add_dashboard_card)
 _register_executor("edit_dashboard_card", _execute_edit_dashboard_card)
 _register_executor("delete_dashboard_card", _execute_delete_dashboard_card)
 _register_executor("patch_dashboard", _execute_patch_dashboard)
+_register_executor("edit_energy_config", _execute_edit_energy_config)
 _register_executor("set_entity", _execute_set_entity)
 _register_executor("delete_entity", _execute_delete_entity)
 _register_executor("permit_zigbee_join", _execute_permit_zigbee_join)
@@ -3808,6 +3822,9 @@ _register_tool("watch_entity", _tool_watch_entity)
 _register_tool("list_files", _tool_list_files)
 _register_tool("read_file", _tool_read_file)
 _register_tool("write_file", _tool_write_file)
+_register_tool("get_energy_config", _tool_get_energy_config)
+_register_tool("get_solar_forecast", _tool_get_solar_forecast)
+_register_tool("edit_energy_config", _tool_edit_energy_config)
 _register_tool("get_yaml_config", _tool_get_yaml_config)
 _register_tool("set_yaml_config", _tool_set_yaml_config)
 _register_tool("list_integrations", _tool_list_integrations)

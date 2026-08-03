@@ -94,6 +94,30 @@ def test_version_resource_types_match_the_frontend_contract():
     )
 
 
+def test_versioned_resource_types_accepts_every_recorded_type():
+    """VersionStore.record RAISES on a type absent from VERSIONED_RESOURCE_TYPES.
+
+    _record_version swallows that, deliberately: history capture must never break
+    the write it is recording. The consequence is that a type missing from the
+    const set loses its ENTIRE rollback path silently, leaving only a log line
+    nobody reads, while every write still reports success.
+
+    The test above pins the call sites against the frontend fixture and passed
+    happily while this was broken, because the two sets are maintained separately.
+    Live-hit on 2026-08-03: `energy` reached the fixture, the TS union and the
+    label map, but not this frozenset, so every Energy write recorded nothing and
+    the Changes tab was simply empty of them.
+    """
+    from custom_components.phoenix_mcp.const import VERSIONED_RESOURCE_TYPES
+
+    recorded = _backend_version_resource_types()
+    missing = sorted(recorded - VERSIONED_RESOURCE_TYPES)
+    assert missing == [], (
+        f"_record_version records {missing} but const.VERSIONED_RESOURCE_TYPES "
+        "rejects them, so their version history is silently dropped."
+    )
+
+
 def test_version_resource_type_scan_still_finds_the_call_sites():
     # Guards the guard: if _record_version is refactored to pass the type
     # positionally or via a variable, the regex silently returns fewer types and

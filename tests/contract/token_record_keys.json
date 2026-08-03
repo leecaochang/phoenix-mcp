@@ -15,6 +15,7 @@
     "cap_lovelace_write",
     "cap_physical_control",
     "cap_radio_write",
+    "cap_energy_write",
     "cap_registry_read",
     "cap_registry_write",
     "cap_restart",
