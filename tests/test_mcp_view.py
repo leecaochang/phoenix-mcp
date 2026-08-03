@@ -3487,3 +3487,109 @@ async def test_prompts_list_returns_the_assist_prompt_for_a_pass_through_token()
     prompts = res["result"]["prompts"]
     assert prompts, "pass-through prompts/list returned nothing; the Assist lookup is failing again"
     assert "Assist" in prompts[0]["name"]
+
+
+# --- the inline wait steps aside once a backlog exists (batch approval) --------
+
+
+def _pending_for(approval_id: str, token_id: str = "tid") -> dict:
+    """A stored pending record, shaped like _approval_record but addressable."""
+    rec = _approval_record("pending")
+    rec["id"] = approval_id
+    rec["token_id"] = token_id
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_inline_wait_is_skipped_when_the_token_already_has_one_pending():
+    """The change that makes batch approval usable.
+
+    The hold blocks a whole request and tool calls arrive one at a time, so
+    approval N+1 cannot be CREATED until approval N stops waiting. Live-measured
+    at a 60s wait, consecutive approvals landed 62.8s apart, i.e. twenty writes
+    would take twenty minutes to fill a queue meant to be reviewed in one go.
+    """
+    from types import SimpleNamespace
+    from custom_components.phoenix_mcp.tool_common import _pending_or_inline
+
+    approval = SimpleNamespace(id="appr-2", tool_name="create_scene", expires_at=None)
+    token = _make_physical_token("confirm")
+    token.confirm_inline_wait_seconds = 60
+    token.id = "tid"
+    # Something else from this token is already waiting on the operator.
+    data = _inline_wait_data([_pending_for("appr-1")])
+
+    with patch("custom_components.phoenix_mcp.tool_common._await_inline_confirm",
+               new=AsyncMock()) as inline:
+        _content, outcome, _resource = await _pending_or_inline(MagicMock(), data, token, approval)
+
+    assert inline.await_count == 0
+    assert outcome == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_the_first_confirm_still_waits():
+    """A lone confirm keeps the interactive feel; only a backlog suppresses it.
+
+    Also covers the instant-approve workflow: there each approval resolves in
+    seconds, so the queue is empty again by the next call and every call waits.
+    """
+    from types import SimpleNamespace
+    from custom_components.phoenix_mcp.tool_common import _pending_or_inline
+
+    approval = SimpleNamespace(id="appr-1", tool_name="create_scene", expires_at=None)
+    token = _make_physical_token("confirm")
+    token.confirm_inline_wait_seconds = 60
+    token.id = "tid"
+    data = _inline_wait_data([])
+
+    sentinel = ({"content": []}, "pending_approval", "approval:create_scene:appr-1")
+    with patch("custom_components.phoenix_mcp.tool_common._await_inline_confirm",
+               new=AsyncMock(return_value=sentinel)) as inline:
+        out = await _pending_or_inline(MagicMock(), data, token, approval)
+
+    assert inline.await_count == 1
+    assert out is sentinel
+
+
+@pytest.mark.asyncio
+async def test_the_calls_own_approval_does_not_count_as_a_backlog():
+    """async_evaluate_capability stores this approval BEFORE we get here.
+
+    Counting it would make the queue never look empty, so no call would ever
+    wait and the inline feature would be silently dead for every token.
+    """
+    from types import SimpleNamespace
+    from custom_components.phoenix_mcp.tool_common import _pending_or_inline
+
+    approval = SimpleNamespace(id="appr-1", tool_name="create_scene", expires_at=None)
+    token = _make_physical_token("confirm")
+    token.confirm_inline_wait_seconds = 60
+    token.id = "tid"
+    # The ONLY pending record is this call's own.
+    data = _inline_wait_data([_pending_for("appr-1")])
+
+    with patch("custom_components.phoenix_mcp.tool_common._await_inline_confirm",
+               new=AsyncMock(return_value=("x", "pending_approval", "r"))) as inline:
+        await _pending_or_inline(MagicMock(), data, token, approval)
+
+    assert inline.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_another_tokens_backlog_does_not_suppress_this_tokens_wait():
+    """The queue is per token: one agent's backlog must not change another's."""
+    from types import SimpleNamespace
+    from custom_components.phoenix_mcp.tool_common import _pending_or_inline
+
+    approval = SimpleNamespace(id="appr-2", tool_name="create_scene", expires_at=None)
+    token = _make_physical_token("confirm")
+    token.confirm_inline_wait_seconds = 60
+    token.id = "tid"
+    data = _inline_wait_data([_pending_for("appr-9", token_id="someone-else")])
+
+    with patch("custom_components.phoenix_mcp.tool_common._await_inline_confirm",
+               new=AsyncMock(return_value=("x", "pending_approval", "r"))) as inline:
+        await _pending_or_inline(MagicMock(), data, token, approval)
+
+    assert inline.await_count == 1

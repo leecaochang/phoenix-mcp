@@ -342,10 +342,52 @@ async def _pending_or_inline(
 
     The REST surface deliberately does NOT route through this: it has no inline
     wait for capability confirms either, so it stays internally consistent.
+
+    THE WAIT IS SKIPPED WHEN A BACKLOG ALREADY EXISTS, and that is what makes
+    batch approval usable at all. The hold is a per-request block, and tool calls
+    arrive one at a time, so approval N+1 cannot even be CREATED until approval N
+    has finished waiting. Live-measured at a 60s wait: consecutive approvals
+    appeared 62.8 seconds apart, i.e. a twenty-write migration would have taken
+    twenty minutes just to fill the queue an operator is being asked to review in
+    one go. The wait and batching were working against each other.
+
+    So: if this token already has another approval pending, do not hold. The
+    reasoning is not merely mechanical - an operator with something already
+    unresolved is demonstrably not in instant-approve mode, so blocking buys the
+    agent nothing and costs the queue everything. The FIRST call still waits,
+    which is what preserves the interactive feel for a lone confirm, and the
+    instant-approve workflow is untouched: there each approval resolves within
+    seconds, so the queue is empty again by the next call and every call still
+    waits. Twenty writes go from ~20 minutes to ~60 seconds.
+
+    Inferred rather than declared by the caller deliberately. An explicit per-call
+    flag would have to land on 40-odd write tools (moving the catalog fingerprint
+    for every connected client), or ride in `params._meta`, which not every client
+    can set; and an agent that forgot it would silently reintroduce the stall.
     """
-    if token.confirm_inline_wait_seconds > 0:
+    if token.confirm_inline_wait_seconds > 0 and not _token_has_other_pending(data, token, approval):
         return await _await_inline_confirm(hass, data, token, approval)
     return _tool_pending(approval), "pending_approval", _approval_resource(approval)
+
+
+def _token_has_other_pending(data: PhoenixData, token: TokenRecord, approval: Any) -> bool:
+    """True when this token has a pending approval OTHER than this one.
+
+    Excluding the current approval is load-bearing: `async_evaluate_capability`
+    has already created and stored it by the time we get here, so counting it
+    would make the queue never look empty and no call would ever wait.
+
+    Fail-quiet: an unreadable store means we cannot prove a backlog, and the safe
+    default is the existing behaviour (wait), not a silent change of it.
+    """
+    from .approvals import STATUS_PENDING, list_approvals  # noqa: PLC0415
+
+    try:
+        pending = list_approvals(data.store, status=STATUS_PENDING, token_id=token.id)
+    except Exception:  # noqa: BLE001 - advisory only; never fail a gate over this
+        _LOGGER.debug("Could not read pending approvals for %s", token.id, exc_info=True)
+        return False
+    return any(entry.id != approval.id for entry in pending)
 
 
 # Set by an admin restore (admin_view) around a re-applied executor call, so the
