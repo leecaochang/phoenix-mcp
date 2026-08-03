@@ -29,7 +29,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_BATCH_ITEMS, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
 from .ws_dispatch import WsDispatchError, async_ws_command
@@ -1531,18 +1531,115 @@ def _approval_status_payload(record: Any, *, resolved: bool) -> dict:
     }
 
 
+async def _wait_for_many_approvals(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    """Block until every named approval resolves, or the timeout expires.
+
+    ONE listener for the whole set rather than a wait per id: the ids resolve in
+    whatever order the operator works through them (and a batch approve resolves
+    several inside one request), so waiting on them in sequence would block on
+    #1 while #2 and #3 were already done.
+
+    Returns a per-approval list plus the ids still outstanding, so a timeout is
+    partial information rather than a failure: the caller learns exactly which
+    ones landed and can wait again for the rest.
+    """
+    from .approvals import STATUS_APPROVED, STATUS_PENDING, get_approval  # noqa: PLC0415
+
+    raw = args.get("approval_ids")
+    if not isinstance(raw, list) or not raw or not all(isinstance(i, str) and i for i in raw):
+        return (
+            _tool_error("approval_ids must be a non-empty array of approval id strings."),
+            "invalid_request", "wait_for_approval",
+        )
+    # Order-preserving dedupe: a repeated id would otherwise be reported twice and
+    # inflate the outstanding count against itself.
+    ids = list(dict.fromkeys(raw))
+    if len(ids) > MAX_BATCH_APPROVALS:
+        return (
+            _tool_error(f"wait_for_approval accepts at most {MAX_BATCH_APPROVALS} approval_ids."),
+            "invalid_request", "wait_for_approval",
+        )
+
+    records = {}
+    for approval_id in ids:
+        record = get_approval(data.store, approval_id)
+        # Unknown and belonging-to-another-token answer identically, so this
+        # cannot become an oracle for another token's queue (rule 12).
+        if record is None or record.token_id != token.id:
+            return _tool_error("Approval not found."), "not_found", "wait_for_approval"
+        records[approval_id] = record
+
+    outstanding = {i for i, r in records.items() if r.status == STATUS_PENDING}
+    if outstanding:
+        timeout = _clamp_timeout(args.get("timeout", MAX_SUBSCRIPTION_SECONDS))
+        future: asyncio.Future = hass.loop.create_future()
+
+        @callback
+        def _on_resolved(event: Any) -> None:
+            outstanding.discard(event.data.get("approval_id"))
+            if not outstanding and not future.done():
+                future.set_result(True)
+
+        unsub = hass.bus.async_listen(f"{DOMAIN}_approval_resolved", _on_resolved)
+        _set_progress_status(
+            f"Waiting for operator approval: {len(outstanding)} pending", total=float(timeout))
+        try:
+            await asyncio.wait_for(future, timeout)
+        except TimeoutError:
+            pass  # partial result below; the re-read decides what actually landed
+        finally:
+            unsub()
+            _set_progress_status(None)
+
+    # Re-read every record: some may have resolved without an event reaching us
+    # (the expiry sweep), and a batch approve resolves several at once.
+    latest = {i: (get_approval(data.store, i) or records[i]) for i in ids}
+    still_pending = [i for i, r in latest.items() if r.status == STATUS_PENDING]
+    payload = {
+        "approvals": [
+            _approval_status_payload(r, resolved=r.status != STATUS_PENDING)
+            for r in latest.values()
+        ],
+        "resolved": not still_pending,
+        "pending": still_pending,
+    }
+    result = _tool_success(json.dumps(payload, default=str))
+    # The accepted-note applies as soon as ANY of them landed as an operator
+    # approval, for the same reason it does on a single one: those changes are
+    # final and must not be revised.
+    if any(
+        r.status == STATUS_APPROVED and (r.result or {}).get("tool_result") is not None
+        for r in latest.values()
+    ):
+        result = _operator_accepted_result(result)
+    return result, "allowed", f"approvals:{len(ids)}"
+
+
 async def _tool_wait_for_approval(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
-    """MCP tool: block until the token's own approval resolves, or until timeout.
+    """MCP tool: block until the token's own approval(s) resolve, or until timeout.
 
     A bounded server-side wait (not a stream): returns immediately if already
     resolved, else waits on the phoenix_mcp_approval_resolved event filtered to this
     approval_id. Own-data only (cross-token lookups 404, matching
     get_approval_status); no capability required.
+
+    Accepts `approval_ids` (a list) as well as a single `approval_id`, and that
+    plural form is what makes staged approvals workable. Confirm-gated calls
+    return pending_approval immediately by default (see
+    DEFAULT_CONFIRM_INLINE_WAIT_SECONDS), so an agent making a run of writes ends
+    up holding N approval ids and wanting ONE place to block until the operator
+    has dealt with them, however they choose to: one at a time, or in a batch. A
+    caller waiting on each id in turn would serialise itself right back into the
+    stall the staged model exists to remove.
     """
     from .approvals import STATUS_PENDING, get_approval  # noqa: PLC0415
 
+    if "approval_ids" in args:
+        return await _wait_for_many_approvals(args, token, hass, data)
     approval_id = args.get("approval_id")
     if not isinstance(approval_id, str) or not approval_id:
         return _tool_error("Missing approval_id."), "invalid_request", "wait_for_approval"

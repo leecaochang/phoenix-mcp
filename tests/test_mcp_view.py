@@ -3593,3 +3593,125 @@ async def test_another_tokens_backlog_does_not_suppress_this_tokens_wait():
         await _pending_or_inline(MagicMock(), data, token, approval)
 
     assert inline.await_count == 1
+
+
+# --- wait_for_approval over several ids (the staged-approval companion) -------
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_returns_at_once_when_all_already_resolved(hass):
+    """No listener, no block: the common case after a batch approve."""
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    a = _approval_record("approved", result={"tool_result": {"content": []}})
+    a["id"] = "appr-1"
+    b = _approval_record("rejected", rejected_reason="nope")
+    b["id"] = "appr-2"
+    data = _inline_wait_data([a, b])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, outcome, resource = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-1", "appr-2"]}, token, hass, data)
+
+    body = json.loads(content["content"][0]["text"])
+    assert outcome == "allowed" and resource == "approvals:2"
+    assert body["resolved"] is True and body["pending"] == []
+    assert [x["status"] for x in body["approvals"]] == ["approved", "rejected"]
+    # One approved-with-result in the set is enough: those changes are final.
+    assert any("operator reviewed" in c["text"] for c in content["content"])
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_reports_which_ones_are_still_outstanding(hass):
+    """A timeout is partial information, not a failure.
+
+    The caller learns exactly which landed, so it can wait again for the rest
+    instead of re-waiting the whole set.
+    """
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    done = _approval_record("approved", result={"tool_result": {"content": []}})
+    done["id"] = "appr-1"
+    still = _approval_record("pending")
+    still["id"] = "appr-2"
+    data = _inline_wait_data([done, still])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, outcome, _r = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-1", "appr-2"], "timeout": 0}, token, hass, data)
+
+    body = json.loads(content["content"][0]["text"])
+    assert outcome == "allowed"
+    assert body["resolved"] is False and body["pending"] == ["appr-2"]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_refuses_another_tokens_approval(hass):
+    """Byte-identical to an unknown id, so it cannot enumerate another queue."""
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    other = _approval_record("pending")
+    other["id"] = "appr-1"
+    other["token_id"] = "someone-else"
+    data = _inline_wait_data([other])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    theirs, outcome_theirs, _r1 = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-1"]}, token, hass, data)
+    ghost, outcome_ghost, _r2 = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-nope"]}, token, hass, data)
+
+    assert outcome_theirs == outcome_ghost == "not_found"
+    assert theirs == ghost
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [[], "appr-1", ["appr-1", ""], ["appr-1", 7]])
+async def test_wait_for_many_rejects_a_malformed_list(hass, bad):
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    data = _inline_wait_data([])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+    _content, outcome, _r = await _tool_wait_for_approval(
+        {"approval_ids": bad}, token, hass, data)
+    assert outcome == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_dedupes_repeated_ids(hass):
+    """A repeated id would otherwise be reported twice and count against itself."""
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    rec = _approval_record("approved", result={"tool_result": {"content": []}})
+    rec["id"] = "appr-1"
+    data = _inline_wait_data([rec])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, _o, resource = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-1", "appr-1"]}, token, hass, data)
+
+    body = json.loads(content["content"][0]["text"])
+    assert len(body["approvals"]) == 1 and resource == "approvals:1"
+
+
+@pytest.mark.asyncio
+async def test_single_id_form_is_untouched(hass):
+    """The plural form is additive; existing callers keep the object shape."""
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    rec = _approval_record("approved", result={"tool_result": {"content": []}})
+    data = _inline_wait_data([rec])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, outcome, _r = await _tool_wait_for_approval(
+        {"approval_id": "appr-1"}, token, hass, data)
+
+    body = json.loads(content["content"][0]["text"])
+    assert outcome == "allowed"
+    assert body["approval_id"] == "appr-1" and "approvals" not in body

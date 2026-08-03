@@ -216,11 +216,22 @@ _ENTITY_TOOL_DEFS: list[dict] = [
             "'pending_approval': it returns immediately if the approval is already resolved, otherwise it "
             "waits server-side (up to 'timeout' seconds, capped) for a human to approve, reject, or for it "
             "to expire. On timeout it returns with the approval still pending so you can call again. Tokens "
-            "only ever see approvals they themselves created."
+            "only ever see approvals they themselves created. "
+            "Pass approval_ids (a list) to wait for SEVERAL at once, which is what you want after a run of "
+            "confirm-gated writes: they queue immediately without blocking, the operator clears them in "
+            "whatever order or batch suits, and one call here waits for the whole set. Waiting on them one "
+            "at a time instead would block on the first while later ones were already resolved. The result "
+            "then carries every approval's status plus the ids still outstanding, so a timeout tells you "
+            "exactly which ones landed."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
+                "approval_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Several approval_ids to wait for together. Use instead of approval_id after a run of confirm-gated calls.",
+                },
                 "approval_id": {
                     "type": "string",
                     "description": "The approval_id returned by the tool call that is pending.",
@@ -230,7 +241,9 @@ _ENTITY_TOOL_DEFS: list[dict] = [
                     "description": "Max seconds to wait (capped by the server). Default is the server cap.",
                 },
             },
-            "required": ["approval_id"],
+            # Neither is required on its own: exactly one of approval_id /
+            # approval_ids must be given, which JSON Schema cannot express here
+            # without oneOf, so the handler refuses a call carrying neither.
         },
     },
     {

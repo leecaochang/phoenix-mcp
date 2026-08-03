@@ -888,11 +888,27 @@ MAX_SUBSCRIPTION_SECONDS = 30
 
 # A token's inline wait (seconds) on a confirm gate: a confirm-gated call holds
 # the response open up to confirm_inline_wait_seconds for an admin decision
-# before falling back to the immediate pending_approval reply. The panel exposes
-# only the duration (30-180); 0 means off (return immediately, for unattended
-# agents) and is settable through the admin API only, not the UI. New tokens
-# default to on at DEFAULT_CONFIRM_INLINE_WAIT_SECONDS. The max is kept well
-# within typical MCP client timeouts so the held response never outlives one.
+# before falling back to the immediate pending_approval reply. 0 means off,
+# return immediately, and it is now BOTH the default and the panel's first
+# option. The max is kept well within typical MCP client timeouts so the held
+# response never outlives one.
+#
+# THE DEFAULT IS OFF, and that is a deliberate reversal (it was 60). Blocking is
+# automatic behaviour decided by a TOKEN SETTING, but the party that knows
+# whether the outcome is needed right now is the AGENT: firing twenty writes it
+# needs them queued, not resolved one at a time; turning off one lock it does
+# want the answer. Holding the request removes that choice, and because the hold
+# blocks a whole request while tool calls arrive one at a time, approval N+1
+# cannot even be CREATED until approval N stops waiting. Live-measured at the old
+# 60s default, consecutive approvals landed 62.8 SECONDS apart, so a twenty-write
+# change took twenty minutes just to reach the operator's queue.
+#
+# The architecture already answers this properly: return pending_approval at once
+# and let the agent call wait_for_approval (now accepting several ids) if and when
+# it wants the outcomes. Approvals then STAGE immediately and the operator clears
+# them however suits, individually or in one batch. The inline wait stays
+# available for an operator who prefers an external client to block on a single
+# action, but it is opt-in rather than the thing everyone silently pays for.
 # How often the MCP endpoint writes to an SSE-framed response while the request
 # is still being handled. A confirm gate can hold a response for up to
 # MAX_CONFIRM_INLINE_WAIT_SECONDS with nothing on the wire, which is exactly the
@@ -927,7 +943,7 @@ MCP_DISCOVER_TTL_MS = 300_000
 
 MIN_CONFIRM_INLINE_WAIT_SECONDS = 30
 MAX_CONFIRM_INLINE_WAIT_SECONDS = 180
-DEFAULT_CONFIRM_INLINE_WAIT_SECONDS = 60
+DEFAULT_CONFIRM_INLINE_WAIT_SECONDS = 0
 
 # search_entities similarity cutoff (difflib ratio, 0.0-1.0) for the typo-tolerant
 # fallback pass. Only consulted when exact token-AND matching returns nothing, so

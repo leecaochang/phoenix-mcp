@@ -996,7 +996,8 @@
       "tokenRotatedTitle": "令牌已轮换：{name}",
       "updateFailed": "更新令牌失败。",
       "waitBeforeClose": "请等待 3 秒后再关闭",
-      "working": "处理中…"
+      "working": "处理中…",
+      "inlineWaitOff": "关闭（审批立即进入队列）"
     },
     "settings": {
       "addProviderFirst": "请先在“智能体对话”中添加服务商账户。",

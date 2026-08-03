@@ -28,7 +28,6 @@ import { tRich } from "../i18n/rich";
 // mirrors const.py DEFAULT_CONFIRM_INLINE_WAIT_SECONDS. The UI exposes only the
 // duration (options span the 30-180 range); 0 (off, for unattended agents) is
 // API-only, never set from here.
-const INLINE_WAIT_DEFAULT = 60;
 
 // Whether a token change alters which tools the MCP client is shown (tools/list),
 // which is the only kind of change that requires a connected agent to reconnect.
@@ -201,10 +200,11 @@ export function ToolAnnouncementToggle({ token, onUpdate }: { token: TokenRecord
         <select
           className="input input-auto"
           aria-label={t("tokens.inlineWaitAria")}
-          value={(token.confirm_inline_wait_seconds ?? 0) > 0 ? token.confirm_inline_wait_seconds : INLINE_WAIT_DEFAULT}
+          value={token.confirm_inline_wait_seconds ?? 0}
           disabled={saving}
           onChange={(e) => patch({ confirm_inline_wait_seconds: Number(e.target.value) })}
         >
+          <option value={0}>{t("tokens.inlineWaitOff")}</option>
           {inlineWaitOptions(token.confirm_inline_wait_seconds ?? 0).map((s) => (
             <option key={s} value={s}>{t("tokens.secondsOption", { s })}</option>
           ))}
@@ -216,7 +216,11 @@ export function ToolAnnouncementToggle({ token, onUpdate }: { token: TokenRecord
 
 // Duration choices for the inline-wait select: fixed steps across the allowed
 // range, plus the token's own value if the API set an off-step one (so it still
-// displays correctly). 0 (off) is never an option here; it is API-only.
+// displays correctly). 0 (off) is rendered separately as the first option and is
+// the DEFAULT: a confirm-gated call returns pending immediately so approvals
+// stage in the queue, and an agent that wants the outcome calls wait_for_approval.
+// Turning the wait on makes a single action block, which is a preference rather
+// than the thing every caller pays for.
 function inlineWaitOptions(current: number): number[] {
   const base = [30, 45, 60, 90, 120, 150, 180];
   const withCurrent = current > 0 && !base.includes(current) ? [...base, current] : base;

@@ -1199,9 +1199,11 @@ class TestPresets:
         # mcp_view to learn the current one, so a legacy record has no baseline
         # and empty must read as "never recorded", never as stale.
         assert loaded.tools_catalog_fingerprint == ""
-        # confirm_inline_wait_seconds defaults to on (60) on legacy records so an
-        # upgrade turns inline wait on for the common interactive case.
-        assert loaded.confirm_inline_wait_seconds == 60
+        # confirm_inline_wait_seconds defaults to OFF. Blocking a confirm-gated
+        # call is opt-in: holding the request stops the NEXT approval from even
+        # being created (tool calls arrive one at a time), so a run of writes
+        # reaches the operator's queue one per wait-period instead of at once.
+        assert loaded.confirm_inline_wait_seconds == 0
 
     def test_inline_wait_round_trips_and_clamps(self):
         base = {
