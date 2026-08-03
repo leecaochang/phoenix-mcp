@@ -267,9 +267,28 @@ def _tool_gate_map(
 
     Buckets (token's own data, no entity oracle):
       usable        - announced and executes directly.
-      needs_approval - cap-tied tool whose cap is Confirm: returns pending_approval.
+      needs_approval - cap-tied tool whose cap is Confirm AND which actually gates:
+                      returns pending_approval.
       unavailable   - not usable (cap denied, a write/action tool without write
                       scope, or a tool whose required system surface is absent).
+
+    THE `_EXECUTOR_REGISTRY` CHECK IS LOAD-BEARING, not a belt-and-braces extra.
+    A Confirm cap does NOT mean every tool tied to it gates: a cap-tied READ
+    (get_automation, get_dashboard_config, get_yaml_config, read_file, and 50-odd
+    others) checks `effective_cap(...) == CAP_DENY` and never calls `_gate`, so it
+    executes directly no matter what mode the cap is in. Bucketing by cap mode
+    alone therefore reported every one of those as needing approval. That is not
+    a cosmetic mislabel: this map IS `get_capability_summary`, the call the server
+    instructions tell an agent to make FIRST to orient, so it mis-plans the whole
+    session downstream. Live-found when an agent avoided free reads for an entire
+    migration because the summary said they would queue for approval.
+
+    Registering an executor is the right proxy because it is exactly what the
+    Confirm flow requires: `async_execute_approved_tool` dispatches through
+    `_EXECUTOR_REGISTRY`, so a tool that gates without one could never be applied
+    after approval. `tests/test_mcp_tool_catalog.py` pins the registry against the
+    handlers that really call `_gate`, in both directions, so the proxy cannot
+    drift into a lie of its own.
 
     A tool unavailable because the system lacks its surface (no ESPHome, no
     Device Builder) also gets an entry in unavailable_reasons, which is emitted
@@ -298,7 +317,7 @@ def _tool_gate_map(
             mode = effective_cap(token, cap)
             if mode == CAP_DENY:
                 unavailable.append(name)
-            elif mode == CAP_CONFIRM:
+            elif mode == CAP_CONFIRM and name in _EXECUTOR_REGISTRY:
                 needs_approval.append(name)
             else:
                 usable.append(name)

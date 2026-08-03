@@ -9,9 +9,19 @@ relationships directly so the drift fails loudly.
 
 from __future__ import annotations
 
-import pytest
+import ast
+import inspect
+from types import SimpleNamespace
 
-from custom_components.phoenix_mcp import mcp_view, mesa_tools
+import pytest
+from homeassistant.util.dt import utcnow
+
+from custom_components.phoenix_mcp import const, mcp_view, mesa_tools
+from custom_components.phoenix_mcp.token_store import (
+    PermissionNode,
+    PermissionTree,
+    TokenRecord,
+)
 
 _HINT_KEYS = {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"}
 # restart_ha is not named delete_*/remove_* but is the most destructive tool here.
@@ -346,3 +356,58 @@ def test_every_published_parameter_declares_a_type():
         and not any(k in spec for k in ("type", "enum", "oneOf", "anyOf", "allOf", "$ref"))
     ]
     assert untyped == [], f"parameters with no declared type: {untyped}"
+
+
+def _handler_calls_gate(fn) -> bool:
+    """True when a tool handler's own body calls the capability gate."""
+    for node in ast.walk(ast.parse(inspect.getsource(fn))):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if name in ("_gate", "_pending_or_inline"):
+                return True
+    return False
+
+
+def test_executor_registry_is_an_exact_proxy_for_gating():
+    """For a cap-tied tool, "registers an executor" must mean "actually gates".
+
+    _tool_gate_map buckets a Confirm-cap tool as needs_approval only when it is in
+    _EXECUTOR_REGISTRY, because a cap-tied READ never calls _gate and would
+    otherwise be reported as queueing for approval when it runs directly. That
+    substitution is only sound while the two sets agree, so this pins them BOTH
+    ways: a gating tool with no executor could never be applied after approval,
+    and a non-gating tool with one would put the misreport straight back.
+
+    Scoped to cap-tied tools on purpose. HassTurnOn/HassTurnOff gate through a
+    helper rather than in their own body, and call_service_mesa_approved is the
+    MESA sentinel executor that _call_tool can never dispatch; none of the three
+    is cap-tied, so none reaches the branch this protects.
+    """
+    capped = {d["name"] for d in _all_defs() if d.get("cap")}
+    executors = set(mcp_view._EXECUTOR_REGISTRY)
+    gating = {
+        name for name, (fn, _pos, _kw) in mcp_view._TOOL_HANDLERS.items()
+        if _handler_calls_gate(fn)
+    }
+    assert sorted(capped & executors) == sorted(capped & gating)
+
+
+def test_cap_tied_reads_are_not_reported_as_needing_approval():
+    """The concrete regression: a Confirm cap must not gate a read.
+
+    Asserts the behaviour rather than the predicate, so a future refactor that
+    keeps the sets aligned but changes the bucketing still fails here.
+    """
+    token = TokenRecord(
+        id="t1", name="t", token_hash="x", created_at=utcnow(), created_by="u",
+        permissions=PermissionTree(domains={"light": PermissionNode(state="GREEN")}),
+        **{cap: "confirm" for cap in const.CAPABILITY_NAMES},
+    )
+    gate_map = mcp_view._tool_gate_map(token, SimpleNamespace(mesa=None), None)
+    for read_tool in ("get_automation", "get_script", "get_dashboard_config", "get_yaml_config"):
+        assert read_tool not in gate_map["needs_approval"], read_tool
+        assert read_tool in gate_map["usable"], read_tool
+    # The matching WRITES, on the same caps, must still be reported as gating.
+    for write_tool in ("edit_automation", "edit_script", "set_dashboard_config", "patch_dashboard"):
+        assert write_tool in gate_map["needs_approval"], write_tool

@@ -564,7 +564,7 @@
 
           <article class="tool" data-cap="read" data-search="get_capability_summary persona tools gate map">
             <div class="tool-head"><span class="tool-name">get_capability_summary</span><span class="badge badge-success">no capability</span></div>
-            <p class="tool-desc">This token's persona, effective capabilities, Confirm-gated capabilities, write scope, rate limits, and a tool-level gate map (<code>tools.usable</code> / <code>tools.needs_approval</code> / <code>tools.unavailable</code>).</p>
+            <p class="tool-desc">This token's persona, effective capabilities, Confirm-gated capabilities, write scope, rate limits, and a tool-level gate map (<code>tools.usable</code> / <code>tools.needs_approval</code> / <code>tools.unavailable</code>). A capability set to Confirm does not put every tool that uses it into <code>needs_approval</code>: the reads on that capability, such as <code>get_automation</code> or <code>get_dashboard_config</code>, run directly and are listed as usable. Only the tools that actually write queue for approval.</p>
           </article>
         </section>
 
