@@ -5,6 +5,7 @@ import type {
   ApprovalListParams,
   ApprovalListResponse,
   ApprovalRecord,
+  BatchApproveResult,
   AuditEntry,
   AuditListResponse,
   AuditQueryParams,
@@ -324,6 +325,11 @@ export const api = {
     req<ApprovalRecord>("POST", `/approvals/${encodeURIComponent(id)}/approve`, body),
   rejectApproval: (id: string, body: { reason?: string } = {}) =>
     req<ApprovalRecord>("POST", `/approvals/${encodeURIComponent(id)}/reject`, body),
+  // Approves several pending approvals in one admin action. The server walks them
+  // in the given order and STOPS at the first failure, so the result reports what
+  // was applied, what failed, and what was left untouched and still pending.
+  batchApproveApprovals: (ids: string[]) =>
+    req<BatchApproveResult>("POST", "/approvals/batch/approve", { approval_ids: ids }),
   cancelApproval: (id: string) => req<void>("DELETE", `/approvals/${encodeURIComponent(id)}`),
 
   listVersions: (params?: { resource_type?: string; resource_id?: string; limit?: number; offset?: number }) => {

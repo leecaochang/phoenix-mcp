@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ApprovalDiff, ApprovalRecord, ApprovalStatus } from "../types";
+import type { ApprovalDiff, ApprovalRecord, ApprovalStatus, BatchApproveResult } from "../types";
 import { api } from "../api";
 import { Loading, ErrorMsg } from "../index";
 import { Modal } from "../components/Modal";
@@ -116,6 +116,12 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [rawOffset, setRawOffset] = useState(0);  // raw records fetched (drives pagination)
+  // Batch approve: which pending approvals are ticked, and the last run's result.
+  // Ids rather than records, so a refresh that replaces the record objects does
+  // not silently drop a tick; ids that vanish are filtered at use, not here.
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchApproveResult | null>(null);
 
   const loadPending = useCallback(async (offset = 0) => {
     setError(null);
@@ -256,6 +262,46 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
     );
   }, [records, search, tab]);
 
+  // An approval already being executed cannot be batched: the server would answer
+  // 409 on its claim and halt the run on something the operator never chose.
+  const selectableIds = useMemo(
+    () => (tab === "pending" ? shown.filter((r) => !isClaimed(r)).map((r) => r.id) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shown, tab, claimedApprovals],
+  );
+  const pickedCount = selectableIds.filter((id) => picked.has(id)).length;
+  const allPicked = selectableIds.length > 0 && pickedCount === selectableIds.length;
+
+  const togglePick = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
+  const toggleAll = () => setPicked(allPicked ? new Set() : new Set(selectableIds));
+
+  async function runBatchApprove() {
+    // Send in the order shown, so "stopped at" names the row the operator can see.
+    const ids = selectableIds.filter((id) => picked.has(id));
+    if (ids.length === 0) return;
+    setBatchBusy(true);
+    setBatchResult(null);
+    try {
+      const result = await api.batchApproveApprovals(ids);
+      setBatchResult(result);
+      // Keep only what was left untouched ticked, so a second click retries
+      // exactly the remainder once the operator has dealt with the cause.
+      setPicked(new Set(result.remaining));
+      await loadPending(0);
+      onCountChange?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   if (loading) return <Loading />;
 
   return (
@@ -319,11 +365,43 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       )}
 
       {tab === "pending" ? (
-        <div className="approvals-list">
-          {shown.map((r) => (
-            <ApprovalCard key={r.id} record={r} claimed={isClaimed(r)} onClick={() => setSelected(r)} />
-          ))}
-        </div>
+        <>
+          {batchResult && <BatchResultMsg result={batchResult} onDismiss={() => setBatchResult(null)} />}
+          {selectableIds.length > 1 && (
+            <div className="approvals-batch-bar">
+              <label className="approvals-batch-all">
+                <input
+                  type="checkbox"
+                  checked={allPicked}
+                  ref={(el) => { if (el) el.indeterminate = pickedCount > 0 && !allPicked; }}
+                  onChange={toggleAll}
+                />
+                <span>{t("approvals.selectAll")}</span>
+              </label>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={pickedCount === 0 || batchBusy}
+                onClick={runBatchApprove}
+              >
+                {batchBusy ? t("approvals.batchRunning") : t("approvals.approveSelected", { count: pickedCount })}
+              </button>
+            </div>
+          )}
+          <div className="approvals-list">
+            {shown.map((r) => (
+              <ApprovalCard
+                key={r.id}
+                record={r}
+                claimed={isClaimed(r)}
+                checked={picked.has(r.id)}
+                selectable={!isClaimed(r)}
+                onToggle={() => togglePick(r.id)}
+                onClick={() => setSelected(r)}
+              />
+            ))}
+          </div>
+        </>
       ) : (
         shown.length > 0 && (
           <div className="card approval-history">
@@ -390,9 +468,46 @@ function StatusBadge({ status }: { status: ApprovalStatus }) {
   return <span className={`badge ${cls[status]}`}>{t(labelKeys[status])}</span>;
 }
 
-function ApprovalCard({ record, claimed, onClick }: { record: ApprovalRecord; claimed?: boolean; onClick: () => void }) {
-  const expiresIn = useExpiresLabel(record.expires_at, record.status);
+/** Reports what a batch run did. Deliberately three separate facts.
+ *
+ * "Approved 6" alone would read as a success on a run that stopped at item 7,
+ * and "failed" alone would hide the six that really did apply. The remaining
+ * count is the one an operator acts on: those are untouched and still pending,
+ * not lost.
+ */
+function BatchResultMsg({ result, onDismiss }: { result: BatchApproveResult; onDismiss: () => void }) {
+  const failed = result.failed;
   return (
+    <div className={`approvals-batch-result ${failed ? "is-error" : "is-ok"}`} role="status">
+      <div className="approvals-batch-result-text">
+        <span>{t("approvals.batchApplied", { count: result.applied.length })}</span>
+        {failed && (
+          <span>
+            {t("approvals.batchStopped", {
+              tool: friendlyToolName(failed.tool_name ?? ""),
+              reason: failed.message || failed.error,
+            })}
+          </span>
+        )}
+        {result.remaining.length > 0 && (
+          <span>{t("approvals.batchRemaining", { count: result.remaining.length })}</span>
+        )}
+      </div>
+      <button type="button" className="btn btn-ghost" onClick={onDismiss}>{t("common.close")}</button>
+    </div>
+  );
+}
+
+function ApprovalCard({ record, claimed, checked, selectable, onToggle, onClick }: {
+  record: ApprovalRecord;
+  claimed?: boolean;
+  checked?: boolean;
+  selectable?: boolean;
+  onToggle?: () => void;
+  onClick: () => void;
+}) {
+  const expiresIn = useExpiresLabel(record.expires_at, record.status);
+  const card = (
     <button type="button" className="approval-card" onClick={onClick}>
       <div className="approval-card-header">
         <div className="approval-card-title">
@@ -413,6 +528,22 @@ function ApprovalCard({ record, claimed, onClick }: { record: ApprovalRecord; cl
         <div className="approval-card-reason">{t("approvals.reasonPrefix", { reason: friendlyReason(record) })}</div>
       )}
     </button>
+  );
+  if (!onToggle) return card;
+  // The checkbox is a SIBLING of the card, never inside it: a checkbox nested in
+  // a <button> is invalid, and clicking it would also open the detail modal.
+  return (
+    <div className="approval-card-row">
+      <input
+        type="checkbox"
+        className="approval-card-check"
+        checked={Boolean(checked)}
+        disabled={!selectable}
+        onChange={onToggle}
+        aria-label={t("approvals.selectOne", { tool: friendlyToolName(record.tool_name) })}
+      />
+      {card}
+    </div>
   );
 }
 

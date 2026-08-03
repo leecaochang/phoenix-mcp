@@ -35,6 +35,7 @@ from .const import (
     MAX_CONFIRM_INLINE_WAIT_SECONDS,
     MAX_REQUEST_BODY_BYTES,
     MIN_CONFIRM_INLINE_WAIT_SECONDS,
+    MAX_BATCH_APPROVALS,
     MESA_CONFIRM_CAP,
     MESA_MODES,
     MESA_STORAGE_KEY,
@@ -2232,6 +2233,112 @@ class PhoenixAdminApprovalApproveView(PhoenixView):
         return await _approve_approval(self.hass, request, approval_id)
 
 
+class PhoenixAdminApprovalBatchApproveView(PhoenixView):
+    """POST /api/phoenix-mcp/admin/approvals/batch/approve.
+
+    Approves several pending approvals in ONE admin action. Purely an operator
+    convenience: it changes nothing about the tool surface, the stateless
+    transport, or the approval record. Each id still goes through the SAME
+    `_approve_approval` (its own store-lock claim, its own token/capability/
+    kill-switch re-validation, its own executor run, its own audit row), so the
+    security model is byte-for-byte what it was, and a batch is indistinguishable
+    from the admin clicking Approve N times, only faster.
+
+    It exists because a routine migration produced ~20 near-identical writes and
+    approving them one at a time was the single biggest cost of the exercise.
+
+    STOPS AT THE FIRST FAILURE, deliberately. Home Assistant writes are not
+    transactional, so no batch can be atomic; the honest choice is between
+    stopping and ploughing on. Stopping wins because the likely failures here are
+    SYSTEMATIC rather than independent (a capability revoked mid-batch, the kill
+    switch thrown, a stale expected_hash after an earlier item rewrote the same
+    file), and continuing would burn the rest of the queue producing the same
+    error N more times. Everything after the failure is left PENDING and still
+    individually approvable, so stopping costs the operator nothing but a second
+    click once they have dealt with the cause.
+    """
+
+    url = "/api/phoenix-mcp/admin/approvals/batch/approve"
+    name = "api:phoenix-mcp:admin:approval_batch_approve"
+    requires_auth = True
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        rid = request["phoenix_mcp_rid"]
+        body = await _read_body(request, rid)
+        if isinstance(body, web.Response):
+            return body
+        ids = body.get("approval_ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
+            return _err(
+                "invalid_request", "approval_ids must be a non-empty array of strings.", 400, rid,
+            )
+        if len(ids) != len(set(ids)):
+            # Not pedantry: the second attempt at a duplicate would hit the
+            # in-progress claim or the already-terminal branch and be reported as
+            # a failure, halting the batch on the caller's own typo.
+            return _err("invalid_request", "approval_ids must not repeat an id.", 400, rid)
+        if len(ids) > MAX_BATCH_APPROVALS:
+            return _err(
+                "invalid_request",
+                f"A batch may hold at most {MAX_BATCH_APPROVALS} approvals.",
+                400, rid,
+            )
+
+        applied: list[dict] = []
+        failure: dict | None = None
+        for index, approval_id in enumerate(ids):
+            response = await _approve_approval(self.hass, request, approval_id)
+            try:
+                parsed = json.loads(response.text or "{}")
+            except ValueError:  # pragma: no cover - _ok/_err always emit JSON
+                parsed = {}
+            # A 200 is not sufficient: an executor that returned isError finalizes
+            # the record as rejected/execution_failed and still answers 200, and
+            # treating that as applied would report a failed write as a success.
+            if response.status == 200 and parsed.get("status") == "approved":
+                applied.append({"approval_id": approval_id, "tool_name": parsed.get("tool_name")})
+                continue
+            failure = {
+                "approval_id": approval_id,
+                "tool_name": parsed.get("tool_name"),
+                "status": response.status,
+                "error": parsed.get("error") or parsed.get("rejected_reason") or "failed",
+                "message": parsed.get("message"),
+            }
+            if parsed.get("message_key"):
+                failure["message_key"] = parsed["message_key"]
+                if parsed.get("message_params"):
+                    failure["message_params"] = parsed["message_params"]
+            # Everything from here on is untouched and still pending.
+            remaining = ids[index + 1:]
+            break
+        else:
+            remaining = []
+
+        data: PhoenixData = self.hass.data[DOMAIN]
+        user = request[KEY_HASS_USER]
+        data.audit.record(
+            request_id=rid,
+            token_id="admin",
+            token_name=f"admin:{user.id}",
+            method="approval/batch_approve",
+            resource=f"approvals:{len(ids)}",
+            outcome="allowed" if failure is None else "denied",
+            client_ip="",
+            settings=data.store.get_settings(),
+            payload={
+                "requested": len(ids),
+                "applied": len(applied),
+                "stopped_at": failure["approval_id"] if failure else None,
+            },
+        )
+        return _ok(
+            {"applied": applied, "failed": failure, "remaining": remaining},
+            request_id=rid,
+        )
+
+
 class PhoenixAdminApprovalRejectView(PhoenixView):
     """POST /api/phoenix-mcp/admin/approvals/{approval_id}/reject."""
 
@@ -3693,6 +3800,7 @@ ALL_ADMIN_VIEWS: list[type[PhoenixView]] = [
     PhoenixAdminApprovalsView,
     PhoenixAdminApprovalView,
     PhoenixAdminApprovalApproveView,
+    PhoenixAdminApprovalBatchApproveView,
     PhoenixAdminApprovalRejectView,
     PhoenixAdminVersionsView,
     PhoenixAdminVersionView,

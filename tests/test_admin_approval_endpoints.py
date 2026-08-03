@@ -14,6 +14,7 @@ from homeassistant.util.dt import utcnow
 
 from custom_components.phoenix_mcp.admin_view import (
     PhoenixAdminApprovalApproveView,
+    PhoenixAdminApprovalBatchApproveView,
     PhoenixAdminApprovalRejectView,
     PhoenixAdminApprovalView,
     PhoenixAdminApprovalsView,
@@ -794,3 +795,162 @@ class TestApprovalAuditLogging:
         allowed = data.audit.query(outcome="allowed")
         assert allowed is not None
         assert any("appr_a" in e.resource for e in allowed)
+
+
+# ---- batch approve -----------------------------------------------------------
+
+
+class TestBatchApprove:
+    """POST /admin/approvals/batch/approve.
+
+    Purely an operator convenience: every id still runs through the SAME
+    _approve_approval, so these tests are about the BATCH's own contract (order,
+    stop-at-failure, what is reported, what is left pending) rather than about
+    re-proving the per-approval lifecycle, which the tests above already cover.
+    """
+
+    @staticmethod
+    def _view_and_request(pending, tokens, ids, kill_switch=False):
+        store = _make_store(pending=pending, tokens=tokens, kill_switch=kill_switch)
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalBatchApproveView()
+        view.hass = hass
+        request = _make_admin_request(body=json.dumps({"approval_ids": ids}).encode())
+        return view, request, store, data
+
+    @pytest.mark.asyncio
+    async def test_approves_every_id_in_order(self):
+        token = _make_token("tok-1", cap_restart="confirm")
+        view, request, store, _data = self._view_and_request(
+            [_make_pending("appr_a"), _make_pending("appr_b"), _make_pending("appr_c")],
+            [token], ["appr_a", "appr_b", "appr_c"],
+        )
+        seen: list[str] = []
+
+        async def _fake_executor(name, args, tok, hass, data):
+            seen.append(name)
+            return ({"content": [{"type": "text", "text": "{}"}]}, "allowed", "restart_ha")
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", side_effect=_fake_executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"):
+            resp = await view.post(request)
+
+        out = json.loads(resp.text)
+        assert resp.status == 200
+        assert [a["approval_id"] for a in out["applied"]] == ["appr_a", "appr_b", "appr_c"]
+        assert out["failed"] is None and out["remaining"] == []
+        assert len(seen) == 3
+        assert all(r["status"] == STATUS_APPROVED for r in store._pending)
+
+    @pytest.mark.asyncio
+    async def test_stops_at_first_failure_and_leaves_the_rest_pending(self):
+        """The whole point of stop-at-failure: the queue is not burned through.
+
+        Item 2 fails, so item 3 must never reach its executor and must still be
+        individually approvable afterwards.
+        """
+        token = _make_token("tok-1", cap_restart="confirm")
+        view, request, store, _data = self._view_and_request(
+            [_make_pending("appr_a"), _make_pending("appr_b"), _make_pending("appr_c")],
+            [token], ["appr_a", "appr_b", "appr_c"],
+        )
+        seen: list[str] = []
+
+        async def _fake_executor(name, args, tok, hass, data):
+            seen.append(tok.id)
+            if len(seen) == 2:
+                return ({"content": [{"type": "text", "text": "boom"}], "isError": True}, "invalid_request", "x")
+            return ({"content": [{"type": "text", "text": "{}"}]}, "allowed", "restart_ha")
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", side_effect=_fake_executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create"):
+            resp = await view.post(request)
+
+        out = json.loads(resp.text)
+        assert [a["approval_id"] for a in out["applied"]] == ["appr_a"]
+        assert out["failed"]["approval_id"] == "appr_b"
+        assert out["remaining"] == ["appr_c"]
+        # The third executor never ran.
+        assert len(seen) == 2
+        by_id = {r["id"]: r for r in store._pending}
+        assert by_id["appr_a"]["status"] == STATUS_APPROVED
+        assert by_id["appr_c"]["status"] == STATUS_PENDING
+
+    @pytest.mark.asyncio
+    async def test_execution_failure_is_not_reported_as_applied(self):
+        """A 200 is not enough.
+
+        An executor returning isError finalizes the record as rejected with
+        execution_failed and _approve_approval still answers 200; counting that as
+        applied would report a failed write as a success.
+        """
+        token = _make_token("tok-1", cap_restart="confirm")
+        view, request, _store, _data = self._view_and_request(
+            [_make_pending("appr_a")], [token], ["appr_a"],
+        )
+
+        async def _fake_executor(name, args, tok, hass, data):
+            return ({"content": [{"type": "text", "text": "nope"}], "isError": True}, "invalid_request", "x")
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", side_effect=_fake_executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create"):
+            resp = await view.post(request)
+
+        out = json.loads(resp.text)
+        assert out["applied"] == []
+        assert out["failed"]["approval_id"] == "appr_a"
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_stops_the_batch_at_the_first_item(self):
+        token = _make_token("tok-1", cap_restart="confirm")
+        view, request, store, _data = self._view_and_request(
+            [_make_pending("appr_a"), _make_pending("appr_b")],
+            [token], ["appr_a", "appr_b"], kill_switch=True,
+        )
+        executor = AsyncMock()
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"):
+            resp = await view.post(request)
+
+        out = json.loads(resp.text)
+        executor.assert_not_called()
+        assert out["applied"] == [] and out["failed"]["approval_id"] == "appr_a"
+        assert out["remaining"] == ["appr_b"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [
+        {}, {"approval_ids": []}, {"approval_ids": "appr_a"},
+        {"approval_ids": ["appr_a", ""]}, {"approval_ids": ["appr_a", 3]},
+    ])
+    async def test_rejects_a_malformed_id_list(self, body):
+        view, request, _s, _d = self._view_and_request([], [], ["x"])
+        request.content.read = AsyncMock(return_value=json.dumps(body).encode())
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f):
+            resp = await view.post(request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_repeated_id(self):
+        """A duplicate would hit the already-terminal branch and halt the batch
+        on the caller's own typo, so it is refused up front instead."""
+        view, request, _s, _d = self._view_and_request([], [], ["appr_a", "appr_a"])
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f):
+            resp = await view.post(request)
+        assert resp.status == 400
+        assert "repeat" in json.loads(resp.text)["message"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_more_than_the_request_bound(self):
+        from custom_components.phoenix_mcp.const import MAX_BATCH_APPROVALS
+        ids = [f"appr_{i}" for i in range(MAX_BATCH_APPROVALS + 1)]
+        view, request, _s, _d = self._view_and_request([], [], ids)
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f):
+            resp = await view.post(request)
+        assert resp.status == 400

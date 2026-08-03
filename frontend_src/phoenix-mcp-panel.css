@@ -1518,6 +1518,34 @@ select.input {
 .approvals-tab.active { color: var(--phx-text); border-bottom-color: var(--phx-accent); font-weight: 600; }
 .approvals-empty { padding: 32px; text-align: center; color: var(--phx-text-2); font-size: 13px; }
 .approvals-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* Batch approve: the tick column plus the select-all / run bar above the list. */
+.approvals-batch-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; margin-bottom: 8px;
+  border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm);
+  background: var(--phx-surface-2);
+}
+.approvals-batch-all { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.approvals-batch-result {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; margin-bottom: 8px; font-size: 13px;
+  border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm);
+}
+.approvals-batch-result.is-ok { border-color: var(--phx-green, var(--phx-accent)); }
+.approvals-batch-result.is-error { border-color: var(--phx-red, var(--phx-border)); }
+.approvals-batch-result-text { display: flex; flex-direction: column; gap: 2px; }
+/* The checkbox sits OUTSIDE the card button (a checkbox inside a <button> is
+   invalid and its click would also open the detail modal), so the row is the
+   flex parent and the card takes the remaining width. */
+.approval-card-row { display: flex; align-items: flex-start; gap: 10px; }
+.approval-card-check { margin-top: 14px; flex: 0 0 auto; cursor: pointer; }
+.approval-card-check:disabled { cursor: default; opacity: 0.4; }
+.approval-card-row .approval-card { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 600px) {
+  .approvals-batch-bar { flex-direction: column; align-items: stretch; }
+}
+
 .approval-card {
   text-align: left; padding: 12px 14px; border: 1px solid var(--phx-border);
   border-radius: var(--phx-radius-sm); background: var(--phx-surface);

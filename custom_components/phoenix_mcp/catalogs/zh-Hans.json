@@ -801,7 +801,14 @@
       "tabPending": "待处理",
       "tabPendingCount": "待处理（{count}）",
       "tablist": "审批视图",
-      "processing": "处理中"
+      "processing": "处理中",
+      "selectAll": "全选",
+      "selectOne": "选择 {tool} 以批量批准",
+      "approveSelected": "批准所选的 {count} 项",
+      "batchRunning": "正在批准…",
+      "batchApplied": "已批准 {count} 项。",
+      "batchStopped": "在 {tool} 处中止：{reason}",
+      "batchRemaining": "仍有 {count} 项待批准。"
     },
     "tokens": {
       "advanced": "高级",

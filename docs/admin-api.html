@@ -136,6 +136,7 @@ GET  /api/phoenix-mcp/admin/entities?force_reload=1    Rebuild the cached tree</
         <pre class="code" data-lang="http" data-label="Approvals"><code>GET     /api/phoenix-mcp/admin/approvals                List approvals (filter by status, token_id)
 GET     /api/phoenix-mcp/admin/approvals/{id}           Get one approval
 POST    /api/phoenix-mcp/admin/approvals/{id}/approve   Approve and run the held action
+POST    /api/phoenix-mcp/admin/approvals/batch/approve  Approve several, stopping at the first failure
 POST    /api/phoenix-mcp/admin/approvals/{id}/reject    Reject with an optional reason
 DELETE  /api/phoenix-mcp/admin/approvals/{id}           Cancel a pending approval</code></pre>
         <p>List accepts <code>?status=pending|approved|rejected|expired|cancelled</code>, <code>?token_id=</code>, <code>?limit=</code>, and <code>?offset=</code>, and returns <code>{ approvals: [...], total, limit, offset }</code>. Approve and reject take small optional bodies.</p>

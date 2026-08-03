@@ -501,6 +501,29 @@ export interface ApprovalDiff {
   preview?: Record<string, unknown>;
 }
 
+/** Result of approving several approvals in one admin action.
+ *
+ * Home Assistant writes are not transactional, so a batch cannot be atomic. The
+ * server stops at the first failure rather than ploughing on, because the likely
+ * failures are systematic (a capability revoked mid-batch, the kill switch, a
+ * stale hash after an earlier item touched the same file) and continuing would
+ * reproduce the same error for every remaining item. `remaining` is therefore not
+ * an error list: those are untouched and still individually approvable.
+ */
+export interface BatchApproveResult {
+  applied: { approval_id: string; tool_name: string | null }[];
+  failed: {
+    approval_id: string;
+    tool_name: string | null;
+    status: number;
+    error: string;
+    message?: string | null;
+    message_key?: string;
+    message_params?: Record<string, unknown>;
+  } | null;
+  remaining: string[];
+}
+
 export interface ApprovalRecord {
   id: string;
   token_id: string;

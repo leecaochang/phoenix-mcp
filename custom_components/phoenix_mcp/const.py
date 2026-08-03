@@ -702,6 +702,15 @@ MAX_PENDING_APPROVALS_PER_TOKEN = 100
 APPROVAL_DEFAULT_TTL_SECONDS = 3600
 APPROVAL_SWEEP_INTERVAL = datetime.timedelta(minutes=5)
 
+# How many approvals one batch-approve request may carry. A REQUEST-DURATION
+# bound, not a review-policy one: admin_view._approve_approval runs each
+# executor INLINE inside the admin's HTTP request (the same constraint that makes
+# ESPHome builds enqueue a job instead), so a batch's wall time is the sum of its
+# tools' and an unbounded one would hold a connection open for minutes and read
+# as a hang. Set well above any realistic hand-selected batch; a migration
+# touching every automation on a large instance ran to about 20.
+MAX_BATCH_APPROVALS = 50
+
 # Diff size limits for approval records.
 MAX_DIFF_INLINE_BYTES = 100_000
 MAX_PREVIEW_ENTITY_IDS = 500
