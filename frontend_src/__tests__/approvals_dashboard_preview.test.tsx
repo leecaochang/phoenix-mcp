@@ -172,6 +172,47 @@ describe("dashboard preview toggle on the approval card", () => {
     await waitFor(() => expect(second.container.querySelector("hui-card")).toBeTruthy());
   });
 
+  it("offers Preview for a patch_dashboard approval that targets a card", async () => {
+    const { container, findByRole } = await openDetail(record({
+      tool_name: "patch_dashboard",
+      diff: {
+        kind: "yaml_diff", summary: "Set views[0].cards[1] on dashboard",
+        after: JSON.stringify({ type: "markdown", content: "patched" }),
+      },
+      args: { path: ["views", 0, "cards", 1], value: { type: "markdown", content: "patched" } },
+    }));
+    fireEvent.click(await findByRole("button", { name: "Preview" }));
+    expect(container.querySelector("hui-card")).toBeTruthy();
+  });
+
+  it("offers NO Preview for a patch_dashboard approval that targets a badge", async () => {
+    // A badge is its own config shape. Feeding it to hui-card would render
+    // something that is not what the approver is approving, which is worse than
+    // showing no picture, so these fall back to the text diff on purpose.
+    const { queryByRole } = await openDetail(record({
+      tool_name: "patch_dashboard",
+      diff: {
+        kind: "yaml_diff", summary: "Set views[0].badges[4].entity on dashboard",
+        after: JSON.stringify("sensor.laundry_remaining"),
+      },
+      args: { path: ["views", 0, "badges", 4, "entity"], value: "sensor.laundry_remaining" },
+    }));
+    expect(queryByRole("button", { name: "Preview" })).toBeNull();
+  });
+
+  it("defaults a remove patch to the Before side, since it has no After", async () => {
+    const { container, findByRole } = await openDetail(record({
+      tool_name: "patch_dashboard",
+      diff: {
+        kind: "yaml_diff", summary: "Remove views[0].cards[1] from dashboard",
+        before: JSON.stringify({ type: "markdown", content: "going away" }),
+      },
+      args: { path: ["views", 0, "cards", 1], op: "remove" },
+    }));
+    fireEvent.click(await findByRole("button", { name: "Preview" }));
+    expect(container.querySelector("hui-card")).toBeTruthy();
+  });
+
   it("renders the Diff|Preview switch inside the diff toolbar next to the layout toggle", async () => {
     const { container, getByRole } = await openDetail(record({
       tool_name: "set_dashboard_config",

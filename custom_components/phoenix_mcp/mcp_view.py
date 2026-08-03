@@ -120,6 +120,7 @@ from .tools.lovelace import (
     _execute_create_dashboard,
     _execute_delete_dashboard,
     _execute_delete_dashboard_card,
+    _execute_patch_dashboard,
     _execute_edit_dashboard,
     _execute_edit_dashboard_card,
     _execute_set_dashboard_config,
@@ -129,6 +130,7 @@ from .tools.lovelace import (
     _tool_edit_dashboard,
     _tool_get_dashboard_config,
     _tool_list_dashboard_cards,
+    _tool_patch_dashboard,
     _tool_list_dashboards,
     _tool_set_dashboard_config,
 )
@@ -3558,6 +3560,7 @@ _register_executor("set_dashboard_config", _execute_set_dashboard_config)
 _register_executor("add_dashboard_card", _execute_add_dashboard_card)
 _register_executor("edit_dashboard_card", _execute_edit_dashboard_card)
 _register_executor("delete_dashboard_card", _execute_delete_dashboard_card)
+_register_executor("patch_dashboard", _execute_patch_dashboard)
 _register_executor("set_entity", _execute_set_entity)
 _register_executor("delete_entity", _execute_delete_entity)
 _register_executor("permit_zigbee_join", _execute_permit_zigbee_join)
@@ -3705,6 +3708,7 @@ _register_tool("set_dashboard_config", _tool_set_dashboard_config)
 _register_tool("add_dashboard_card", _tool_dashboard_card, op="add", tool_name="add_dashboard_card")
 _register_tool("edit_dashboard_card", _tool_dashboard_card, op="edit", tool_name="edit_dashboard_card")
 _register_tool("delete_dashboard_card", _tool_dashboard_card, op="delete", tool_name="delete_dashboard_card")
+_register_tool("patch_dashboard", _tool_patch_dashboard)
 
 # The mesa_* tools take (tool_name, args, ...) and are scoped by mesa_tools.
 for _mesa_tool_name in sorted(MESA_TOOL_NAMES):

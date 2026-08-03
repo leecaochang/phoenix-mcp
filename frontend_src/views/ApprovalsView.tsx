@@ -697,6 +697,26 @@ function ApprovalDetailModal({ record, claimed, onClose, onResolved }: DetailPro
 
 const CARD_OP_TOOLS = new Set(["add_dashboard_card", "edit_dashboard_card", "delete_dashboard_card"]);
 
+/** True when a patch_dashboard record addresses a CARD, so the card preview applies.
+ *
+ * patch_dashboard can target anything in a layout, and most of it is not a card:
+ * a view title is a string, and a badge is its own config shape that would render
+ * as something else entirely if fed to hui-card. Previewing those would show the
+ * approver a picture of something that is not what they are approving, which is
+ * worse than showing no picture, so the preview is offered only when the path
+ * runs through a "cards" list. Everything else falls back to the text diff.
+ */
+function isCardPatchRecord(record: { tool_name: string; args?: Record<string, unknown> | null }): boolean {
+  if (record.tool_name !== "patch_dashboard") return false;
+  const path = record.args?.path;
+  return Array.isArray(path) && path.includes("cards");
+}
+
+/** A patch whose op removes the value has only a Before side to show. */
+function isRemovePatch(record: { tool_name: string; args?: Record<string, unknown> | null }): boolean {
+  return record.tool_name === "patch_dashboard" && record.args?.op === "remove";
+}
+
 function DiffView({ record, onConfigErrors }: {
   record: ApprovalRecord;
   onConfigErrors?: (messages: string[]) => void;
@@ -714,14 +734,15 @@ function DiffView({ record, onConfigErrors }: {
   // A card op previews Before (the card being removed/replaced) or After (the
   // card being added/that replaced it); a whole-layout write only ever has an
   // After to show (see below). Defaults to whichever side a delete has.
-  const [side, setSide] = useState<"before" | "after">(record.tool_name === "delete_dashboard_card" ? "before" : "after");
+  const showsBeforeFirst = record.tool_name === "delete_dashboard_card" || isRemovePatch(record);
+  const [side, setSide] = useState<"before" | "after">(showsBeforeFirst ? "before" : "after");
   useEffect(() => {
     setModeState(storedPreviewMode());
-    setSide(record.tool_name === "delete_dashboard_card" ? "before" : "after");
-  }, [record.id, record.tool_name]);
+    setSide(showsBeforeFirst ? "before" : "after");
+  }, [record.id, record.tool_name, showsBeforeFirst]);
 
   const isWholeLayout = record.tool_name === "set_dashboard_config";
-  const isCardOp = CARD_OP_TOOLS.has(record.tool_name);
+  const isCardOp = CARD_OP_TOOLS.has(record.tool_name) || isCardPatchRecord(record);
   // Whole-layout writes: only args.config (the full proposed layout) is
   // previewable. diff.before/after are truncated strings and the record
   // carries no untruncated current config, so only the After side exists.
@@ -733,8 +754,11 @@ function DiffView({ record, onConfigErrors }: {
   // prior card on edit/delete) only exists in diff.before, wrapped from its
   // JSON; unparseable disables just that side.
   const beforeCardConfig = isCardOp ? singleCardPreviewConfig(diff.before ?? null) : null;
+  // patch_dashboard carries its card under args.value rather than args.card; both
+  // are the full untruncated object the executor will apply.
   const afterCardConfig = isCardOp
-    ? (wrapCardPreviewConfig(record.args?.card) ?? singleCardPreviewConfig(diff.after ?? null))
+    ? (wrapCardPreviewConfig(record.args?.card ?? record.args?.value)
+       ?? singleCardPreviewConfig(diff.after ?? null))
     : null;
   const cardSideOk = {
     before: beforeCardConfig !== null && collectPreviewViews(beforeCardConfig) !== null,

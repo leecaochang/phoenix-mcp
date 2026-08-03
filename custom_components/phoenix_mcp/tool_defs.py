@@ -1966,6 +1966,55 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "required": ["view_index", "card_index"],
         },
     },
+    {
+        "name": "patch_dashboard",
+        "description": (
+            "Change ONE path-addressed value anywhere in a Lovelace dashboard without "
+            "resending the layout. Use this for what the card tools cannot reach: a "
+            "view-level badge, a view option, or a single field inside a card. Call "
+            "get_dashboard_config first to find the path and its content_hash. path is "
+            "an array of keys and 0-based indexes, e.g. [\"views\", 0, \"badges\", 4, "
+            "\"entity\"] addresses that badge's entity. op defaults to 'set' (replace "
+            "the value at path); 'append' adds to a list the path addresses; 'remove' "
+            "deletes it. Nothing is created along the way, so a path whose parent does "
+            "not exist is refused rather than built. Omit url_path for the default "
+            "dashboard. Storage-mode dashboards only. May require admin approval. Pass "
+            "expected_hash to refuse the write if the layout changed since your read; "
+            "the result returns the new content_hash for chaining further patches. "
+            "Values that a read redacted are refused: a read replaces entities this "
+            "token cannot resolve with a placeholder, and writing one back would "
+            "overwrite real configuration with it."
+        ),
+        "cap": "cap_lovelace_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url_path": {"type": "string", "description": "Dashboard url_path. Omit for the default dashboard."},
+                "path": {
+                    "type": "array",
+                    "description": "Array of mapping keys (string) and list indexes (integer) addressing the value to change, e.g. [\"views\", 0, \"badges\", 4, \"entity\"]. Negative indexes are refused.",
+                    "items": {"type": ["string", "integer"]},
+                },
+                "op": {
+                    "type": "string",
+                    "enum": ["set", "append", "remove"],
+                    "description": "set (default) replaces the value at path; append adds to a list the path addresses; remove deletes it.",
+                },
+                # The type union is LOAD-BEARING, not documentation. A property with
+                # no declared type is not "any" to every client: live-found, a real
+                # MCP client serialized an object argument to a JSON STRING when the
+                # schema declared nothing, which would have written a string where a
+                # dict belongs and corrupted the layout silently. Naming every JSON
+                # type it can carry is what keeps an object arriving as an object.
+                "value": {
+                    "type": ["string", "number", "integer", "boolean", "object", "array", "null"],
+                    "description": "The new value; may be any JSON type, including an object or an array. Required for set and append; ignored for remove.",
+                },
+                "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior read; the write is refused if the layout changed since then."},
+            },
+            "required": ["path"],
+        },
+    },
 ]
 
 
@@ -2443,6 +2492,8 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "add_dashboard_card": _annot(False, False, False),
     "edit_dashboard_card": _annot(False, True, True),
     "delete_dashboard_card": _annot(False, True, True),
+    # Destructive: set and remove both replace or drop whatever the path held.
+    "patch_dashboard": _annot(False, True, True),
     "set_entity": _annot(False, True, True),
     "delete_entity": _annot(False, True, True),
     "write_file": _annot(False, True, True),

@@ -322,3 +322,27 @@ def test_the_not_a_targeting_selector_exemptions_are_all_live():
         assert tool_name in by_name, f"exemption names a tool that no longer exists: {tool_name}"
         props = by_name[tool_name]["inputSchema"].get("properties", {})
         assert param in props, f"exemption names a parameter {tool_name} no longer has: {param}"
+
+
+def test_every_published_parameter_declares_a_type():
+    """No tool parameter may be left without a declared type.
+
+    NOT a style rule. A property with no "type" is not read as "any" by every
+    client: live-found on patch_dashboard's `value`, a real MCP client serialized
+    an object argument into a JSON STRING because the schema declared nothing for
+    it. For a tool that writes structured config that is silent corruption, since
+    a string lands where a mapping belongs and the write reports success.
+
+    An enum or a oneOf/anyOf/allOf/$ref counts as a declaration; those constrain
+    the value just as well. A parameter that genuinely accepts any JSON must SAY
+    so with a type union rather than by omission, which is what patch_dashboard's
+    `value` now does.
+    """
+    untyped = [
+        f"{d['name']}.{param}"
+        for d in _all_defs()
+        for param, spec in (d.get("inputSchema", {}).get("properties") or {}).items()
+        if isinstance(spec, dict)
+        and not any(k in spec for k in ("type", "enum", "oneOf", "anyOf", "allOf", "$ref"))
+    ]
+    assert untyped == [], f"parameters with no declared type: {untyped}"

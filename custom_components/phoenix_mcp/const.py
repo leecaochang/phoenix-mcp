@@ -365,6 +365,21 @@ SENSITIVE_KEY_SUBSTRINGS = frozenset({
     "token", "session",
 })
 
+# The placeholder every redacting reader substitutes for a value the token may not
+# see. Named here so a WRITE path can refuse to persist it: a config read is lossy
+# (an out-of-scope or ghost entity comes back as this string), so a caller that
+# echoes a read back would silently store the placeholder as if it were real
+# configuration. `tool_common.redaction_sentinel_path` is that guard.
+#
+# The four PRODUCERS (policy_engine.filter_service_response, helpers.redact_structure,
+# helpers.redact_diagnostics, esphome_yaml's value scrub) still spell the literal
+# inline; this constant is deliberately NOT a refactor of them, because rewriting
+# working redaction code carries more risk than the duplication does. What keeps the
+# two honest is tests/test_redaction_sentinel.py, which asserts this value is what
+# filter_service_response actually emits, so a producer that ever changes its
+# placeholder fails there rather than silently disarming the write guard.
+REDACTION_SENTINEL = "<redacted>"
+
 # Domain-aware "lean" view for get_state / get_states. When a caller passes no
 # explicit `fields` and does not set `detailed`, the state is narrowed to the base
 # fields (entity_id, state) plus LEAN_ALWAYS_ATTRS plus the domain's important
@@ -1024,6 +1039,9 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "dashboard_card.edit.section": "Replace card {card_index} on dashboard '{label}' (view {view_index}, section {section_index})",
     "dashboard_card.delete": "Delete card {card_index} from dashboard '{label}' (view {view_index})",
     "dashboard_card.delete.section": "Delete card {card_index} from dashboard '{label}' (view {view_index}, section {section_index})",
+    "patch_dashboard.set": "Set {path} on dashboard '{label}'",
+    "patch_dashboard.append": "Append to {path} on dashboard '{label}'",
+    "patch_dashboard.remove": "Remove {path} from dashboard '{label}'",
     # Service calls and the native physical-gate tools.
     "call_service": "Call {domain}/{service}",
     "call_service.mesa": "Call {domain}/{service} (includes MESA confirmation)",
@@ -1077,6 +1095,9 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "loc.view": "view {index}",
     "loc.section": "section {index}",
     "loc.card": "card {index}",
+    "patch.set": "set {subject}",
+    "patch.append": "appended to {subject}",
+    "patch.remove": "removed {subject}",
 }
 
 

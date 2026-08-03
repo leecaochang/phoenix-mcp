@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 108 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 109 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -31,7 +31,7 @@
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 131 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 132 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -515,6 +515,13 @@
             <div class="tool-head"><span class="tool-name">add_dashboard_card</span><span class="tool-name">edit_dashboard_card</span><span class="tool-name">delete_dashboard_card</span><span class="badge badge-cap">Dashboard write</span></div>
             <p class="tool-desc">Add, replace, or remove a single card on a dashboard view (or a section, for a sections-type view) by index, without resending the whole layout the way <code>set_dashboard_config</code> does. Confirm-eligible and versioned like a full layout write; the target dashboard must already have a stored layout (create one first with <code>set_dashboard_config</code>; strategy views, strategy dashboards, and auto-generated dashboards are refused up front). The full operation is validated against the current layout before it gates, and re-validated at apply time, so a layout change during the approval window fails closed instead of landing on the wrong index. If the card names a <code>custom:</code> type that is not in the harvested card catalog (or whose element did not load), the result carries a <code>warnings</code> entry saying so. It is advisory and never blocks the write: the catalog is a cache, so refusing would block a legitimate card whenever it is cold or one plugin install stale. Prefer these over <code>set_dashboard_config</code> for a single-card change, both because it is simpler for the agent and because echoing an entire dashboard back in one tool call can exceed some models' output limits.</p>
             <dl><dt>params</dt><dd><code>url_path</code> (omit for the default dashboard), <code>view_index</code>, <code>section_index</code> (required when the target view uses sections, rejected otherwise), <code>card</code> (the card object, for add/edit), <code>position</code> (add; omit to append) or <code>card_index</code> (edit/delete), and optional <code>expected_hash</code> from a prior read, strongly recommended since card indexes shift when the layout changes. Unlike the whole-layout writers, each result returns the layout's new <code>content_hash</code>, so several card operations can be chained without re-reading.</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="patch_dashboard path badge view option single value lovelace">
+            <div class="tool-head"><span class="tool-name">patch_dashboard</span><span class="badge badge-cap">Dashboard write</span></div>
+            <p class="tool-desc">Change one value anywhere in a dashboard by addressing it with a path, without resending the layout. This reaches what the card tools cannot: a view-level badge, a view option, or a single field inside a card. The <code>path</code> is an array of mapping keys and 0-based list indexes, so <code>["views", 0, "badges", 4, "entity"]</code> addresses that badge's entity. <code>op</code> defaults to <code>set</code>; <code>append</code> adds to a list the path addresses, and <code>remove</code> deletes what is there. Nothing is created along the way, so a path whose parent does not exist is refused rather than built, and a negative index is refused rather than silently editing the other end of a list. Confirm-eligible and versioned like the card tools, validated against the current layout before it gates and again at apply time.</p>
+            <p class="tool-desc">A value that carries the <code>&lt;redacted&gt;</code> placeholder is refused. Reads replace entity IDs this token cannot resolve with that placeholder, so writing one back would overwrite real configuration with it, and the original ID would be gone from the stored layout with no way to recover what it was. This is also why patching exists rather than reading and rewriting the whole layout: a dashboard that references an entity which no longer exists reads back with placeholders no matter what permissions the token holds, so a whole-layout write cannot round-trip it.</p>
+            <dl><dt>params</dt><dd><code>url_path</code> (omit for the default dashboard), <code>path</code> (required), <code>op</code> (<code>set</code> by default, or <code>append</code> / <code>remove</code>), <code>value</code> (required for set and append), and optional <code>expected_hash</code> from a prior read. The result returns the layout's new <code>content_hash</code>, so several patches can be chained without re-reading.</dd></dl>
           </article>
         </section>
 

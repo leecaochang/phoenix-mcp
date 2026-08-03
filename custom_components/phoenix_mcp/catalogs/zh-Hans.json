@@ -653,7 +653,10 @@
       "loc.card": "第 {index} 个卡片",
       "loc.section": "第 {index} 个分区",
       "loc.view": "第 {index} 个视图",
-      "size.was": "{size}（原为 {before}）"
+      "size.was": "{size}（原为 {before}）",
+      "patch.set": "设置了 {subject}",
+      "patch.append": "向 {subject} 追加了内容",
+      "patch.remove": "删除了 {subject}"
     },
     "diff": {
       "blueprint.create": "创建 {domain} 蓝图“{rel}”",
@@ -718,7 +721,10 @@
       "zigbee_reconfigure.device": "重新配置 Zigbee 设备 {label}",
       "zigbee_remove": "移除一个 Zigbee 设备",
       "zigbee_remove.device": "将 Zigbee 设备 {label} 从网络中移除",
-      "set_yaml_config.removing": "替换 configuration.yaml，移除顶层 {keys}"
+      "set_yaml_config.removing": "替换 configuration.yaml，移除顶层 {keys}",
+      "patch_dashboard.set": "设置仪表盘“{label}”的 {path}",
+      "patch_dashboard.append": "向仪表盘“{label}”的 {path} 追加内容",
+      "patch_dashboard.remove": "从仪表盘“{label}”删除 {path}"
     },
     "approvals": {
       "approve": "批准并执行",

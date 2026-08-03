@@ -27,6 +27,7 @@ from .const import (
     MAX_DIFF_INLINE_BYTES,
     MAX_FILE_BYTES,
     MAX_CONFIRM_INLINE_WAIT_SECONDS,
+    REDACTION_SENTINEL,
 )
 from .data import PhoenixData
 from .mesa import mesa_confirm_preview
@@ -591,6 +592,104 @@ async def _text_file_cas_conflict(
             except (OSError, ValueError):
                 current = ""
     return _cas_conflict(expected, current, tool_name)
+
+
+def redaction_sentinel_path(value: Any, _prefix: tuple = ()) -> list | None:
+    """Locate a REDACTION_SENTINEL anywhere in a value, or None if clean.
+
+    THE WRITE-SIDE HALF OF REDACTION. Every config read is lossy: an entity the
+    token cannot resolve (out of scope, or a GHOST that no longer exists) comes
+    back as the sentinel, so a caller that reads a layout and writes it back
+    persists the placeholder AS IF IT WERE CONFIGURATION. That is silent and
+    permanent: the real entity id is gone from the stored config, so nobody can
+    tell afterwards what the value used to be.
+
+    Ghost entities are why this cannot be solved by widening permissions. Rule 8
+    returns NO_ACCESS for an entity absent from both hass.states and the registry
+    BEFORE any permission resolution runs, so a dashboard carrying a few dead
+    references redacts at every permission level, for every token.
+
+    Returns the PATH to the first offender rather than a bool, so the refusal can
+    name where the caller has to look. Walks dict keys as well as values: the
+    redacting readers drop an entity-id-shaped KEY's whole entry, but a caller
+    can still hand one back.
+    """
+    if isinstance(value, str):
+        return list(_prefix) if REDACTION_SENTINEL in value else None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and REDACTION_SENTINEL in key:
+                return [*_prefix, key]
+            found = redaction_sentinel_path(item, (*_prefix, key))
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            found = redaction_sentinel_path(item, (*_prefix, index))
+            if found is not None:
+                return found
+    return None
+
+
+def resolve_json_path(root: Any, path: Any) -> tuple[Any, Any, str | None]:
+    """Walk `path` to the CONTAINER holding its last segment.
+
+    Returns (container, key, None) so the caller can read, assign or delete the
+    leaf itself, or (None, None, reason) when the path does not address anything.
+    Surface-agnostic on purpose: the same addressing works for a Lovelace layout,
+    a parsed YAML mapping, or an automation body, so a future patch tool on those
+    surfaces reuses this rather than growing a second copy of the rules.
+
+    Segments are dict keys (str) or list indices (int). NEGATIVE INDICES ARE
+    REFUSED even though Python accepts them: a caller that computed -1 from a
+    stale read silently edits the wrong end of a list, and there is no legible
+    reason to address a config that way.
+
+    NOTHING IS CREATED. A path whose parent is missing is a typo, not an
+    instruction to build the intervening structure, and inventing containers is
+    how a wrong path becomes a mangled config instead of an error message.
+    """
+    if not isinstance(path, list) or not path:
+        return None, None, "path must be a non-empty array of keys and indices."
+    node = root
+    for depth, segment in enumerate(path[:-1]):
+        node, reason = _descend(node, segment, depth)
+        if reason is not None:
+            return None, None, reason
+    leaf = path[-1]
+    if isinstance(leaf, bool) or not isinstance(leaf, (str, int)):
+        return None, None, f"path segment {len(path) - 1} must be a string key or an integer index."
+    if isinstance(node, dict):
+        if not isinstance(leaf, str):
+            return None, None, f"path segment {len(path) - 1} indexes a mapping, so it must be a string key."
+        return node, leaf, None
+    if isinstance(node, list):
+        if not isinstance(leaf, int):
+            return None, None, f"path segment {len(path) - 1} indexes a list, so it must be an integer."
+        if not 0 <= leaf < len(node):
+            return None, None, f"path segment {len(path) - 1} must be an integer in 0..{len(node) - 1}."
+        return node, leaf, None
+    return None, None, f"path segment {len(path) - 2} does not address a mapping or a list."
+
+
+def _descend(node: Any, segment: Any, depth: int) -> tuple[Any, str | None]:
+    """One step of resolve_json_path's walk. Returns (child, None) or (None, reason)."""
+    if isinstance(segment, bool) or not isinstance(segment, (str, int)):
+        return None, f"path segment {depth} must be a string key or an integer index."
+    if isinstance(node, dict):
+        if not isinstance(segment, str):
+            return None, f"path segment {depth} indexes a mapping, so it must be a string key."
+        if segment not in node:
+            return None, f"path segment {depth} ({segment!r}) does not exist."
+        return node[segment], None
+    if isinstance(node, list):
+        if not isinstance(segment, int):
+            return None, f"path segment {depth} indexes a list, so it must be an integer."
+        if not 0 <= segment < len(node):
+            return None, f"path segment {depth} must be an integer in 0..{len(node) - 1}."
+        return node[segment], None
+    return None, f"path segment {depth} does not address a mapping or a list."
 
 
 def _truncate(text: str, max_chars: int = MAX_DIFF_INLINE_BYTES) -> str:

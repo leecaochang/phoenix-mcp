@@ -27,7 +27,7 @@ from typing import Any, TypeGuard
 from homeassistant.core import HomeAssistant
 
 from ..card_catalog import CardEntry
-from ..const import CAP_DENY, MAX_DIFF_INLINE_BYTES
+from ..const import CAP_DENY, MAX_DIFF_INLINE_BYTES, REDACTION_SENTINEL
 from ..data import PhoenixData
 from ..helpers import (
     content_hash,
@@ -47,6 +47,8 @@ from ..tool_common import (
     _tool_error,
     _tool_success,
     _truncate,
+    redaction_sentinel_path,
+    resolve_json_path,
 )
 from ..ws_dispatch import (
     WsDashboardNotFoundError,
@@ -741,6 +743,179 @@ async def _execute_delete_dashboard_card(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
     return await _execute_dashboard_card(args, "delete", "delete_dashboard_card", token, hass, data)
+
+
+_PATCH_OPS = ("set", "append", "remove")
+
+
+def _patch_path_label(path: Any) -> str:
+    """Render a path as `views[0].badges[4].entity` for a human reading a diff."""
+    if not isinstance(path, list) or not path:
+        return "(no path)"
+    out = ""
+    for segment in path:
+        if isinstance(segment, int) and not isinstance(segment, bool):
+            out += f"[{segment}]"
+        elif out:
+            out += f".{segment}"
+        else:
+            out = str(segment)
+    return out
+
+
+def _patch_op_arg(args: dict) -> str:
+    """The requested op, defaulting to set. Never raises on a wrong-shaped value."""
+    op = str_arg(args.get("op")).strip().lower()
+    return op if op in _PATCH_OPS else "set"
+
+
+def _apply_dashboard_patch(config: dict, args: dict) -> tuple[dict | None, Any, str | None]:
+    """Apply one path-addressed patch to a COPY of config.
+
+    Returns (new_config, prior_value, None) or (None, None, reason). prior_value is
+    what the path held before (None for a path being appended to, which keeps its
+    list identity). Deep-copies first for the same reason the card ops do:
+    async_get_lovelace_config can hand back the lovelace integration's live object.
+    """
+    op = _patch_op_arg(args)
+    path = args.get("path")
+    new_config = copy.deepcopy(config)
+    container, key, reason = resolve_json_path(new_config, path)
+    if reason is not None:
+        return None, None, reason
+    if op == "remove":
+        prior = container[key]
+        if isinstance(container, list):
+            container.pop(key)
+        else:
+            del container[key]
+        return new_config, prior, None
+    if "value" not in args:
+        return None, None, f"value is required for op '{op}'."
+    value = args["value"]
+    # The caller's own value is the ONLY thing that can introduce a sentinel here:
+    # every other byte of the layout is untouched because it was never resent,
+    # which is the entire reason this tool exists.
+    offender = redaction_sentinel_path(value)
+    if offender is not None:
+        where = _patch_path_label(offender) if offender else "value"
+        return None, None, (
+            f"value contains the redaction placeholder {REDACTION_SENTINEL!r} at {where}. "
+            "That placeholder is what a read substitutes for an entity this token cannot "
+            "resolve (out of scope, or one that no longer exists), so writing it back would "
+            "replace real configuration with the placeholder. Send the intended value instead."
+        )
+    if op == "append":
+        target = container[key]
+        if not isinstance(target, list):
+            return None, None, f"op 'append' requires the path to address a list; {_patch_path_label(path)} is not one."
+        target.append(value)
+        return new_config, None, None
+    prior = container[key] if not isinstance(container, list) or 0 <= key < len(container) else None
+    container[key] = value
+    return new_config, prior, None
+
+
+async def _build_diff_patch_dashboard(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
+    url_path = str_arg(args.get("url_path")).strip() or None
+    label = url_path or "(default dashboard)"
+    op = _patch_op_arg(args)
+    path_label = _patch_path_label(args.get("path"))
+    before = None
+    try:
+        current = await async_get_lovelace_config(hass, url_path)
+        if isinstance(current, dict):
+            _, prior, _ = _apply_dashboard_patch(current, args)
+            if prior is not None:
+                before = _truncate(
+                    json.dumps(filter_service_response(prior, token, hass), indent=2, default=str),
+                    max_chars=MAX_DIFF_INLINE_BYTES,
+                )
+    except Exception:  # noqa: BLE001 - diagnostic only; the precheck already validated
+        pass
+    after = None
+    if op != "remove" and "value" in args:
+        after = _truncate(json.dumps(args["value"], indent=2, default=str), max_chars=MAX_DIFF_INLINE_BYTES)
+    return {
+        "kind": "yaml_diff",
+        **_summary(f"patch_dashboard.{op}", label=label, path=path_label),
+        "target": {"type": "dashboard", "id": url_path, "label": label},
+        "before": before,
+        "after": after,
+        "preview": {"url_path": url_path, "path": path_label, "op": op},
+    }
+
+
+async def _tool_patch_dashboard(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: change ONE path-addressed value in a dashboard (Confirm-gated).
+
+    The escape hatch for everything the card ops cannot address: view badges, view
+    options, a single field inside a card. It exists because set_dashboard_config
+    requires resending the WHOLE layout, and a read of that layout is lossy (rule
+    12 redacts entities the token cannot resolve, INCLUDING ghosts that no longer
+    exist per rule 8), so a dashboard carrying a few dead references cannot be
+    written back at all without persisting placeholders over them. Patching never
+    resends the untouched bytes, so redaction stops being a write barrier.
+
+    Validated pre-gate against the current layout (rule 29), so a bad path never
+    becomes a pending approval; the executor re-reads and re-validates at apply
+    time so a change during the approval window is caught.
+    """
+    tool = "patch_dashboard"
+    if effective_cap(token, "cap_lovelace_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
+    current = await _dashboard_card_current(args, hass, tool)
+    if isinstance(current, tuple):
+        return current
+    _, _, reason = _apply_dashboard_patch(current, args)
+    if reason is not None:
+        return _tool_error(reason), "invalid_request", tool
+    blocked = await _gate(
+        "cap_lovelace_write", token, hass, data,
+        tool_name=tool, args=args, request_id=request_id,
+        client_ip=client_ip, diff=lambda: _build_diff_patch_dashboard(args, token, hass),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_patch_dashboard(args, token, hass, data)
+
+
+async def _execute_patch_dashboard(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    tool = "patch_dashboard"
+    current = await _dashboard_card_current(args, hass, tool)
+    if isinstance(current, tuple):
+        return current
+    new_config, _, reason = _apply_dashboard_patch(current, args)
+    if reason is not None or new_config is None:
+        return _tool_error(reason or "Invalid patch operation."), "invalid_request", tool
+    url_path = str_arg(args.get("url_path")).strip() or None
+    resource_id = url_path or "lovelace"
+    try:
+        await async_save_lovelace_config(hass, url_path, new_config)
+    except WsDispatchError as exc:
+        return _tool_error(f"Failed to save dashboard config: {exc}"), "invalid_request", tool
+    op = _patch_op_arg(args)
+    path_label = _patch_path_label(args.get("path"))
+    await _record_version(
+        data, token, resource_type="dashboard", resource_id=resource_id,
+        action="edit", before=current, after=new_config, alias=url_path or "(default)",
+        summary=_version_summary(f"patch.{op}", subject=path_label),
+    )
+    body: dict[str, Any] = {
+        "url_path": url_path, "saved": True, "op": op, "path": path_label,
+        # Structural like the card ops, so the resulting hash is safe to hand back
+        # and the agent can chain further patches without another read.
+        "content_hash": content_hash(new_config),
+    }
+    warnings = _card_warnings(args.get("value"), data) if op != "remove" else []
+    if warnings:
+        body["warnings"] = warnings
+    return _tool_success(json.dumps(body, default=str)), "allowed", f"dashboard:{resource_id}"
 
 
 def _build_diff_dashboard(verb: str, args: dict, hass: HomeAssistant) -> dict:
