@@ -271,6 +271,28 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   );
   const pickedCount = selectableIds.filter((id) => picked.has(id)).length;
   const allPicked = selectableIds.length > 0 && pickedCount === selectableIds.length;
+  // Batching one thing is meaningless, so BOTH the bar and the per-row tick boxes
+  // appear only from two selectable rows up. Showing a lone tick box with no
+  // button to press reads as a broken control (reported).
+  const batchable = selectableIds.length > 1;
+
+  // The result banner describes ONE completed run. Clear it as soon as the queue
+  // moves underneath it, otherwise it sits above a list it no longer describes
+  // and an operator reads a stale "Approved 2" over two freshly-arrived rows
+  // (reported). The first render after a result captures the list it belongs to;
+  // any change to that list retires it.
+  const listKey = records.map((r) => r.id).join(",");
+  const bannerListKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!batchResult) {
+      bannerListKey.current = null;
+    } else if (bannerListKey.current === null) {
+      bannerListKey.current = listKey;
+    } else if (bannerListKey.current !== listKey) {
+      setBatchResult(null);
+      bannerListKey.current = null;
+    }
+  }, [batchResult, listKey]);
 
   const togglePick = (id: string) =>
     setPicked((prev) => {
@@ -367,7 +389,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       {tab === "pending" ? (
         <>
           {batchResult && <BatchResultMsg result={batchResult} onDismiss={() => setBatchResult(null)} />}
-          {selectableIds.length > 1 && (
+          {batchable && (
             <div className="approvals-batch-bar">
               <label className="approvals-batch-all">
                 <input
@@ -396,7 +418,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
                 claimed={isClaimed(r)}
                 checked={picked.has(r.id)}
                 selectable={!isClaimed(r)}
-                onToggle={() => togglePick(r.id)}
+                onToggle={batchable ? () => togglePick(r.id) : undefined}
                 onClick={() => setSelected(r)}
               />
             ))}

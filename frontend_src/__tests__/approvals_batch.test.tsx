@@ -88,11 +88,46 @@ describe("batch approve", () => {
 
   it("will not tick an approval that is already executing", async () => {
     // The server would answer 409 on its claim and halt the run on a row the
-    // operator never chose, so it is not selectable in the first place.
-    await renderPending([record("a", { in_progress: true }), record("b")]);
+    // operator never chose, so it is not selectable in the first place. Three
+    // rows, because a claimed one does not count toward the two that turn
+    // batching on at all.
+    await renderPending([record("a", { in_progress: true }), record("b"), record("c")]);
     const boxes = document.querySelectorAll<HTMLInputElement>(".approval-card-check");
     expect(boxes[0].disabled).toBe(true);
     expect(boxes[1].disabled).toBe(false);
+  });
+
+  it("shows no tick box at all when only one row is selectable", async () => {
+    // A lone tick box with no button to press reads as a broken control.
+    await renderPending([record("a")]);
+    expect(document.querySelectorAll(".approval-card-check")).toHaveLength(0);
+    // And a claimed row does not make a second one "selectable".
+    await renderPending([record("a", { in_progress: true }), record("b")]);
+    expect(document.querySelectorAll(".approval-card-check")).toHaveLength(0);
+  });
+
+  it("retires the result banner once the queue moves under it", async () => {
+    // Otherwise "Approved 2" sits above two freshly-arrived rows it does not
+    // describe, which is what an operator reads as the current state.
+    vi.mocked(api.batchApproveApprovals).mockResolvedValue({
+      applied: [{ approval_id: "a", tool_name: "edit_automation" },
+                { approval_id: "b", tool_name: "edit_automation" }],
+      failed: null,
+      remaining: [],
+    });
+    const { getByRole, findByText, queryByText, rerender } = await renderPending(
+      [record("a"), record("b")],
+    );
+    fireEvent.click(getByRole("checkbox", { name: "Select all" }));
+    fireEvent.click(getByRole("button", { name: "Approve 2 selected" }));
+    expect(await findByText("Approved 2.")).toBeTruthy();
+
+    // A new approval arrives on the next poll.
+    vi.mocked(api.listApprovals).mockResolvedValue({
+      approvals: [record("x"), record("y")], total: 2, limit: 50, offset: 0,
+    });
+    rerender(<ApprovalsView tab="pending" onTabChange={() => {}} refreshSignal={1} />);
+    await waitFor(() => expect(queryByText("Approved 2.")).toBeNull());
   });
 
   it("reports applied, the stopping point, and what is left pending", async () => {
