@@ -48,7 +48,7 @@ from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import parse_datetime, utcnow
 
-from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_DANGLING_PATHS, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
+from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_COMPARE_LIST_VALUES, MAX_COMPARE_VALUE_CHARS, MAX_DANGLING_PATHS, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
 from ..data import PhoenixData
 from ..mesa import async_semantic_moments, build_expand_target, entity_control_mode, evaluate_service_entities
 from ..mesa_core.trigger_validator import entities_by_role
@@ -1649,6 +1649,143 @@ async def _tool_compare_state(
 
     body = {"t1": t1, "t2": t2, "comparisons": comparisons}
     return _tool_success(json.dumps(body, default=str)), "allowed", "compare_state"
+
+
+_SCALAR_TYPES = (str, int, float, bool, type(None))
+
+
+def _scalar_list(value: Any) -> list | None:
+    """The value as a list of scalars, or None when it is not one.
+
+    A list of mappings (a weather forecast, a media browse tree) has no useful
+    member-wise reading: differencing it produces two near-identical blobs
+    rather than the one-line "this option was renamed" a caller acts on, and it
+    would dominate the response. Those are reported by type instead.
+    """
+    if not isinstance(value, (list, tuple)):
+        return None
+    items = list(value)
+    return items if all(isinstance(v, _SCALAR_TYPES) for v in items) else None
+
+
+def _bounded_value(value: Any) -> Any:
+    """One attribute value, bounded and JSON-safe.
+
+    Scalars and short scalar lists pass through, since the value itself is the
+    answer. A long string is clipped and a larger structure is replaced by a
+    marker naming its type, because the question this tool answers is whether
+    two entities are interchangeable, not what either one currently holds.
+    """
+    if isinstance(value, str) and len(value) > MAX_COMPARE_VALUE_CHARS:
+        return value[:MAX_COMPARE_VALUE_CHARS] + f"... ({len(value) - MAX_COMPARE_VALUE_CHARS} more characters)"
+    if isinstance(value, _SCALAR_TYPES):
+        return value
+    scalars = _scalar_list(value)
+    if scalars is not None and len(scalars) <= MAX_COMPARE_LIST_VALUES:
+        return scalars
+    size = len(value) if isinstance(value, (list, tuple, dict)) else None
+    marker = type(value).__name__ if size is None else f"{type(value).__name__} with {size} entries"
+    return {"omitted": marker}
+
+
+def _changed_attribute(name: str, value: Any, other: Any) -> dict:
+    """One entry in the `changed` array, differenced by value shape.
+
+    Two scalar LISTS are differenced member-wise, and that case is the reason
+    this tool exists: an option set renamed between two integrations
+    (preset_modes boost -> speed) reads as a removal beside an addition, which
+    is directly actionable, while the two full lists side by side leave the
+    caller to spot it. Everything else reports both values, so a narrowed range
+    (min_temp 7 -> 16) is visible as the pair it is.
+    """
+    entry: dict[str, Any] = {"attribute": name}
+    values = _scalar_list(value)
+    others = _scalar_list(other)
+    if values is None or others is None:
+        entry["value"] = _bounded_value(value)
+        entry["compare_value"] = _bounded_value(other)
+        return entry
+    removed = [v for v in values if v not in others]
+    added = [v for v in others if v not in values]
+    entry["removed"] = removed[:MAX_COMPARE_LIST_VALUES]
+    entry["removed_total"] = len(removed)
+    entry["added"] = added[:MAX_COMPARE_LIST_VALUES]
+    entry["added_total"] = len(added)
+    entry["truncated"] = (
+        len(removed) > MAX_COMPARE_LIST_VALUES or len(added) > MAX_COMPARE_LIST_VALUES
+    )
+    if not removed and not added:
+        # Same members in a different order. Saying so is the whole point of the
+        # flag: an entry carrying two empty arrays otherwise reads as a
+        # difference the caller failed to understand, when it is one they can
+        # almost always ignore.
+        entry["reordered"] = True
+    return entry
+
+
+async def _tool_compare_entities(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> tuple[dict, str, str]:
+    """MCP tool: what differs between two accessible entities' current shapes."""
+    if effective_cap(token, "cap_search") == CAP_DENY:
+        return _tool_error("Forbidden."), "denied", "compare_entities"
+
+    entity_id = str_arg(args.get("entity_id"))
+    compare_to = str_arg(args.get("compare_to"))
+    if not entity_id:
+        return _tool_error("Missing required argument: entity_id"), "invalid_request", "compare_entities"
+    if not compare_to:
+        return _tool_error("Missing required argument: compare_to"), "invalid_request", "compare_entities"
+
+    states = []
+    for eid in (entity_id, compare_to):
+        # Both sides answer with the same body whether the entity is absent or
+        # merely out of scope, and the resource names the tool rather than the
+        # id, so a refusal cannot report which of the two was the problem.
+        if resolve(eid, token, hass) not in (Permission.READ, Permission.WRITE):
+            return _tool_error("Entity not found."), "not_found", "compare_entities"
+        state = hass.states.get(eid)
+        if state is None:
+            return _tool_error("Entity not found."), "not_found", "compare_entities"
+        states.append(scrub_sensitive_attributes(state))
+
+    # Scrubbing runs before the diff, so an attribute Phoenix strips from a
+    # state read can never be reintroduced here as a difference between two.
+    attrs, compare_attrs = (s.get("attributes") or {} for s in states)
+    missing = sorted(set(attrs) - set(compare_attrs))
+    added = sorted(set(compare_attrs) - set(attrs))
+    shared = sorted(set(attrs) & set(compare_attrs))
+    changed = [
+        _changed_attribute(name, attrs[name], compare_attrs[name])
+        for name in shared
+        if attrs[name] != compare_attrs[name]
+    ]
+
+    body = {
+        "entity_id": entity_id,
+        "compare_to": compare_to,
+        "domain": entity_id.split(".")[0],
+        "compare_domain": compare_to.split(".")[0],
+        "state": states[0].get("state"),
+        "compare_state": states[1].get("state"),
+        # Named for the direction that breaks a substitution: something reading
+        # entity_id's attribute finds nothing on compare_to. The other two
+        # arrays are informational by comparison.
+        "missing_in_compare_to": [
+            {"attribute": name, "value": _bounded_value(attrs[name])} for name in missing
+        ],
+        "added_in_compare_to": [
+            {"attribute": name, "value": _bounded_value(compare_attrs[name])} for name in added
+        ],
+        "changed": changed,
+        "identical_count": len(shared) - len(changed),
+        "note": (
+            "Current attributes only. A value that varies over time (an enum "
+            "sensor's state) can differ without appearing here; use get_history "
+            "on both entities across the same window to compare those."
+        ),
+    }
+    return _tool_success(json.dumps(body, default=str)), "allowed", "compare_entities"
 
 
 async def _tool_recent_activity(

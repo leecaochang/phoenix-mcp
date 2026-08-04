@@ -904,6 +904,18 @@ MAX_TOOL_NAME_LENGTH = 200
 # clipped list is never mistaken for a complete one.
 MAX_DANGLING_PATHS = 3
 
+# compare_entities: how many members of a list-valued attribute are named per
+# side before the rest become a count. A light's effect_list and a media
+# player's source_list run to hundreds of entries, and echoing both sides in
+# full answers nothing the added/removed pair does not. The true totals are
+# reported alongside, per the truncation contract.
+MAX_COMPARE_LIST_VALUES = 25
+
+# compare_entities: how many characters of one string attribute value are
+# shown. This bounds ONE value's length rather than a page of rows, so nothing
+# a caller could have asked for separately is withheld.
+MAX_COMPARE_VALUE_CHARS = 200
+
 MAX_SEARCH_QUERY_LEN = 512
 
 # Hard cap (and default) for the bounded watch_entity tool.

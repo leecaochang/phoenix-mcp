@@ -1559,6 +1559,29 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "compare_entities",
+        "description": (
+            "Compare two entities' current shapes to see whether one can stand in for the other. "
+            "Reports attributes present on one and not the other, attributes whose value differs "
+            "(option lists like preset_modes/hvac_modes/source_list are differenced member-wise, so "
+            "a renamed option reads as a removal beside an addition), and both current states. Use "
+            "before repointing automations, scripts or dashboard cards from one entity to another: "
+            "a narrowed min_temp/max_temp, a target_temp_step that only one side declares, or an "
+            "option renamed between two integrations all break references that look correct. "
+            "This is a snapshot of current attributes, not a history comparison (see compare_state "
+            "for one entity over time, and get_history to compare values that vary)."
+        ),
+        "cap": "cap_search",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "The entity you have, e.g. the one being replaced."},
+                "compare_to": {"type": "string", "description": "The entity to compare it against, e.g. the replacement."},
+            },
+            "required": ["entity_id", "compare_to"],
+        },
+    },
+    {
         "name": "recent_activity",
         "description": (
             "Summarize which accessible entities changed state in the last N minutes (the 'catch me up' "
@@ -2702,6 +2725,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "describe_entity": _annot(True, False, True),
     "whatif": _annot(True, False, True),
     "compare_state": _annot(True, False, True),
+    "compare_entities": _annot(True, False, True),
     "recent_activity": _annot(True, False, True),
     "dry_run_service": _annot(True, False, True),
     "validate_config": _annot(True, False, True),

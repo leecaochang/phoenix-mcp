@@ -71,6 +71,14 @@ grain of the model gives the smoothest results and avoids dead ends.
 - `get_history` (transitions by default), `get_statistics`, `recent_activity`,
   `compare_state`: what changed and when. Use relative time strings like `24h`,
   `7d`, `2w`, `1m`.
+- `compare_entities`: whether one entity can stand in for another, BEFORE you
+  repoint automations, scripts or dashboard cards from one to the other. It
+  names attributes the replacement lacks, attributes whose value differs, and
+  differences inside option lists like `preset_modes` and `hvac_modes`, where a
+  rename between two integrations is what breaks a reference that otherwise
+  looks correct. Do not conclude two entities behave the same from a clean
+  report: it compares current attributes only, so for a value that varies (an
+  enum sensor's state) call `get_history` on both across the same window.
 - `get_radio_network`, `get_radio_device`: radio-network health (Zigbee in this
   version): channel, coordinator, join state, and per-device signal quality
   (LQI/RSSI), availability, and mesh neighbors. Useful when a device is flaky
