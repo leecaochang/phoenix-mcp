@@ -43,11 +43,13 @@ from .helpers import build_error_response as _error, build_permitted_states as _
 # imports this module.
 from .tools.authoring import _execute_create_automation, _execute_create_scene, _execute_create_script, _execute_delete_automation, _execute_delete_scene, _execute_delete_script, _execute_edit_automation, _execute_edit_scene, _execute_edit_script, _tool_create_automation, _tool_create_scene, _tool_create_script, _tool_delete_automation, _tool_delete_scene, _tool_delete_script, _tool_edit_automation, _tool_edit_scene, _tool_edit_script, _tool_get_automation, _tool_get_automation_traces, _tool_get_scene, _tool_get_script, _tool_list_automations, _tool_list_scenes, _tool_list_scripts
 from .tools.config_files import (
+    _execute_patch_yaml_config,
     _execute_set_yaml_config,
     _execute_write_file,
     _tool_get_yaml_config,
     _tool_list_files,
     _tool_read_file,
+    _tool_patch_yaml_config,
     _tool_set_yaml_config,
     _tool_write_file,
 )
@@ -3676,6 +3678,7 @@ _register_executor("create_blueprint", _execute_create_blueprint)
 _register_executor("edit_blueprint", _execute_edit_blueprint)
 _register_executor("delete_blueprint", _execute_delete_blueprint)
 _register_executor("set_yaml_config", _execute_set_yaml_config)
+_register_executor("patch_yaml_config", _execute_patch_yaml_config)
 _register_executor("set_esphome_yaml", _execute_set_esphome_yaml)
 _register_executor("delete_esphome_yaml", _execute_delete_esphome_yaml)
 _register_executor("rename_esphome_device", _execute_rename_esphome_device)
@@ -3827,6 +3830,7 @@ _register_tool("get_solar_forecast", _tool_get_solar_forecast)
 _register_tool("edit_energy_config", _tool_edit_energy_config)
 _register_tool("get_yaml_config", _tool_get_yaml_config)
 _register_tool("set_yaml_config", _tool_set_yaml_config)
+_register_tool("patch_yaml_config", _tool_patch_yaml_config)
 _register_tool("list_integrations", _tool_list_integrations)
 _register_tool("set_integration_enabled", _tool_set_integration_enabled)
 _register_tool("list_backups", _tool_list_backups)

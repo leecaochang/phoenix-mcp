@@ -128,14 +128,15 @@ def test_every_template_is_reachable() -> None:
     """No orphan templates.
 
     Keys assembled at runtime (f"blueprint.{op}", f"dashboard.{verb.lower()}",
-    f"hass_turn.{verb}", f"dashboard_card.{op}", and patch_dashboard's
-    f"patch_dashboard.{op}" / f"patch.{op}") have no literal to match, so they
-    are covered by prefix. That list doubles as the record of which keys are
-    computed rather than written out.
+    f"hass_turn.{verb}", f"dashboard_card.{op}", and the two patch tools'
+    f"patch_dashboard.{op}" / f"patch_yaml_config.{op}" / the shared
+    f"patch.{op}") have no literal to match, so they are covered by prefix. That
+    list doubles as the record of which keys are computed rather than written
+    out.
     """
     computed_prefixes = (
         "blueprint.", "dashboard.", "dashboard_card.", "hass_turn.",
-        "patch_dashboard.", "patch.", "edit_energy_config.",
+        "patch_dashboard.", "patch_yaml_config.", "patch.", "edit_energy_config.",
     )
     named = _keys_named_in_source() | set(_CARD_OP_VERSION_KEYS.values())
     orphans = [

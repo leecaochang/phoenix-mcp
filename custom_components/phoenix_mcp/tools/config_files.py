@@ -52,12 +52,12 @@ import os
 from homeassistant.util.file import write_utf8_file_atomic as _write_utf8_file_atomic
 from homeassistant.core import HomeAssistant
 
-from ..const import CAP_DENY, DOMAIN, FILESYSTEM_ALLOWED_DIRS, MAX_FILE_BYTES, YAML_PROTECTED_SUBTREES
+from ..const import CAP_DENY, DOMAIN, FILESYSTEM_ALLOWED_DIRS, MAX_FILE_BYTES, REDACTION_SENTINEL, YAML_PROTECTED_SUBTREES
 from ..data import PhoenixData
-from ..helpers import content_hash, diff_summary_fields as _summary, effective_cap, redact_secrets_in_text as _redact_secrets_in_text, str_arg, str_list_arg
-from ..tool_common import _CAP_FORBIDDEN_MESSAGE, _cas_conflict, _gate, _read_text_capped, _record_version, _restore_ctx, _text_file_cas_conflict, _tool_error, _tool_success, _truncate, _usable_path_arg, _version_content_payload, _write_text_atomic
+from ..helpers import content_hash, diff_summary_fields as _summary, effective_cap, redact_secrets_in_text as _redact_secrets_in_text, str_arg, str_list_arg, version_summary_fields as _version_summary
+from ..tool_common import _CAP_FORBIDDEN_MESSAGE, _cas_conflict, _gate, _read_text_capped, _record_version, _restore_ctx, _text_file_cas_conflict, _tool_error, _tool_success, _truncate, _usable_path_arg, _version_content_payload, _write_text_atomic, redaction_sentinel_path
 from ..token_store import TokenRecord
-from .. import yaml_includes
+from .. import yaml_includes, yaml_patch
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -652,6 +652,180 @@ async def _execute_set_yaml_config(
     )
 
 
+# ---------------------------------------------------------------------------
+# Key-addressed configuration.yaml edit (cap_yaml_edit)
+# ---------------------------------------------------------------------------
+
+
+def _yaml_patch_op(args: dict) -> str:
+    """The requested op, defaulting to set. Never raises on a wrong-shaped value."""
+    op = str_arg(args.get("op")).strip().lower()
+    return op if op in yaml_patch.PATCH_OPS else "set"
+
+
+def _patch_declared_removals(args: dict, op: str) -> list[str]:
+    """The top-level keys this patch declares it removes, for the rule-31 guard.
+
+    A `remove` of a top-level key IS its own declaration: the key argument names
+    exactly what goes, and it lands in the approval diff where a wrong claim is
+    visible, which is what remove_keys exists to provide for a whole-file write.
+    Nothing else a patch can do drops a top-level key, so the guard still runs on
+    every patch and any removal it reports there is a splice bug rather than a
+    resend that forgot a key.
+    """
+    if op != "remove":
+        return []
+    try:
+        path = yaml_patch.split_key(args.get("key"))
+    except yaml_patch.PatchError:
+        return []
+    return path[:1] if len(path) == 1 else []
+
+
+def _prepare_yaml_patch(
+    current: str | None, args: dict, tool_name: str
+) -> yaml_patch.PatchResult | tuple[dict, str, str]:
+    """Build the patched configuration.yaml, or an error tuple refusing it.
+
+    Runs pre-gate (rule 29) AND again at apply time against what is on disk, for
+    the same reason the two whole-file checks below it do: the addressed key can
+    appear, move, or change shape while an approval waits, and a patch aimed at a
+    line span is more sensitive to that than a whole-file replace is.
+    """
+    op = _yaml_patch_op(args)
+    try:
+        value = yaml_patch.parse_value(args.get("content")) if op == "set" else None
+    except yaml_patch.PatchError as err:
+        return _tool_error(str(err)), "invalid_request", tool_name
+    # Rule 32. A configuration.yaml read is not itself lossy, so the sentinel can
+    # only arrive in a value the caller carried across from a read that IS (a
+    # dashboard layout, a service response), which is exactly the mistake that
+    # would persist the placeholder as configuration.
+    offender = redaction_sentinel_path(value)
+    if offender is not None:
+        where = ".".join(str(segment) for segment in offender) or "the top level"
+        return (
+            _tool_error(
+                f"content contains the redaction placeholder {REDACTION_SENTINEL!r} at {where}. "
+                "That placeholder is what a read substitutes for an entity this token cannot "
+                "resolve (out of scope, or one that no longer exists), so writing it back would "
+                "replace real configuration with the placeholder. Send the intended value instead."
+            ),
+            "invalid_request", tool_name,
+        )
+    try:
+        result = yaml_patch.apply_patch(current or "", args.get("key"), op, args.get("content"), value)
+    except yaml_patch.PatchError as err:
+        return _tool_error(str(err)), "invalid_request", tool_name
+    protected = _yaml_protected_check(current, result.text, tool_name)
+    if protected is not None:
+        return protected
+    removal = _yaml_removal_check(
+        current, result.text, {"remove_keys": _patch_declared_removals(args, op)}, tool_name,
+    )
+    if removal is not None:
+        return removal
+    return result
+
+
+async def _tool_patch_yaml_config(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: change ONE key inside configuration.yaml (Confirm-gated).
+
+    The counterpart to patch_dashboard, and it exists for the reading half of the
+    same problem rather than the writing half. set_yaml_config replaces the whole
+    file, so a five-line recorder fix arrives at an operator as an approval diff
+    covering every line of their configuration.yaml, and the one thing an approver
+    must be able to do is see what changed. Addressing a key means the diff is the
+    key, and the untouched bytes (comments, ordering, spacing) are never resent,
+    so they cannot be lost on the way through either.
+    """
+    tool = "patch_yaml_config"
+    if effective_cap(token, "cap_yaml_edit") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
+    current = await _read_config_yaml_text(hass)
+    prepared = await hass.async_add_executor_job(_prepare_yaml_patch, current, args, tool)
+    if isinstance(prepared, tuple):
+        return prepared
+    conflict = await _text_file_cas_conflict(
+        args.get("expected_hash"), hass.config.path(_CONFIG_YAML), hass, tool,
+    )
+    if conflict is not None:
+        return conflict
+    blocked = await _gate(
+        "cap_yaml_edit", token, hass, data,
+        tool_name=tool, args=args, request_id=request_id,
+        client_ip=client_ip, diff=lambda: _build_diff_patch_yaml_config(args, token, hass),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_patch_yaml_config(args, token, hass, data)
+
+
+async def _execute_patch_yaml_config(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    tool = "patch_yaml_config"
+    path = hass.config.path(_CONFIG_YAML)
+    key = str_arg(args.get("key"))
+    op = _yaml_patch_op(args)
+    # Read, patch, CAS and write are one critical section, sharing the whole-file
+    # writer's lock: the patch is computed from the text read a few statements
+    # earlier, so an interleaved second writer would both lose an edit and leave
+    # this splice aimed at line numbers that no longer mean anything.
+    async with _get_config_yaml_lock(hass):
+        existed = await hass.async_add_executor_job(os.path.isfile, path)
+        before_content: str | None = None
+        if existed:
+            try:
+                before_content = await hass.async_add_executor_job(_read_text_capped, path)
+            except (OSError, ValueError):
+                before_content = None  # unreadable/too large: capture as no prior content
+        prepared = await hass.async_add_executor_job(_prepare_yaml_patch, before_content, args, tool)
+        if isinstance(prepared, tuple):
+            return prepared
+        content = prepared.text
+        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
+            return _tool_error("The patched file would exceed the maximum file size."), "invalid_request", tool
+        # Optimistic-concurrency guard at apply time: catches a change made during
+        # the read/approve window (an absent/unreadable file hashes as "").
+        conflict = _cas_conflict(args.get("expected_hash"), before_content or "", tool)
+        if conflict is not None:
+            return conflict
+        try:
+            await hass.async_add_executor_job(_write_utf8_file_atomic, path, content)
+        except OSError:
+            _LOGGER.exception("patch_yaml_config failed")
+            return _tool_error("Failed to write configuration.yaml."), "invalid_request", tool
+        # Inside the lock so the history cannot record two writes out of order.
+        # The snapshot is the WHOLE file on both sides, so a restore reproduces
+        # configuration.yaml exactly as any other yaml_config version does.
+        await _record_version(
+            data, token, resource_type="yaml_config", resource_id=_CONFIG_YAML,
+            action="edit" if existed else "create",
+            before=_version_content_payload(before_content),
+            after=_version_content_payload(content),
+            alias=_CONFIG_YAML,
+            summary=_version_summary(f"patch.{op}", subject=key),
+        )
+    return (
+        _tool_success(json.dumps({
+            "path": _CONFIG_YAML,
+            "key": key,
+            "op": op,
+            "bytes_written": len(content.encode("utf-8")),
+            # Structural like patch_dashboard's card ops rather than a blind
+            # replace, so the resulting hash is safe to hand back and further
+            # patches can be chained without another read.
+            "content_hash": content_hash(content),
+            "note": "Run check_config and restart Home Assistant to apply.",
+        })),
+        "allowed", tool,
+    )
+
+
 def _read_capped_if_file(path: str) -> str | None:
     """isfile-guarded _read_text_capped for diff builders. Returns None when the
     file is missing, too large, or unreadable. Safe to run in an executor job."""
@@ -704,4 +878,35 @@ async def _build_diff_set_yaml_config(args: dict, token: TokenRecord, hass: Home
         "before": _redact_secrets_in_text(before),
         "after": _redact_secrets_in_text(_truncate(str(content))),
         "preview": {"warning": "Replaces the entire configuration.yaml; a broken file blocks HA startup."},
+    }
+
+
+async def _build_diff_patch_yaml_config(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
+    """The addressed key's before and after, which is the point of the tool.
+
+    Both sides describe the same thing (the key's VALUE, not the pair), and the
+    before side is the file's own source text rather than a re-dump, so the
+    comments an operator wrote next to the setting are on the side they are
+    reading when they decide.
+    """
+    key = str_arg(args.get("key"))
+    op = _yaml_patch_op(args)
+    current = await _read_config_yaml_text(hass)
+    prepared = await hass.async_add_executor_job(
+        _prepare_yaml_patch, current, args, "patch_yaml_config",
+    )
+    before = prepared.before if isinstance(prepared, yaml_patch.PatchResult) else None
+    after = str_arg(args.get("content")) if op == "set" else None
+    return {
+        "kind": "yaml_diff",
+        # `path`, not `key`: diff_summary_fields takes the template key as its
+        # own first parameter, so a template param of that name collides with it.
+        **_summary(f"patch_yaml_config.{op}", path=key or "(no key)"),
+        "target": {"type": "file", "id": _CONFIG_YAML, "label": _CONFIG_YAML},
+        "before": _redact_secrets_in_text(_truncate(before) if before is not None else None),
+        "after": _redact_secrets_in_text(_truncate(after) if after is not None else None),
+        "preview": {
+            "file": _CONFIG_YAML, "key": key, "op": op,
+            "warning": "Changes one key; the rest of configuration.yaml is untouched.",
+        },
     }

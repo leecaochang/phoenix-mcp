@@ -1854,6 +1854,44 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "patch_yaml_config",
+        "description": (
+            "Change ONE key inside configuration.yaml without resending the file. Prefer this "
+            "over set_yaml_config for any edit that touches a single setting: everything you do "
+            "not address stays exactly as written, comments and ordering included, and the "
+            "approval an administrator sees is that one key rather than the whole file. key is a "
+            "dotted path of mapping keys, e.g. 'recorder' or 'recorder.include'; content is the "
+            "YAML for that key's new VALUE, the shape get_yaml_config returns when you pass the "
+            "same key. Address the NARROWEST key you are changing: your content is written "
+            "verbatim, but a value read back arrives in standard YAML style rather than the "
+            "file's own layout and carries none of the comments inside it, so re-writing an "
+            "outer key reformats that whole block. op defaults to 'set' (replace the key, or add it when it is "
+            "absent); 'remove' deletes it. The key's parent must already exist: nothing is "
+            "created along the way, so to add 'recorder.include.entities' when 'recorder.include' "
+            "is absent, set 'recorder.include' with the whole subtree. Read the key first, then "
+            "pass the content_hash from that read as expected_hash to refuse the write if the "
+            "file changed in between; the result returns the new content_hash so further patches "
+            "can be chained. May require admin approval. Run check_config and restart HA "
+            "afterwards to apply. The same security keys set_yaml_config refuses cannot be "
+            "changed here either."
+        ),
+        "cap": "cap_yaml_edit",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Dotted path to the mapping key to change, e.g. 'recorder' or 'homeassistant.customize'. A key containing a literal dot cannot be addressed; edit its parent instead."},
+                "content": {"type": "string", "description": "The YAML text for that key's new value, e.g. 'purge_keep_days: 10' or '- sensor.a\\n- sensor.b'. Required for op 'set'. Indentation is adjusted to the key's depth, so paste it at the left margin."},
+                "op": {
+                    "type": "string",
+                    "enum": ["set", "remove"],
+                    "description": "set (default) replaces the key's value, adding the key when it is absent; remove deletes the key.",
+                },
+                "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_yaml_config; the write is refused if configuration.yaml changed since then."},
+            },
+            "required": ["key"],
+        },
+    },
+    {
         "name": "list_integrations",
         "description": (
             "List Home Assistant config entries (integrations): entry_id, domain, title, state, and whether "
@@ -2631,6 +2669,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "delete_dashboard_card": _annot(False, True, True),
     # Destructive: set and remove both replace or drop whatever the path held.
     "patch_dashboard": _annot(False, True, True),
+    "patch_yaml_config": _annot(False, True, True),
     "set_entity": _annot(False, True, True),
     "delete_entity": _annot(False, True, True),
     "write_file": _annot(False, True, True),

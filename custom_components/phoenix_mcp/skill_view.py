@@ -417,6 +417,34 @@ mode: single
   are UNKNOWN, not absent. Prefer built-in card types and tell the user to open
   the Phoenix MCP panel once so the catalog builds.
 
+### Raw configuration.yaml
+
+- To change ONE setting, use `patch_yaml_config`: pass the dotted `key`
+  (`recorder`, `recorder.include`) and the YAML for that key's new value as
+  `content`. Everything you do not address is left exactly as written, comments
+  included, and the human approving it sees that key rather than the whole file.
+  `get_yaml_config` with the same `key` returns the shape `content` takes, so
+  you can read a key, edit it, and send it straight back. `op: "remove"` deletes
+  the key.
+- Address the NARROWEST key you are actually changing. Your `content` is written
+  verbatim, but a value you read back arrives in standard YAML style rather than
+  the file's own layout, and comments inside it are not part of what a read
+  returns. Reading `recorder`, adding a line and writing `recorder` back
+  reformats that block and drops comments inside it; patching `recorder.include`
+  touches only those lines.
+- Only use `set_yaml_config` when you are genuinely rewriting the file. It
+  replaces all of it, so anything you do not resend is destroyed, and a
+  reviewer has to read every line to see your change.
+- Nothing is created along the way. To add `recorder.include.entities` when
+  `recorder.include` does not exist yet, set `recorder.include` with the whole
+  subtree.
+- Pass the `content_hash` from your read as `expected_hash` either way; each
+  patch returns the file's new `content_hash`, so several can be chained.
+- Neither tool can change the keys that define Home Assistant's own
+  authentication, proxy trust, or dashboard code loading; copy them through
+  unchanged. After either, run `check_config`, then tell the user a restart is
+  needed. These changes do NOT reload on their own.
+
 ### Climate
 
 - Read the device first (`describe_entity`). Set only an `hvac_mode` the device

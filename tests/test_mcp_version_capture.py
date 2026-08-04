@@ -393,6 +393,29 @@ class TestRawWriteCapture:
         assert second.before["content"] == first_content
         assert second.after["content"] == second_content
 
+    async def test_patch_yaml_config_records_a_restorable_whole_file(self, hass):
+        """A patch is a partial write; its version must not be a partial record.
+
+        Asserted against the STORE and then round-tripped through restore rather
+        than against the _record_version call, because that function swallows a
+        failed record by design (history must never break a write), so a wiring
+        mistake would otherwise look exactly like a passing test.
+        """
+        data, versions = _data()
+        token = _token(cap_yaml_edit="allow")
+        await _call_tool(
+            "patch_yaml_config", {"key": "recorder", "content": "purge_keep_days: 10\n"},
+            token, hass, data)
+        rec = versions.list_for("yaml_config", "configuration.yaml")[0]
+        assert rec.before["content"] == _SEED_YAML
+        assert "purge_keep_days: 10" in rec.after["content"]
+        assert "recorder" in rec.summary
+
+        _r, outcome, _res = await async_restore_version(rec, "admin-1", hass, data, side="before")
+        assert outcome == "allowed"
+        with open(hass.config.path("configuration.yaml"), encoding="utf-8") as f:
+            assert f.read() == _SEED_YAML
+
     async def test_write_file_records_create_then_edit(self, hass):
         data, versions = _data()
         token = _token(cap_filesystem="allow")

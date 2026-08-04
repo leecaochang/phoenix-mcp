@@ -737,7 +737,9 @@
       "edit_energy_config.set_source.update": "能源：更新{source_type}来源（{fields}）",
       "edit_energy_config.set_source.create": "能源：新增{source_type}来源（{fields}）",
       "edit_energy_config.rename_device": "能源：将“{old_label}”重命名为“{label}”",
-      "edit_energy_config.remove_source": "能源：移除{source_type}来源（{old_statistic}）"
+      "edit_energy_config.remove_source": "能源：移除{source_type}来源（{old_statistic}）",
+      "patch_yaml_config.set": "设置 configuration.yaml 中的 {path}",
+      "patch_yaml_config.remove": "从 configuration.yaml 删除 {path}"
     },
     "approvals": {
       "approve": "批准并执行",

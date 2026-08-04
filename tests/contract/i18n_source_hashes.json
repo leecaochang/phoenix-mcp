@@ -435,6 +435,8 @@
       "panel.diff.patch_dashboard.append": "cef1abba383c",
       "panel.diff.patch_dashboard.remove": "ad5bc49c5541",
       "panel.diff.patch_dashboard.set": "441a86df3719",
+      "panel.diff.patch_yaml_config.remove": "00fbf248e124",
+      "panel.diff.patch_yaml_config.set": "ef3d906de1d3",
       "panel.diff.rename_esphome_device": "f57c0595fde0",
       "panel.diff.rename_esphome_device.services": "6946f25f01d8",
       "panel.diff.restart_ha": "891201143db5",

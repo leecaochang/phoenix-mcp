@@ -1046,6 +1046,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "restart_ha": "Restart Home Assistant",
     "set_yaml_config": "Replace configuration.yaml",
     "set_yaml_config.removing": "Replace configuration.yaml, removing the top-level {keys}",
+    "patch_yaml_config.set": "Set {path} in configuration.yaml",
+    "patch_yaml_config.remove": "Remove {path} from configuration.yaml",
     "write_file": "Write file '{path}'",
     "integration.enable": "Enable integration {label}",
     "integration.disable": "Disable integration {label}",
