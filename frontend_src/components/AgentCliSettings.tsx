@@ -92,7 +92,7 @@ function IconButton({ label, busyLabel, danger, disabled, busy, onClick, childre
   const name = busy && busyLabel ? busyLabel : label;
   return (
     <button type="button" onClick={onClick} disabled={disabled}
-            className={`agentcli-icon-btn${danger ? " is-danger" : ""}${busy ? " is-busy" : ""}`}
+            className={`agentcli-account-btn${danger ? " is-danger" : ""}${busy ? " is-busy" : ""}`}
             aria-label={name} title={name} aria-busy={busy || undefined}>
       {children}
     </button>
@@ -618,7 +618,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
             )}
             </div>
             {editing !== inst.id && (
-              <div className="agentcli-icon-row">
+              <div className="agentcli-account-actions">
                   <IconButton label={t("settings.agentcliChangeModel")} disabled={busy}
                               onClick={() => { setEditing(inst.id); setModelDraft(inst.model); setModelError(null); }}>
                     <EditIcon />
