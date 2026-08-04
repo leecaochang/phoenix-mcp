@@ -133,6 +133,26 @@ class TestRead:
         assert fields["entity_id"]["selector"]["entity"]["domain"] == ["sensor"]
         assert fields["hysteresis"]["default"] == 0.0
 
+    async def test_editable_options_is_the_set_a_caller_sends_back(self, hass, helper_entry, as_helper):
+        """LIVE-FOUND on a real third-party helper. attribute_as_sensor STORES
+        entity_id and name while its options flow declares neither, so "send the
+        options back with your change applied" fails validation on the extras,
+        and omitting them is both correct and harmless because HA's schema flow
+        merges over what is stored. Handing the caller the intersection removes
+        the guess."""
+        hass.config_entries.async_update_entry(
+            helper_entry,
+            options={"entity_id": "sensor.kitchen", "hysteresis": 0.0, "name": "Kitchen"},
+        )
+        init, configure, _ = _flow(hass)
+        with init, configure:
+            content, _, _ = await _call(
+                "get_config_entry_options", {"entry_id": "helper1"}, _token(), hass)
+        body = _json(content)
+        assert "name" in body["options"]           # stored...
+        assert "name" not in body["editable_options"]  # ...but the flow does not offer it
+        assert set(body["editable_options"]) == {"entity_id", "hysteresis"}
+
     async def test_the_schema_flow_is_always_closed(self, hass, helper_entry, as_helper):
         """Reading the fields must not leave a half-finished dialog in the
         operator's UI: the flow lives in HA's manager, not in the request."""

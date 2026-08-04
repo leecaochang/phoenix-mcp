@@ -424,8 +424,25 @@ async def _tool_get_config_entry_options(
     try:
         result = await hass.config_entries.options.async_init(entry.entry_id)
         flow_id = result.get("flow_id")
-        body["schema"] = _options_schema_json(result)
+        schema = _options_schema_json(result)
+        body["schema"] = schema
         body["step_id"] = result.get("step_id")
+        # THE FIELD A CALLER ACTUALLY SENDS BACK, and the reason it exists is a
+        # real mismatch: a helper's stored options routinely hold keys its
+        # options flow does not offer. attribute_as_sensor stores entity_id and
+        # name while its schema declares neither, so "send the options back with
+        # your change applied" fails validation on those extras (the step's
+        # schema rejects an undeclared key), while omitting them is correct and
+        # harmless because the flow merges over what is stored and never sees
+        # them. Handing the caller the intersection removes the guess.
+        offered = {field.get("name") for field in schema if isinstance(field, dict)}
+        body["editable_options"] = {k: v for k, v in body["options"].items() if k in offered}
+        body["note"] = (
+            "Send editable_options back with your change applied. Options not listed there "
+            "are stored by this helper but not offered by its options flow, and are left "
+            "alone; including one is rejected. Omitting an OPTIONAL field that IS offered "
+            "clears it."
+        )
     except Exception:  # noqa: BLE001 - a flow that will not start is not a Phoenix bug
         _LOGGER.exception("Could not open the options flow for %s", entry.entry_id)
         return _tool_error("Could not read this helper's settings."), "invalid_request", tool
@@ -537,9 +554,13 @@ async def _tool_set_config_entry_options(
     built on goes away, nothing else on this surface can repoint it: the helper
     keeps existing, keeps its own entity, and quietly produces nothing.
 
-    `options` REPLACES the entry's options, because that is what an options flow
-    does; read them first with get_config_entry_options and send the whole set
-    back with your change applied.
+    `options` is MERGED over the entry's stored options by HA's own schema flow,
+    not swapped for them, and the difference matters in both directions: a key
+    the flow does not declare is left untouched (and is REJECTED if sent, since
+    the step validates against its schema), while an OPTIONAL key the flow does
+    declare and the caller omits is CLEARED, which is how a field gets emptied.
+    So the set to send is `editable_options` from get_config_entry_options, which
+    is exactly the stored options intersected with what the flow offers.
     """
     tool = "set_config_entry_options"
     if effective_cap(token, "cap_helper_write") == CAP_DENY:

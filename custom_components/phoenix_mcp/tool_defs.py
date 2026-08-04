@@ -1914,7 +1914,10 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "config_entry consumer of the entity it uses) or list_integrations. Returns the "
             "current options, a content_hash to pass back as expected_hash, and schema: the "
             "fields the helper accepts with their types, defaults and, for entity fields, the "
-            "domains they allow. Integration entries are not readable here."
+            "domains they allow. editable_options is the subset of the current options the "
+            "flow actually offers, and is what you send back to set_config_entry_options: a "
+            "helper often stores keys its options flow does not expose, and sending one of "
+            "those is rejected. Integration entries are not readable here."
         ),
         "cap": "cap_helper_write",
         "inputSchema": {
@@ -1931,9 +1934,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "Change a HELPER's settings, for example repointing one at a different source "
             "entity after the original was removed. This is what finishes a migration: a helper "
             "whose source is gone keeps existing and quietly produces nothing, and no other tool "
-            "can repoint it. Read get_config_entry_options first: options REPLACES the whole set, "
-            "so send them all back with your change applied, and pass that read's content_hash as "
-            "expected_hash so the write is refused if something else changed them meanwhile. Any "
+            "can repoint it. Read get_config_entry_options first and send back its "
+            "editable_options with your change applied, NOT the full options: your input is "
+            "merged over what is stored, a key the flow does not offer is rejected if you send "
+            "it and left alone if you do not, and an OPTIONAL key the flow does offer is CLEARED "
+            "if you omit it. Pass that read's content_hash as expected_hash so the write is "
+            "refused if something else changed the settings meanwhile. Any "
             "entity you name must be one this token could already control. May require admin "
             "approval. The helper reloads with the new settings; no restart. Helpers only, and a "
             "helper whose options flow has more than one step must be changed in the Home "
