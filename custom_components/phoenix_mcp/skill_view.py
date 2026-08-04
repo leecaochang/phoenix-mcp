@@ -241,11 +241,17 @@ must approve it. Handle it like this:
 
 - Do not retry. Retrying creates duplicate approval requests and burns your rate
   limit.
-- Either tell the user the action is awaiting their approval, or wait for it with
-  `wait_for_approval` (passing the `approval_id`), which blocks until a human
-  approves or rejects instead of you polling. For a one-shot check use
-  `get_approval_status` instead. Both resolve to `approved` (with the result),
-  `rejected` (often with a reason), or `expired`.
+- Do not stop after one, and do not wait after each one. Keep going with your
+  remaining steps: further gated calls queue alongside it, and the operator
+  clears the whole queue in a single action. Pausing after every gate is what
+  turns a twenty-step job into a twenty-round one.
+- When you actually need the outcomes, call `wait_for_approval` ONCE, passing
+  `approval_ids` (a list) with every approval you are waiting on; it blocks
+  until they resolve instead of you polling. Use `approval_id` for a lone one,
+  or `get_approval_status` for a one-shot check. Each resolves to `approved`
+  (with the result), `rejected` (often with a reason), or `expired`.
+- If nothing you have left to do depends on them, tell the user what is awaiting
+  their approval and finish.
 - Approval is the operator's intent to stay in the loop. Respect it; do not look
   for a way around it.
 

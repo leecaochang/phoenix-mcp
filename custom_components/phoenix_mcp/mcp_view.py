@@ -2601,9 +2601,16 @@ def _build_instructions(token: TokenRecord, data: PhoenixData, base_url: str) ->
         "- Call get_capability_summary first to see what you can read, control, and what "
         "needs approval. Use get_overview or search_entities to discover entities; you only "
         "see entities in this token's scope.",
+        # Must agree with tool_common._tool_pending, which the agent reads at the
+        # moment it matters; a primer that says something else is a second story
+        # about the same event. Both say: continue, then collect the outcomes
+        # together, because approvals queue and are cleared in one action.
         "- Some actions return status \"pending_approval\". That is normal, not an error: a "
-        "human must approve them. Do not retry. Poll get_approval_status with the approval_id, "
-        "or tell the user it is awaiting approval.",
+        "human must approve them. Do not retry, and do not stop after one: further gated "
+        "calls queue alongside it and the operator clears the queue in a single action. If "
+        "you need the outcomes, call wait_for_approval ONCE with approval_ids listing all of "
+        "them (or get_approval_status for a one-shot check); otherwise tell the user what is "
+        "awaiting approval.",
         "- Before a risky or bulk service call, preview it with dry_run_service (and whatif to "
         "see what automations it would trigger).",
         "- If a tool is not in the tool list, this token cannot use it; ask the operator to "

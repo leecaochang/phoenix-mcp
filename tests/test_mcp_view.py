@@ -2683,8 +2683,14 @@ async def test_inline_confirm_reports_rejection_without_retry(hass):
 
 @pytest.mark.asyncio
 async def test_inline_confirm_falls_back_to_pending_on_timeout(hass):
-    """No decision inside the window falls back to the normal immediate pending
-    reply, identical to a token that never opted into the wait."""
+    """No decision inside the window falls back to the normal pending reply.
+
+    The ADVICE is identical to a token that never opted into the wait, because
+    the agent cannot see the setting and the right next move does not depend on
+    it. What it additionally gets is the fact that this call already held: an
+    agent that immediately blocks on the same id is likely to spend the budget
+    a second time for nothing.
+    """
     from types import SimpleNamespace
     from custom_components.phoenix_mcp.tool_common import _await_inline_confirm
 
@@ -2697,7 +2703,9 @@ async def test_inline_confirm_falls_back_to_pending_on_timeout(hass):
         content, outcome, _ = await _await_inline_confirm(hass, data, token, approval)
 
     assert outcome == "pending_approval"
-    assert json.loads(content["content"][0]["text"])["status"] == "pending_approval"
+    body = json.loads(content["content"][0]["text"])
+    assert body["status"] == "pending_approval"
+    assert "already held for 60 seconds" in body["message"]
 
 
 @pytest.mark.asyncio

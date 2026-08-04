@@ -52,24 +52,52 @@ def _tool_error(message: str) -> dict:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
-def _tool_pending(approval: Any) -> dict:
+def _tool_pending(approval: Any, waited_seconds: int | None = None) -> dict:
     """Return an MCP tool result indicating a pending admin approval.
 
     isError is False because pending is a valid outcome, not a failure.
+
+    THE WORDING IS LOAD-BEARING AND HAS TO MATCH THE STAGING MODEL. Approvals
+    now queue and are cleared in one operator action, so the agent's job after
+    a gate is to KEEP GOING and collect the outcomes together at the end. This
+    message told it the opposite twice over: it pointed at wait_for_approval
+    with "this approval_id", singular, from before that tool took a LIST, so an
+    agent following it literally serialises on the first id and no later
+    approval can even be created until that one stops waiting; and "you may
+    tell the user it is pending and finish now" reads as an instruction to
+    stop, which is the early-return-reads-as-success failure. Both were written
+    when the inline wait was on by default and every gate resolved one at a
+    time. Any edit here must keep the order: continue first, wait ONCE second,
+    finish only if nothing depends on the outcome.
+
+    `waited_seconds` is set only on the inline-wait timeout path and states a
+    FACT rather than giving different advice: that hold already spent its
+    budget without resolving, so an agent that immediately blocks on the same
+    id is very likely to spend another. The advice itself is identical in all
+    three paths that reach here, deliberately, because the agent cannot see
+    which one it is in (the inline wait is a token setting) and the right next
+    move does not depend on it.
     """
+    waited = (
+        f"This call already held for {waited_seconds} seconds without resolving, so the operator "
+        "is not reviewing in real time right now. "
+        if waited_seconds
+        else ""
+    )
     body = json.dumps({
         "status": "pending_approval",
         "approval_id": approval.id,
         "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
         "review_url": f"/phoenix-mcp#approvals/{approval.id}",
         "message": (
-            "This action is queued for admin approval and will be applied once approved; "
-            "the admin has been notified. You do not need to wait: you may tell the user it is "
-            "pending and finish now. Only if you need the outcome in this same session (for "
-            "example, a later step depends on this action) call wait_for_approval with this "
-            "approval_id to block until it resolves, or get_approval_status for a one-shot check, "
-            "to learn whether it was approved or rejected (and any reason). Either way, do not "
-            "retry the original action."
+            f"{waited}This action is queued for admin approval and will be applied once approved; "
+            "the admin has been notified. Do not retry it. Continue with your remaining steps: "
+            "further approval-gated calls queue alongside this one and the admin can clear the "
+            "whole queue in a single action, so do NOT stop or wait after each one. When you "
+            "genuinely need the outcomes, call wait_for_approval ONCE with approval_ids listing "
+            "every approval you are waiting on (or get_approval_status for a one-shot check) to "
+            "learn which were approved or rejected, and any reason. If nothing you have left to "
+            "do depends on them, tell the user what is pending and finish."
         ),
     })
     return {"content": [{"type": "text", "text": body}]}
@@ -298,7 +326,9 @@ async def _await_inline_confirm(
     try:
         await asyncio.wait_for(future, wait)
     except TimeoutError:
-        return _tool_pending(approval), "pending_approval", _approval_resource(approval)
+        # The one place the agent is told how long it already held, so it does
+        # not immediately block on the same id and spend the budget twice.
+        return _tool_pending(approval, waited_seconds=wait), "pending_approval", _approval_resource(approval)
     finally:
         unsub()
         _set_progress_status(None)
