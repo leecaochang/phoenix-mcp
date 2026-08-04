@@ -1037,6 +1037,8 @@
       "agentcliCard": "智能体对话",
       "agentcliConnectionFailed": "连接失败。",
       "agentcliDefaultModel": "默认模型：{model}",
+      "agentcliChangeModel": "更换模型",
+      "agentcliModelRetired": "该供应商已不再提供 {model}。请选择一个仍在提供的模型，否则此账号的对话会失败。",
       "agentcliDone": "完成",
       "agentcliEnterKey": "请输入您的 API 密钥。",
       "agentcliEnterUrl": "请输入 Ollama 服务器地址。",

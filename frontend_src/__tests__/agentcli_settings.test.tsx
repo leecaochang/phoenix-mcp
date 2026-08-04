@@ -5,6 +5,8 @@ const getAgentCliProviders = vi.fn();
 const probeAgentCliProvider = vi.fn();
 const createAgentCliProvider = vi.fn();
 const deleteAgentCliProvider = vi.fn();
+const getAgentCliModels = vi.fn();
+const setAgentCliProviderModel = vi.fn();
 
 vi.mock("../api", () => ({
   api: {
@@ -12,6 +14,8 @@ vi.mock("../api", () => ({
     probeAgentCliProvider: (...a: unknown[]) => probeAgentCliProvider(...a),
     createAgentCliProvider: (...a: unknown[]) => createAgentCliProvider(...a),
     deleteAgentCliProvider: (...a: unknown[]) => deleteAgentCliProvider(...a),
+    getAgentCliModels: (...a: unknown[]) => getAgentCliModels(...a),
+    setAgentCliProviderModel: (...a: unknown[]) => setAgentCliProviderModel(...a),
   },
 }));
 
@@ -42,6 +46,8 @@ describe("AgentCliSettings", () => {
     probeAgentCliProvider.mockResolvedValue({ ok: true, models: ["claude-opus-4-8", "claude-haiku"] });
     createAgentCliProvider.mockResolvedValue({ instance: { id: "i2", kind: "claude", name: "Claude", model: "claude-opus-4-8" } });
     deleteAgentCliProvider.mockResolvedValue({ deleted: "i1" });
+    getAgentCliModels.mockResolvedValue({ models: ["deepseek-v4-flash", "deepseek-v4-pro"] });
+    setAgentCliProviderModel.mockResolvedValue({ instance: { id: "i1", model: "deepseek-v4-pro" } });
   });
 
   it("Validate with no API key shows an error and does not create", async () => {
@@ -152,5 +158,82 @@ describe("AgentCliSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+// The account's default model used to be frozen at creation, and the model list is
+// the free half of staleness detection: a cheap authenticated GET, run exactly when
+// the operator is looking at providers and can act on what it says.
+describe("AgentCliSettings default model", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getAgentCliProviders.mockResolvedValue(instances());
+    getAgentCliModels.mockResolvedValue({ models: ["deepseek-v4-flash", "deepseek-v4-pro"] });
+    setAgentCliProviderModel.mockResolvedValue({ instance: { id: "i1", model: "deepseek-v4-pro" } });
+  });
+
+  it("changes the default model without touching the credential", async () => {
+    renderCard();
+    fireEvent.click(await screen.findByText("Change model"));
+    const select = await screen.findByLabelText("Select default model:");
+    fireEvent.change(select, { target: { value: "deepseek-v4-pro" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(setAgentCliProviderModel).toHaveBeenCalledWith("i1", "deepseek-v4-pro"));
+    // Changing a model must never go near the account's credential, which the
+    // delete-and-recreate workaround did every time.
+    expect(deleteAgentCliProvider).not.toHaveBeenCalled();
+    expect(createAgentCliProvider).not.toHaveBeenCalled();
+  });
+
+  it("warns when the configured model is no longer offered", async () => {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-chat" }],
+    });
+    renderCard();
+    expect(await screen.findByText(/no longer offers deepseek-chat/)).toBeTruthy();
+  });
+
+  it("says nothing when the configured model is still offered", async () => {
+    renderCard();
+    await screen.findByText("Change model");
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    expect(screen.queryByText(/no longer offers/)).toBeNull();
+  });
+
+  it("says nothing when the provider could not be reached", async () => {
+    // "Nobody checked" and "the model is gone" must not look the same. An
+    // unreachable provider says nothing about the model, and reporting it as
+    // retired sends the operator to fix an account that is fine.
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-chat" }],
+    });
+    getAgentCliModels.mockRejectedValue(new Error("connection refused"));
+    renderCard();
+    await screen.findByText("Change model");
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    expect(screen.queryByText(/no longer offers/)).toBeNull();
+  });
+
+  it("says nothing when the provider reports an empty list", async () => {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-chat" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: [] });
+    renderCard();
+    await screen.findByText("Change model");
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    expect(screen.queryByText(/no longer offers/)).toBeNull();
+  });
+
+  it("keeps a retired model selectable so the select shows what is configured", async () => {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-chat" }],
+    });
+    renderCard();
+    fireEvent.click(await screen.findByText("Change model"));
+    const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
+    expect(select.value).toBe("deepseek-chat");
+    expect([...select.options].map((o) => o.value)).toContain("deepseek-chat");
   });
 });

@@ -238,6 +238,25 @@ class AgentCliStore:
         await self._save()
         return instance_id
 
+    async def set_model(self, instance_id: str, model: str) -> bool:
+        """Change one account's default model. False if the account is unknown.
+
+        The default model was frozen at creation until now, so correcting it
+        meant deleting the account and re-entering the API key. That is the wrong
+        cost for a value that goes stale on the PROVIDER's schedule rather than
+        the operator's: a shipped default id can be retired out from under a
+        working install, which is exactly what happened to this integration's.
+
+        Only the model is patchable. The credential and base_url are what the
+        account IS, and re-validating them is what the add flow already does.
+        """
+        cfg = self._data.get(instance_id)
+        if not isinstance(cfg, dict):
+            return False
+        cfg["model"] = model
+        await self._save()
+        return True
+
     async def delete(self, instance_id: str) -> None:
         if instance_id in self._data:
             del self._data[instance_id]
@@ -2499,6 +2518,29 @@ class PhoenixAgentCliProviderView(PhoenixView):
     url = "/api/phoenix-mcp/admin/agentcli/providers/{instance_id}"
     name = "api:phoenix-mcp:admin:agentcli:provider"
     requires_auth = True
+
+    @require_admin
+    async def patch(self, request: web.Request, instance_id: str) -> web.Response:
+        """Change this account's default model.
+
+        The model is NOT validated against the provider's live list here, and
+        that is deliberate: the panel offers the discovered list, but a
+        self-hosted server can serve a model its own index does not advertise,
+        and a network round trip inside a PATCH would let an unreachable
+        provider block an edit the operator can already see is correct. The UI
+        guides; the endpoint records.
+        """
+        rid = request.get("phoenix_mcp_rid", "")
+        body = await _read_body(request, rid)
+        if isinstance(body, web.Response):
+            return body
+        model = str(body.get("model") or "").strip()
+        if not model:
+            return _err("invalid_request", "A model is required.", 400, rid)
+        store = await _get_secret_store(self.hass)
+        if not await store.set_model(instance_id, model):
+            return _err("not_found", "Provider account not found.", 404, rid)
+        return _ok({"instance": {"id": instance_id, "model": model}}, request_id=rid)
 
     @require_admin
     async def delete(self, request: web.Request, instance_id: str) -> web.Response:

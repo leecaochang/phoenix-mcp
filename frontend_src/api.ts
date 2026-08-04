@@ -353,6 +353,9 @@ export const api = {
     kind: AgentCliProviderKind,
     body: { api_key?: string; base_url?: string; model?: string },
   ) => req<{ instance: AgentCliInstance }>("POST", "/agentcli/providers", { kind, ...body }),
+  setAgentCliProviderModel: (id: string, model: string) =>
+    req<{ instance: { id: string; model: string } }>(
+      "PATCH", `/agentcli/providers/${encodeURIComponent(id)}`, { model }),
   deleteAgentCliProvider: (id: string) =>
     req<{ deleted: string }>("DELETE", `/agentcli/providers/${encodeURIComponent(id)}`),
   getAgentCliModels: (id: string) =>

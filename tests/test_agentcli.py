@@ -2232,3 +2232,95 @@ class TestHeadlessSurfacesShareOneLoop:
             if isinstance(n, ast.Name)
         }
         assert "AGENTCLI_MAX_TURN_OUTPUT_BYTES" in names
+
+
+# --- changing an account's default model (it used to be frozen at creation) ---
+
+
+def _admin_request(body: dict | None = None):
+    """An authenticated admin request whose body is `body`."""
+    import json as _json
+    from unittest.mock import AsyncMock, MagicMock
+    from homeassistant.components.http.const import KEY_AUTHENTICATED, KEY_HASS_USER
+
+    user = MagicMock(); user.is_admin = True; user.id = "admin"
+    ctx = {"phoenix_mcp_rid": "rid", KEY_AUTHENTICATED: True, KEY_HASS_USER: user}
+    req = MagicMock()
+    req.get = MagicMock(side_effect=lambda k, d=None: ctx.get(k, d))
+    req.__getitem__ = MagicMock(side_effect=lambda k: ctx[k])
+    raw = _json.dumps(body or {}).encode()
+    req.content.read = AsyncMock(side_effect=[raw, b""])
+    req.headers = {}
+    # _read_body compares content_length against the size cap, so a MagicMock
+    # here raises a TypeError before the handler is reached.
+    req.content_length = len(raw)
+    return req
+
+
+class TestSetDefaultModel:
+    """The default model was frozen at creation, so correcting it meant deleting
+    the account and re-entering the API key. That is the wrong cost for a value
+    that goes stale on the PROVIDER's schedule: a shipped default id can be
+    retired out from under a working install, which is what happened here."""
+
+    @pytest.mark.asyncio
+    async def test_store_updates_only_the_model(self, hass):
+        from homeassistant.helpers.storage import Store
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_agentcli_model"))
+        iid = await store.add("deepseek", {"api_key": "k", "model": "old", "base_url": "https://d"})
+
+        assert await store.set_model(iid, "deepseek-v4-flash") is True
+
+        cfg = store.get(iid)
+        assert cfg["model"] == "deepseek-v4-flash"
+        # The credential and endpoint are what the account IS; a model change
+        # must not disturb them or a working account breaks on an unrelated edit.
+        assert cfg["api_key"] == "k"
+        assert cfg["base_url"] == "https://d"
+        assert cfg["kind"] == "deepseek"
+
+    @pytest.mark.asyncio
+    async def test_store_reports_an_unknown_account(self, hass):
+        from homeassistant.helpers.storage import Store
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_agentcli_missing"))
+        assert await store.set_model("nope", "m") is False
+
+    @pytest.mark.asyncio
+    async def test_patch_sets_the_model(self, hass):
+        from unittest.mock import AsyncMock, patch
+        secret_store = MagicMock()
+        secret_store.set_model = AsyncMock(return_value=True)
+        view = agentcli.PhoenixAgentCliProviderView()
+        view.hass = hass
+        with patch("custom_components.phoenix_mcp.agentcli._get_secret_store",
+                   AsyncMock(return_value=secret_store)):
+            resp = await view.patch(_admin_request({"model": "  deepseek-v4-flash  "}), instance_id="pid")
+        assert resp.status == 200
+        # Trimmed, because a stray space in a model id is a 400 from the provider
+        # much later, in a place that does not mention the space.
+        secret_store.set_model.assert_awaited_once_with("pid", "deepseek-v4-flash")
+
+    @pytest.mark.asyncio
+    async def test_patch_refuses_an_empty_model(self, hass):
+        from unittest.mock import AsyncMock, patch
+        secret_store = MagicMock()
+        secret_store.set_model = AsyncMock(return_value=True)
+        view = agentcli.PhoenixAgentCliProviderView()
+        view.hass = hass
+        with patch("custom_components.phoenix_mcp.agentcli._get_secret_store",
+                   AsyncMock(return_value=secret_store)):
+            resp = await view.patch(_admin_request({"model": "   "}), instance_id="pid")
+        assert resp.status == 400
+        secret_store.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_patch_reports_an_unknown_account(self, hass):
+        from unittest.mock import AsyncMock, patch
+        secret_store = MagicMock()
+        secret_store.set_model = AsyncMock(return_value=False)
+        view = agentcli.PhoenixAgentCliProviderView()
+        view.hass = hass
+        with patch("custom_components.phoenix_mcp.agentcli._get_secret_store",
+                   AsyncMock(return_value=secret_store)):
+            resp = await view.patch(_admin_request({"model": "m"}), instance_id="gone")
+        assert resp.status == 404

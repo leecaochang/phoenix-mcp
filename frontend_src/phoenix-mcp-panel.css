@@ -2338,6 +2338,12 @@ hui-card { display: block; min-width: 0; }
 .agentcli-add-row select { flex: 0 1 auto; }
 .agentcli-add-form { border: 1px dashed var(--phx-border); border-radius: var(--phx-radius-sm); padding: 10px; margin-bottom: 10px; }
 .agentcli-settings-hint { font-size: 12px; color: var(--phx-text-2); }
+/* Inline default-model editor on a configured account. Wraps on a narrow panel
+   rather than shrinking the select, since a model id is long and unabbreviable. */
+.agentcli-settings-model-edit {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px;
+}
+.agentcli-settings-model-edit select { width: auto; max-width: 260px; min-width: 140px; }
 .agentcli-settings-model-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .agentcli-settings-model-row > span { white-space: nowrap; }
 .agentcli-settings-model-row select { width: auto; max-width: 220px; min-width: 120px; }

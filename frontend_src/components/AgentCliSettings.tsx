@@ -69,8 +69,65 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   const [scrollInput, setScrollInput] = useState(String(scrollback));
   const [maxIterInput, setMaxIterInput] = useState(String(maxIterations));
 
+  // Each account's live model list, keyed by instance id. Absent means "not
+  // checked or the provider could not be reached", which is NOT the same as an
+  // empty list and must never be reported as one: a provider that is down would
+  // otherwise be indistinguishable from one that dropped every model.
+  const [liveModels, setLiveModels] = useState<Record<string, string[]>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [modelDraft, setModelDraft] = useState("");
+  const [modelError, setModelError] = useState<string | null>(null);
+
   const load = () => api.getAgentCliProviders().then((r) => setInstances(r.instances)).catch(() => setInstances([]));
   useEffect(() => { void load(); }, []);
+
+  // Refresh every account's model list when the card is shown. This is the free
+  // half of staleness detection: a model list is a cheap authenticated GET, so
+  // it costs no completion tokens, and it runs exactly when the operator is
+  // looking at providers and can act on what it says. Best-effort and parallel;
+  // a provider that fails simply records nothing.
+  useEffect(() => {
+    if (!instances?.length) return;
+    let cancelled = false;
+    void Promise.all(instances.map(async (inst) => {
+      try {
+        const r = await api.getAgentCliModels(inst.id);
+        return [inst.id, r.models] as const;
+      } catch {
+        return null;
+      }
+    })).then((pairs) => {
+      if (cancelled) return;
+      setLiveModels(Object.fromEntries(pairs.filter((p): p is readonly [string, string[]] => p !== null)));
+    });
+    return () => { cancelled = true; };
+  }, [instances]);
+
+  /** The account's default model is set to something this provider no longer offers.
+   *
+   *  Only claimed against a non-empty list we actually fetched. An unreachable
+   *  provider, or one that reports nothing, says nothing about the model, and
+   *  reporting it as retired would send the operator to fix a working account.
+   */
+  const modelIsStale = (inst: AgentCliInstance) => {
+    const models = liveModels[inst.id];
+    return Boolean(inst.model && models && models.length > 0 && !models.includes(inst.model));
+  };
+
+  const saveModel = async (id: string) => {
+    setBusy(true);
+    setModelError(null);
+    try {
+      await api.setAgentCliProviderModel(id, modelDraft);
+      await load();
+      notifyChanged();
+      setEditing(null);
+    } catch (err: unknown) {
+      setModelError(err instanceof Error ? err.message : t("settings.agentcliSaveFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
   useEffect(() => { setScrollInput(String(scrollback)); }, [scrollback]);
   useEffect(() => { setMaxIterInput(String(maxIterations)); }, [maxIterations]);
 
@@ -246,10 +303,42 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
             <div className="agentcli-settings-provider-head">
               <span>{inst.name}</span>
             </div>
-            <div className="agentcli-settings-provider-actions">
-              <span className="agentcli-settings-model">{t("settings.agentcliDefaultModel", { model: inst.model || t("settings.agentcliNotSet") })}</span>
-              <button className="btn btn-sm" disabled={busy} onClick={() => setConfirmRemove(inst)}>{t("settings.remove")}</button>
-            </div>
+            {modelIsStale(inst) && (
+              <div className="banner banner-warn" role="alert">
+                {t("settings.agentcliModelRetired", { model: inst.model })}
+              </div>
+            )}
+            {editing === inst.id ? (
+              <div className="agentcli-settings-model-edit">
+                <select value={modelDraft} disabled={busy}
+                        aria-label={t("settings.agentcliSelectModel")}
+                        onChange={(e) => setModelDraft(e.target.value)}>
+                  {(liveModels[inst.id] ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+                  {/* The stored model when the provider no longer lists it, so the
+                      select shows what is actually configured rather than silently
+                      displaying someone else's model as if it were current. */}
+                  {inst.model && !(liveModels[inst.id] ?? []).includes(inst.model) && (
+                    <option value={inst.model}>{inst.model}</option>
+                  )}
+                </select>
+                <button className="btn btn-primary btn-sm" disabled={busy || !modelDraft}
+                        onClick={() => void saveModel(inst.id)}>{t("common.save")}</button>
+                <button className="btn btn-text btn-sm" disabled={busy}
+                        onClick={() => { setEditing(null); setModelError(null); }}>{t("settings.cancel")}</button>
+              </div>
+            ) : (
+              <div className="agentcli-settings-provider-actions">
+                <span className="agentcli-settings-model">{t("settings.agentcliDefaultModel", { model: inst.model || t("settings.agentcliNotSet") })}</span>
+                <button className="btn btn-sm" disabled={busy}
+                        onClick={() => { setEditing(inst.id); setModelDraft(inst.model); setModelError(null); }}>
+                  {t("settings.agentcliChangeModel")}
+                </button>
+                <button className="btn btn-sm" disabled={busy} onClick={() => setConfirmRemove(inst)}>{t("settings.remove")}</button>
+              </div>
+            )}
+            {editing === inst.id && modelError && (
+              <div className="banner banner-error" role="alert">{modelError}</div>
+            )}
           </div>
         ))}
         {instances && instances.length === 0 && !adding && (

@@ -1032,6 +1032,8 @@
       "agentcliCard": "Agent Chat",
       "agentcliConnectionFailed": "Connection failed.",
       "agentcliDefaultModel": "Default model: {model}",
+      "agentcliChangeModel": "Change model",
+      "agentcliModelRetired": "This provider no longer offers {model}. Pick a current model, or Agent Chat will fail on this account.",
       "agentcliDone": "Done",
       "agentcliEnterKey": "Enter your API key.",
       "agentcliEnterUrl": "Enter the Ollama server URL.",
