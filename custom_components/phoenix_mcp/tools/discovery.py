@@ -1723,6 +1723,30 @@ def _changed_attribute(name: str, value: Any, other: Any) -> dict:
     return entry
 
 
+_UNPUBLISHED_WARNING = (
+    "{entity_id} is {state}, so it is publishing few or none of its attributes. "
+    "The differences below describe what it reports right now, not what it "
+    "supports; do not read an attribute as absent until it is available again."
+)
+
+
+def _publishes_nothing(state: dict) -> bool:
+    """Whether this entity's attribute set is too degraded to compare against.
+
+    An offline entity keeps its registry entry and answers every read, so
+    nothing about the comparison FAILS: it just silently becomes a list of
+    attributes the other side has, which is a description of the outage and
+    reads exactly like a description of the replacement. Live-hit on the first
+    smoke test, where an unavailable unit reported five attributes "missing"
+    that it publishes perfectly well when it is up. `restored` is HA's own
+    marker for a state it rebuilt from the registry because the integration
+    supplied none, and it is the precise signal; `unknown` is deliberately NOT
+    included, since an entity with no value yet still publishes its attributes
+    and warning there would fire on the ordinary case.
+    """
+    return state.get("state") == "unavailable" or (state.get("attributes") or {}).get("restored") is True
+
+
 async def _tool_compare_entities(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
@@ -1752,6 +1776,11 @@ async def _tool_compare_entities(
     # Scrubbing runs before the diff, so an attribute Phoenix strips from a
     # state read can never be reintroduced here as a difference between two.
     attrs, compare_attrs = (s.get("attributes") or {} for s in states)
+    warnings = [
+        _UNPUBLISHED_WARNING.format(entity_id=eid, state=state.get("state"))
+        for eid, state in ((entity_id, states[0]), (compare_to, states[1]))
+        if _publishes_nothing(state)
+    ]
     missing = sorted(set(attrs) - set(compare_attrs))
     added = sorted(set(compare_attrs) - set(attrs))
     shared = sorted(set(attrs) & set(compare_attrs))
@@ -1779,6 +1808,11 @@ async def _tool_compare_entities(
         ],
         "changed": changed,
         "identical_count": len(shared) - len(changed),
+        # Conditional, per the package's convention for a read that degraded but
+        # still succeeded: a field that is usually absent gets read when it does
+        # appear, where a permanently-present "degraded": false trains the
+        # reader to skip it.
+        **({"warnings": warnings} if warnings else {}),
         "note": (
             "Current attributes only. A value that varies over time (an enum "
             "sensor's state) can differ without appearing here; use get_history "

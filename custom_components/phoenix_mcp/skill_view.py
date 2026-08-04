@@ -78,7 +78,10 @@ grain of the model gives the smoothest results and avoids dead ends.
   rename between two integrations is what breaks a reference that otherwise
   looks correct. Do not conclude two entities behave the same from a clean
   report: it compares current attributes only, so for a value that varies (an
-  enum sensor's state) call `get_history` on both across the same window.
+  enum sensor's state) call `get_history` on both across the same window. Read
+  `warnings` first: an unavailable entity publishes almost nothing, so its
+  differences describe the outage and not the entity, and an attribute is not
+  absent until you have compared while it was up.
 - `get_radio_network`, `get_radio_device`: radio-network health (Zigbee in this
   version): channel, coordinator, join state, and per-device signal quality
   (LQI/RSSI), availability, and mesh neighbors. Useful when a device is flaky
