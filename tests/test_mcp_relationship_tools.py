@@ -619,7 +619,9 @@ class TestRelationshipCoverage:
         holders = {h["kind"]: h for h in entry["referenced_by"]}
         assert holders["automation"]["name"] == "Morning"
         assert holders["dashboard"]["id"] == "home"
-        assert holders["dashboard"]["path"] == ["views", 0, "cards", 1, "entity"]
+        assert holders["dashboard"]["paths"] == [["views", 0, "cards", 1, "entity"]]
+        assert holders["dashboard"]["path_count"] == 1
+        assert holders["dashboard"]["truncated"] is False
         # The provenance flags are how the filter decides; they are not a caller's
         # business and must not leak into the response.
         assert "typed" not in holders["automation"] and "service" not in holders["automation"]
@@ -654,6 +656,56 @@ class TestRelationshipCoverage:
             "get_relationships", {"entity_id": "light.kitchen"},
             _token(cap_lovelace_write="allow"), hass)
         assert _dangling(_json(content)) == ["button.gone"]
+
+    async def test_many_hits_on_one_consumer_group_into_one_holder(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """Live: one deleted script was called from 18 sub-buttons on a single
+        dashboard, so an ungrouped list spent most of the response repeating that
+        dashboard's identity. The operator's question is WHICH thing to open."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+        from custom_components.phoenix_mcp.const import MAX_DANGLING_PATHS
+
+        cards = [{"type": "tile", "entity": "light.kitchen"}] + [
+            {"type": "button", "tap_action": {"perform_action": "script.gone"}}
+            for _ in range(18)
+        ]
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            # None is the default dashboard; only "home" carries the layout.
+            return {"views": [{"cards": cards}]} if url_path == "home" else None
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        hass.services.async_register("script", "turn_on", lambda call: None)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        entry = next(d for d in _json(content)["dangling_references"]
+                     if d["entity_id"] == "script.gone")
+        assert len(entry["referenced_by"]) == 1
+        holder = entry["referenced_by"][0]
+        # The clipped list reports its own true size, so it cannot read as whole.
+        assert holder["path_count"] == 18
+        assert len(holder["paths"]) == MAX_DANGLING_PATHS
+        assert holder["truncated"] is True
+
+    async def test_one_consumer_referencing_a_dead_id_twice_is_listed_once(self, hass, rel_env):
+        """An automation naming the same dead entity in two roles appeared twice."""
+        _write(os.path.join(hass.config.config_dir, "automations.yaml"), [
+            {"id": "auto1", "alias": "Morning",
+             "trigger": [{"platform": "state", "entity_id": "light.gone"},
+                         {"platform": "state", "entity_id": "light.kitchen"}],
+             "action": [{"service": "light.turn_on", "target": {"entity_id": "light.gone"}}]},
+        ])
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        entry = next(d for d in _json(content)["dangling_references"]
+                     if d["entity_id"] == "light.gone")
+        assert len(entry["referenced_by"]) == 1
+        assert entry["referenced_by"][0]["name"] == "Morning"
 
     async def test_a_live_entity_is_never_reported_dangling(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)

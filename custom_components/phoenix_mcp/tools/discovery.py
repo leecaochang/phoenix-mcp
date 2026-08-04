@@ -48,7 +48,7 @@ from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import parse_datetime, utcnow
 
-from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
+from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_DANGLING_PATHS, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
 from ..data import PhoenixData
 from ..mesa import async_semantic_moments, build_expand_target, entity_control_mode, evaluate_service_entities
 from ..mesa_core.trigger_validator import entities_by_role
@@ -258,14 +258,36 @@ def _dangling_candidates(
 
 
 def _dangling_report(value: str, holders: list[dict]) -> dict:
-    """One dangling entry: the dead id and what still points at it."""
-    return {
-        "entity_id": value,
-        "referenced_by": [
-            {k: v for k, v in sorted(holder.items()) if k not in ("typed", "service")}
-            for holder in holders
-        ],
-    }
+    """One dangling entry: the dead id and what still points at it.
+
+    Holders are GROUPED by consumer rather than listed one per hit, which is not
+    cosmetic. Live: a single deleted script was called from 18 sub-buttons on one
+    dashboard, and one automation referencing a dead entity in two roles appeared
+    twice, so an ungrouped list spent most of the response repeating one
+    dashboard's identity. Grouping answers the operator's actual question, which
+    is WHICH THING to open, and the paths say where to look once inside.
+
+    Paths are capped at const.MAX_DANGLING_PATHS with the true total alongside,
+    the same report-total-and-truncated contract get_logs and list_backups use: a
+    clipped list must never read as a complete one.
+    """
+    grouped: dict[tuple[str, str], dict] = {}
+    for holder in holders:
+        key = (holder["kind"], holder["id"])
+        entry = grouped.setdefault(key, {
+            "kind": holder["kind"], "id": holder["id"], "name": holder["name"], "paths": [],
+        })
+        if "path" in holder:
+            entry["paths"].append(holder["path"])
+    out = []
+    for entry in grouped.values():
+        paths = entry.pop("paths")
+        if paths:
+            entry["path_count"] = len(paths)
+            entry["paths"] = paths[:MAX_DANGLING_PATHS]
+            entry["truncated"] = len(paths) > MAX_DANGLING_PATHS
+        out.append(entry)
+    return {"entity_id": value, "referenced_by": out}
 
 
 def _consumer(kind: str, cid: str, name: Any) -> dict:

@@ -896,6 +896,14 @@ MAX_TOOL_NAME_LENGTH = 200
 # whitespace and the fuzzy fallback runs difflib against every accessible
 # entity, so an unbounded query could stall the event loop; a real query is far
 # shorter than this.
+# get_relationships: how many source paths one holder of a dangling reference
+# reports before the rest become a count. Live-measured: a single deleted script
+# was called from 18 sub-buttons on one dashboard, and repeating that dashboard's
+# identity 18 times spent most of the response on nothing an operator needs. The
+# true total is always reported alongside, per the truncation contract, so a
+# clipped list is never mistaken for a complete one.
+MAX_DANGLING_PATHS = 3
+
 MAX_SEARCH_QUERY_LEN = 512
 
 # Hard cap (and default) for the bounded watch_entity tool.
