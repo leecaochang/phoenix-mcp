@@ -1102,6 +1102,17 @@ class OpenAICompatProvider:
                 body["thinking"] = {"type": "enabled" if thinking else "disabled"}
                 thinking_on = bool(thinking)
             if thinking_on and effort:
+                # TOP-LEVEL, verified on the wire: a deliberately INVALID value
+                # here answers 400, so the field is parsed and validated rather
+                # than ignored. It is a standard OpenAI parameter, which is why it
+                # sits beside `thinking` rather than inside it; DeepSeek's own
+                # samples pass `thinking` through extra_body and leave this one a
+                # normal argument.
+                #
+                # Worth knowing before "fixing" it: whether it worked could NOT be
+                # established from the model's replies. Reasoning output appears or
+                # does not at any effort level, run to run, so two sessions gave
+                # opposite impressions. Only the invalid-value probe settled it.
                 body["reasoning_effort"] = effort
             # DeepSeek's undocumented default output cap truncated a large tool
             # call mid-JSON (live-observed on a whole-dashboard write). 32K only
