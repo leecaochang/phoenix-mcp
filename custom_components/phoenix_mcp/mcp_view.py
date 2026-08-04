@@ -1831,7 +1831,7 @@ async def async_restore_version(
             # No expected_hash: a restore deliberately overwrites whatever is
             # there now, which is the whole point of choosing a snapshot.
             return await _execute_set_config_entry_options(
-                {"entry_id": resource_id, "options": target}, token, hass, data,
+                {"entry_id": resource_id, "settings": target}, token, hass, data,
             )
         if resource_type == "energy":
             # Energy is restore-only and deliberately WHOLESALE: the snapshot IS

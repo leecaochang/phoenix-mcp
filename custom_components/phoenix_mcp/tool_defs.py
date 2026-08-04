@@ -1914,10 +1914,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "config_entry consumer of the entity it uses) or list_integrations. Returns the "
             "current options, a content_hash to pass back as expected_hash, and schema: the "
             "fields the helper accepts with their types, defaults and, for entity fields, the "
-            "domains they allow. editable_options is the subset of the current options the "
+            "domains they allow. editable_settings is the subset of the current settings the "
             "flow actually offers, and is what you send back to set_config_entry_options: a "
-            "helper often stores keys its options flow does not expose, and sending one of "
-            "those is rejected. Integration entries are not readable here."
+            "helper often stores keys its flow does not expose, and sending one of those is "
+            "rejected. mechanism says which flow the helper uses (options or reconfigure); "
+            "both are driven the same way from your side. Integration entries are not "
+            "readable here."
         ),
         "cap": "cap_helper_write",
         "inputSchema": {
@@ -1935,7 +1937,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "entity after the original was removed. This is what finishes a migration: a helper "
             "whose source is gone keeps existing and quietly produces nothing, and no other tool "
             "can repoint it. Read get_config_entry_options first and send back its "
-            "editable_options with your change applied, NOT the full options: your input is "
+            "editable_settings with your change applied, NOT the full settings: your input is "
             "merged over what is stored, a key the flow does not offer is rejected if you send "
             "it and left alone if you do not, and an OPTIONAL key the flow does offer is CLEARED "
             "if you omit it. Pass that read's content_hash as expected_hash so the write is "
@@ -1950,13 +1952,13 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "entry_id": {"type": "string", "description": "The config entry id of the helper."},
-                "options": {
+                "settings": {
                     "type": "object",
-                    "description": "The complete new settings, matching the schema from get_config_entry_options. Replaces the existing options rather than merging into them.",
+                    "description": "The new settings, matching the schema from get_config_entry_options. Send its editable_settings with your change applied.",
                 },
                 "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_config_entry_options; the write is refused if the settings changed since then."},
             },
-            "required": ["entry_id", "options"],
+            "required": ["entry_id", "settings"],
         },
     },
     {

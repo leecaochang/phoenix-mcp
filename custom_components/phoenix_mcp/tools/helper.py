@@ -29,6 +29,7 @@ import voluptuous_serialize
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import SOURCE_RECONFIGURE
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 
@@ -357,7 +358,71 @@ async def _helper_config_entry(hass: HomeAssistant, entry_id: Any) -> Any | None
     return entry if integration.integration_type == "helper" else None
 
 
-def _options_schema_json(result: Any) -> list:
+# The two ways HA lets an entry be reconfigured, and they are NOT interchangeable.
+# An options flow writes entry.options and finishes with CREATE_ENTRY; a
+# reconfigure flow writes entry.data and finishes with ABORT carrying
+# reason "reconfigure_successful", because it updates an entry rather than making
+# one. Reading a success as a failure (or the reverse) is the whole hazard here,
+# so every mechanism-specific difference is funnelled through the four helpers
+# below rather than spread across the tools.
+_OPTIONS = "options"
+_RECONFIGURE = "reconfigure"
+_RECONFIGURE_OK = "reconfigure_successful"
+
+
+def _settings_mechanism(entry: Any) -> str | None:
+    """Which flow, if any, can change this entry's settings.
+
+    Options first: a helper that offers both is offering the options flow for
+    ordinary settings, which is what this tool is for.
+    """
+    if entry.supports_options:
+        return _OPTIONS
+    if entry.supports_reconfigure:
+        return _RECONFIGURE
+    return None
+
+
+def _settings_store(entry: Any, mechanism: str | None) -> dict:
+    """The entry's current settings, from whichever store its flow writes."""
+    return dict(entry.data if mechanism == _RECONFIGURE else entry.options)
+
+
+async def _init_settings_flow(hass: HomeAssistant, entry: Any, mechanism: str) -> Any:
+    """Open the entry's settings flow and return its first step."""
+    if mechanism == _RECONFIGURE:
+        return await hass.config_entries.flow.async_init(
+            entry.domain,
+            context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+        )
+    return await hass.config_entries.options.async_init(entry.entry_id)
+
+
+async def _configure_settings_flow(
+    hass: HomeAssistant, mechanism: str, flow_id: str, user_input: dict
+) -> Any:
+    manager = hass.config_entries.flow if mechanism == _RECONFIGURE else hass.config_entries.options
+    return await manager.async_configure(flow_id, user_input)
+
+
+def _settings_applied(mechanism: str, result: Any) -> bool:
+    """Whether the flow actually wrote the settings.
+
+    THE ASYMMETRY IS THE POINT. An options flow signals success with
+    CREATE_ENTRY. A reconfigure flow signals it with ABORT + reason
+    "reconfigure_successful", since HA's async_update_reload_and_abort updates
+    the entry and then aborts the flow, so a single "type != CREATE_ENTRY means
+    nothing happened" test reports every successful reconfigure as a failure.
+    An abort with any OTHER reason (already_configured, and whatever an
+    integration raises) is a real refusal and must keep reading as one.
+    """
+    if mechanism == _RECONFIGURE:
+        return (result.get("type") == FlowResultType.ABORT
+                and result.get("reason") == _RECONFIGURE_OK)
+    return result.get("type") == FlowResultType.CREATE_ENTRY
+
+
+def _options_schema_json(result: Any) -> list | None:
     """Serialize a flow step's data_schema the way HA's own frontend receives it.
 
     voluptuous_serialize with HA's custom_serializer is exactly what
@@ -368,25 +433,38 @@ def _options_schema_json(result: Any) -> list:
     """
     schema = result.get("data_schema")
     if schema is None:
+        # A step with no schema at all is a confirm-only step: it genuinely has
+        # no fields, which is NOT the same as a schema this cannot describe, so
+        # it returns the empty list rather than the "unknown" None below.
         return []
-    converted = voluptuous_serialize.convert(schema, custom_serializer=cv.custom_serializer)
+    try:
+        converted = voluptuous_serialize.convert(schema, custom_serializer=cv.custom_serializer)
+    except Exception:  # noqa: BLE001 - a schema shape this cannot describe
+        # Returning [] here would be a lie the caller acts on: an empty field
+        # list reads as "this helper accepts nothing", and the caller would then
+        # send nothing and clear every optional setting. None means "could not be
+        # described", which the caller is told rather than left to infer.
+        _LOGGER.debug("Could not serialize a settings schema", exc_info=True)
+        return None
     # convert() types as dict-or-list; a vol.Schema over a mapping always yields
     # the per-field list, and anything else is not a form an agent can fill.
-    return converted if isinstance(converted, list) else []
+    return converted if isinstance(converted, list) else None
 
 
-async def _abort_flow(hass: HomeAssistant, flow_id: str | None) -> None:
-    """Drop an options flow we opened but will not finish.
+async def _abort_flow(hass: HomeAssistant, mechanism: str | None, flow_id: str | None) -> None:
+    """Drop a settings flow we opened but will not finish.
 
     Every early return between async_init and a successful configure has to come
     through here: the flow lives in HA's own manager, not in the request, so
     abandoning one leaks it into config_entries/flow/progress where it shows up
-    in the operator's UI as a half-finished dialog.
+    in the operator's UI as a half-finished dialog. The two mechanisms have
+    separate managers, so aborting on the wrong one silently leaves the flow open.
     """
     if not flow_id:
         return
+    manager = hass.config_entries.flow if mechanism == _RECONFIGURE else hass.config_entries.options
     try:
-        hass.config_entries.options.async_abort(flow_id)
+        manager.async_abort(flow_id)
     except Exception:  # noqa: BLE001 - best effort; an already-gone flow is fine
         _LOGGER.debug("Could not abort options flow %s", flow_id, exc_info=True)
 
@@ -408,46 +486,57 @@ async def _tool_get_config_entry_options(
     entry = await _helper_config_entry(hass, args.get("entry_id"))
     if entry is None:
         return _tool_error(_NOT_A_HELPER_ENTRY), "not_found", tool
+    mechanism = _settings_mechanism(entry)
+    settings = _settings_store(entry, mechanism)
     body: dict[str, Any] = {
         "entry_id": entry.entry_id,
         "domain": entry.domain,
         "title": entry.title,
-        "options": dict(entry.options),
-        "content_hash": content_hash(dict(entry.options)),
-        "supports_options": entry.supports_options,
+        "mechanism": mechanism,
+        "settings": settings,
+        "content_hash": content_hash(settings),
     }
-    if not entry.supports_options:
+    if mechanism is None:
         body["schema"] = []
-        body["note"] = "This helper does not expose an options flow, so its settings cannot be changed here."
+        body["note"] = "This helper exposes no way to change its settings, so they cannot be changed here."
         return _tool_success(json.dumps(body, default=str)), "allowed", tool
     flow_id = None
     try:
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _init_settings_flow(hass, entry, mechanism)
         flow_id = result.get("flow_id")
         schema = _options_schema_json(result)
-        body["schema"] = schema
         body["step_id"] = result.get("step_id")
+        if schema is None:
+            # Settings still readable and writable; only the field description is
+            # missing, so say that instead of implying there are no fields.
+            body["note"] = (
+                "This helper's settings form could not be described, so no field list is "
+                "available. You can still change settings by sending the values you want; "
+                "send the whole of settings, since the fields it accepts are unknown here."
+            )
+            return _tool_success(json.dumps(body, default=str)), "allowed", tool
+        body["schema"] = schema
         # THE FIELD A CALLER ACTUALLY SENDS BACK, and the reason it exists is a
-        # real mismatch: a helper's stored options routinely hold keys its
-        # options flow does not offer. attribute_as_sensor stores entity_id and
-        # name while its schema declares neither, so "send the options back with
-        # your change applied" fails validation on those extras (the step's
-        # schema rejects an undeclared key), while omitting them is correct and
-        # harmless because the flow merges over what is stored and never sees
-        # them. Handing the caller the intersection removes the guess.
+        # real mismatch: a helper's stored settings routinely hold keys its flow
+        # does not offer. attribute_as_sensor stores entity_id and name while its
+        # schema declares neither, so "send the settings back with your change
+        # applied" fails validation on those extras (the step's schema rejects an
+        # undeclared key), while omitting them is correct and harmless because the
+        # flow merges over what is stored and never sees them. Handing the caller
+        # the intersection removes the guess.
         offered = {field.get("name") for field in schema if isinstance(field, dict)}
-        body["editable_options"] = {k: v for k, v in body["options"].items() if k in offered}
+        body["editable_settings"] = {k: v for k, v in settings.items() if k in offered}
         body["note"] = (
-            "Send editable_options back with your change applied. Options not listed there "
-            "are stored by this helper but not offered by its options flow, and are left "
+            "Send editable_settings back with your change applied. Settings not listed "
+            "there are stored by this helper but not offered by its flow, and are left "
             "alone; including one is rejected. Omitting an OPTIONAL field that IS offered "
             "clears it."
         )
     except Exception:  # noqa: BLE001 - a flow that will not start is not a Phoenix bug
-        _LOGGER.exception("Could not open the options flow for %s", entry.entry_id)
+        _LOGGER.exception("Could not open the settings flow for %s", entry.entry_id)
         return _tool_error("Could not read this helper's settings."), "invalid_request", tool
     finally:
-        await _abort_flow(hass, flow_id)
+        await _abort_flow(hass, mechanism, flow_id)
     return _tool_success(json.dumps(body, default=str)), "allowed", tool
 
 
@@ -496,18 +585,19 @@ def _unwritable_option_entities(
     )
 
 
-def _config_entry_options_precheck(
-    options: Any, entry: Any, token: TokenRecord, hass: HomeAssistant, tool: str
+def _config_entry_settings_precheck(
+    settings: Any, entry: Any, mechanism: str | None, token: TokenRecord,
+    hass: HomeAssistant, tool: str,
 ) -> tuple[dict, str, str] | None:
     """Rule 29: refuse a doomed reconfigure before an approval exists."""
-    if not isinstance(options, dict) or not options:
-        return _tool_error("options must be a non-empty object of the settings to apply."), "invalid_request", tool
-    if not entry.supports_options:
+    if not isinstance(settings, dict) or not settings:
+        return _tool_error("settings must be a non-empty object of the values to apply."), "invalid_request", tool
+    if mechanism is None:
         return (
-            _tool_error("This helper does not expose an options flow, so its settings cannot be changed here."),
+            _tool_error("This helper exposes no way to change its settings, so they cannot be changed here."),
             "invalid_request", tool,
         )
-    denied = _unwritable_option_entities(options, token, hass)
+    denied = _unwritable_option_entities(settings, token, hass)
     if denied:
         return (
             _tool_error(
@@ -524,8 +614,9 @@ async def _build_diff_set_config_entry_options(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> dict:
     entry = await _helper_config_entry(hass, args.get("entry_id"))
-    before = dict(entry.options) if entry is not None else {}
-    after = dict_arg(args.get("options"))
+    mechanism = _settings_mechanism(entry) if entry is not None else None
+    before = _settings_store(entry, mechanism) if entry is not None else {}
+    after = dict_arg(args.get("settings"))
     label = (entry.title if entry is not None else None) or str(args.get("entry_id"))
     # The keys the write actually changes, computed from the payload rather than
     # taken on trust, so the History line an admin reads cannot misreport itself.
@@ -538,8 +629,9 @@ async def _build_diff_set_config_entry_options(
         "after": _truncate(json.dumps(after, indent=2, default=str)),
         "preview": {
             "domain": entry.domain if entry is not None else None,
+            "mechanism": mechanism,
             "changed_keys": changed,
-            "warning": "Replaces this helper's settings; the options flow validates them and reloads it.",
+            "warning": "Replaces this helper's settings; its flow validates them and reloads it.",
         },
     }
 
@@ -568,10 +660,13 @@ async def _tool_set_config_entry_options(
     entry = await _helper_config_entry(hass, args.get("entry_id"))
     if entry is None:
         return _tool_error(_NOT_A_HELPER_ENTRY), "not_found", tool
-    pre = _config_entry_options_precheck(args.get("options"), entry, token, hass, tool)
+    mechanism = _settings_mechanism(entry)
+    pre = _config_entry_settings_precheck(
+        args.get("settings"), entry, mechanism, token, hass, tool)
     if pre is not None:
         return pre
-    conflict = _cas_conflict(args.get("expected_hash"), dict(entry.options), tool)
+    conflict = _cas_conflict(
+        args.get("expected_hash"), _settings_store(entry, mechanism), tool)
     if conflict is not None:
         return conflict
     blocked = await _gate(
@@ -591,50 +686,56 @@ async def _execute_set_config_entry_options(
     entry = await _helper_config_entry(hass, args.get("entry_id"))
     if entry is None:
         return _tool_error(_NOT_A_HELPER_ENTRY), "not_found", tool
-    options = args.get("options")
+    mechanism = _settings_mechanism(entry)
+    settings = args.get("settings")
     # Re-validated at apply time, not only pre-gate: the entry, the token's tree
     # and the entities named can all move while an approval waits.
-    pre = _config_entry_options_precheck(options, entry, token, hass, tool)
+    pre = _config_entry_settings_precheck(settings, entry, mechanism, token, hass, tool)
     if pre is not None:
         return pre
-    before = dict(entry.options)
+    before = _settings_store(entry, mechanism)
     conflict = _cas_conflict(args.get("expected_hash"), before, tool)
     if conflict is not None:
         return conflict
+    if mechanism is None:  # refused by the precheck above; narrows for the type checker
+        return _tool_error("This helper exposes no way to change its settings."), "invalid_request", tool
 
     flow_id = None
     try:
-        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await _init_settings_flow(hass, entry, mechanism)
         flow_id = result.get("flow_id")
-        result = await hass.config_entries.options.async_configure(
-            flow_id, dict(options) if isinstance(options, dict) else {})
+        result = await _configure_settings_flow(
+            hass, mechanism, flow_id, dict(settings) if isinstance(settings, dict) else {})
     except vol.Invalid as err:
-        await _abort_flow(hass, flow_id)
+        await _abort_flow(hass, mechanism, flow_id)
         return _tool_error(f"The settings were rejected: {err}"), "invalid_request", tool
     except Exception:  # noqa: BLE001 - a flow failure is not a Phoenix bug, but must not leak
-        _LOGGER.exception("Options flow failed for %s", entry.entry_id)
-        await _abort_flow(hass, flow_id)
+        _LOGGER.exception("Settings flow failed for %s", entry.entry_id)
+        await _abort_flow(hass, mechanism, flow_id)
         return _tool_error("Could not apply these settings."), "invalid_request", tool
 
-    if result.get("type") != FlowResultType.CREATE_ENTRY:
-        # Either the flow wants another step, or it refused with errors. Neither
-        # is applied, and a multi-step flow is not something one call can drive.
-        await _abort_flow(hass, flow_id)
+    if not _settings_applied(mechanism, result):
+        # Either the flow wants another step, or it refused. Neither applied
+        # anything, and a multi-step flow is not something one call can drive.
+        await _abort_flow(hass, mechanism, flow_id)
         errors = result.get("errors") or {}
         if errors:
             detail = ", ".join(f"{field}: {msg}" for field, msg in errors.items())
             message = f"The settings were rejected ({detail}). Nothing was changed."
+        elif result.get("type") == FlowResultType.ABORT:
+            message = f"Nothing was changed; the helper refused: {result.get('reason')}."
         else:
             message = (
-                "Nothing was changed. This helper's options flow asks for more than one "
+                "Nothing was changed. This helper's settings flow asks for more than one "
                 "step, which this tool cannot drive; change it in the Home Assistant UI."
             )
         return _tool_error(message), "invalid_request", tool
 
     # Re-read rather than trusting the payload: the flow's own validators can
     # normalise what they were given (threshold sets absent bounds to None).
-    applied = hass.config_entries.async_get_entry(entry.entry_id)
-    after = dict(applied.options) if applied is not None else dict_arg(options)
+    applied_entry = hass.config_entries.async_get_entry(entry.entry_id)
+    after = (_settings_store(applied_entry, mechanism)
+             if applied_entry is not None else dict_arg(settings))
     await _record_version(
         data, token, resource_type="config_entry", resource_id=entry.entry_id,
         action="edit", before=before, after=after, alias=entry.title,
@@ -643,7 +744,7 @@ async def _execute_set_config_entry_options(
     return (
         _tool_success(json.dumps({
             "entry_id": entry.entry_id, "domain": entry.domain, "title": entry.title,
-            "options": after, "content_hash": content_hash(after),
+            "mechanism": mechanism, "settings": after, "content_hash": content_hash(after),
             "note": "The helper reloaded with these settings; no restart is needed.",
         }, default=str)),
         "allowed", f"config_entry:{entry.entry_id}",

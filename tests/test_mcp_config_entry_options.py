@@ -125,7 +125,7 @@ class TestRead:
                 "get_config_entry_options", {"entry_id": "helper1"}, _token(), hass)
         assert outcome == "allowed"
         body = _json(content)
-        assert body["options"] == {"entity_id": "sensor.kitchen", "hysteresis": 0.0}
+        assert body["settings"] == {"entity_id": "sensor.kitchen", "hysteresis": 0.0}
         fields = {f["name"]: f for f in body["schema"]}
         assert fields["entity_id"]["required"] is True
         # The domains an entity field accepts come through, which is what lets an
@@ -149,9 +149,9 @@ class TestRead:
             content, _, _ = await _call(
                 "get_config_entry_options", {"entry_id": "helper1"}, _token(), hass)
         body = _json(content)
-        assert "name" in body["options"]           # stored...
-        assert "name" not in body["editable_options"]  # ...but the flow does not offer it
-        assert set(body["editable_options"]) == {"entity_id", "hysteresis"}
+        assert "name" in body["settings"]           # stored...
+        assert "name" not in body["editable_settings"]  # ...but the flow does not offer it
+        assert set(body["editable_settings"]) == {"entity_id", "hysteresis"}
 
     async def test_the_schema_flow_is_always_closed(self, hass, helper_entry, as_helper):
         """Reading the fields must not leave a half-finished dialog in the
@@ -184,17 +184,17 @@ class TestWrite:
         with init, configure:
             content, outcome, _ = await _call(
                 "set_config_entry_options",
-                {"entry_id": "helper1", "options": {"entity_id": "sensor.other", "hysteresis": 1.0}},
+                {"entry_id": "helper1", "settings": {"entity_id": "sensor.other", "hysteresis": 1.0}},
                 _token(), hass)
         assert outcome == "allowed"
         assert created["options"]["entity_id"] == "sensor.other"
-        assert _json(content)["options"]["entity_id"] == "sensor.other"
+        assert _json(content)["settings"]["entity_id"] == "sensor.other"
 
     async def test_deny_returns_forbidden_without_echoing_the_payload(self, hass, helper_entry, as_helper):
         """Rule 29(a): the cap check runs before anything reads the arguments."""
         content, outcome, _ = await _call(
             "set_config_entry_options",
-            {"entry_id": "helper1", "options": {"entity_id": "sensor.nonsense"}},
+            {"entry_id": "helper1", "settings": {"entity_id": "sensor.nonsense"}},
             _token(cap_helper_write="deny"), hass)
         assert outcome == "denied"
         assert "nonsense" not in content["content"][0]["text"]
@@ -205,7 +205,7 @@ class TestWrite:
         hass.states.async_set("lock.secret", "locked", {})
         content, outcome, _ = await _call(
             "set_config_entry_options",
-            {"entry_id": "helper1", "options": {"entity_id": "lock.secret"}}, _token(), hass)
+            {"entry_id": "helper1", "settings": {"entity_id": "lock.secret"}}, _token(), hass)
         assert outcome == "denied"
         assert "lock.secret" in content["content"][0]["text"]
 
@@ -217,7 +217,7 @@ class TestWrite:
         hass.states.async_set("binary_sensor.readable", "off", {})
         content, outcome, _ = await _call(
             "set_config_entry_options",
-            {"entry_id": "helper1", "options": {"entity_id": "binary_sensor.readable"}},
+            {"entry_id": "helper1", "settings": {"entity_id": "binary_sensor.readable"}},
             _token(), hass)
         assert outcome == "denied"
         assert "binary_sensor.readable" in content["content"][0]["text"]
@@ -229,7 +229,7 @@ class TestWrite:
         content, outcome, _ = await _call(
             "set_config_entry_options",
             {"entry_id": "helper1",
-             "options": {"whatever_this_helper_calls_it": ["lock.secret"]}}, _token(), hass)
+             "settings": {"whatever_this_helper_calls_it": ["lock.secret"]}}, _token(), hass)
         assert outcome == "denied"
         assert "lock.secret" in content["content"][0]["text"]
 
@@ -238,7 +238,7 @@ class TestWrite:
         data = MagicMock()
         data.store.get_pending_approvals.return_value = []
         _, outcome, _ = await _call(
-            "set_config_entry_options", {"entry_id": "helper1", "options": {}},
+            "set_config_entry_options", {"entry_id": "helper1", "settings": {}},
             _token(cap_helper_write="confirm"), hass, data)
         assert outcome == "invalid_request"
         data.store.set_pending_approvals.assert_not_called()
@@ -246,7 +246,7 @@ class TestWrite:
     async def test_a_stale_hash_is_refused(self, hass, helper_entry, as_helper):
         _, outcome, _ = await _call(
             "set_config_entry_options",
-            {"entry_id": "helper1", "options": {"entity_id": "sensor.other"},
+            {"entry_id": "helper1", "settings": {"entity_id": "sensor.other"},
              "expected_hash": "stale"}, _token(), hass)
         assert outcome == "invalid_request"
 
@@ -257,7 +257,7 @@ class TestWrite:
         with init, configure:
             content, outcome, _ = await _call(
                 "set_config_entry_options",
-                {"entry_id": "helper1", "options": {"entity_id": "sensor.other"}}, _token(), hass)
+                {"entry_id": "helper1", "settings": {"entity_id": "sensor.other"}}, _token(), hass)
         assert outcome == "invalid_request"
         text = content["content"][0]["text"]
         assert "more than one" in text and "Nothing was changed" in text
@@ -268,7 +268,7 @@ class TestWrite:
         with init, configure:
             content, outcome, _ = await _call(
                 "set_config_entry_options",
-                {"entry_id": "helper1", "options": {"entity_id": "sensor.other"}}, _token(), hass)
+                {"entry_id": "helper1", "settings": {"entity_id": "sensor.other"}}, _token(), hass)
         assert outcome == "invalid_request"
         assert "need_lower_upper" in content["content"][0]["text"]
 
@@ -277,7 +277,7 @@ class TestWrite:
         with init, configure, patch.object(
             hass.config_entries.options, "async_abort") as abort:
             await _call("set_config_entry_options",
-                        {"entry_id": "helper1", "options": {"entity_id": "sensor.other"}},
+                        {"entry_id": "helper1", "settings": {"entity_id": "sensor.other"}},
                         _token(), hass)
         abort.assert_called_once_with("f1")
 
@@ -286,7 +286,7 @@ class TestWrite:
         token's tree and the entities named can all move while it waits."""
         from custom_components.phoenix_mcp.tools.helper import _execute_set_config_entry_options
 
-        args = {"entry_id": "helper1", "options": {"entity_id": "lock.secret"}}
+        args = {"entry_id": "helper1", "settings": {"entity_id": "lock.secret"}}
         hass.states.async_set("lock.secret", "locked", {})
         init, configure, created = _flow(hass)
         with init, configure:
@@ -308,9 +308,187 @@ class TestWrite:
         init, configure, _ = _flow(hass)
         with init, configure:
             await _call("set_config_entry_options",
-                        {"entry_id": "helper1", "options": {"entity_id": "sensor.other"}},
+                        {"entry_id": "helper1", "settings": {"entity_id": "sensor.other"}},
                         _token(), hass)
         assert captured["resource_type"] == "config_entry"
         assert captured["resource_id"] == "helper1"
         assert captured["before"]["entity_id"] == "sensor.kitchen"
         assert captured["after"]["entity_id"] == "sensor.other"
+
+
+class TestReconfigureMechanism:
+    """Some helpers keep their config in entry.data and expose no options flow,
+    so HA reconfigures them through the CONFIG flow with source=reconfigure.
+    The two mechanisms are not interchangeable and the differences are the whole
+    hazard: different manager, different store, and a different success signal.
+    """
+
+    @pytest.fixture
+    def data_entry(self, hass):
+        """A helper whose settings live in data, with no options flow."""
+        entry = MockConfigEntry(
+            domain="time_off", entry_id="data1", title="Pantry Light",
+            data={"entities": ["sensor.kitchen"]}, options={},
+        )
+        entry.add_to_hass(hass)
+        object.__setattr__(entry, "_supports_options", False)
+        object.__setattr__(entry, "_supports_reconfigure", True)
+        hass.states.async_set("sensor.kitchen", "20", {})
+        hass.states.async_set("sensor.other", "5", {})
+        return entry
+
+    @pytest.fixture
+    def as_data_helper(self, monkeypatch):
+        async def _get_integration(hass, domain):
+            return MagicMock(integration_type="helper")
+
+        monkeypatch.setattr(
+            "custom_components.phoenix_mcp.tools.helper.async_get_integration", _get_integration)
+
+    def _reconfigure_flow(self, hass, *, result=None):
+        applied = {}
+
+        async def _init(handler, *, context=None, data=None):
+            assert context["source"] == "reconfigure"
+            return {"type": FlowResultType.FORM, "flow_id": "rf1", "step_id": "reconfigure",
+                    "data_schema": vol.Schema({
+                        vol.Required("entities"): selector.EntitySelector(
+                            selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+                    })}
+
+        async def _configure(flow_id, user_input=None):
+            if result is not None:
+                return result
+            applied["settings"] = user_input
+            entry = hass.config_entries.async_get_entry("data1")
+            hass.config_entries.async_update_entry(entry, data=user_input)
+            # HA's async_update_reload_and_abort updates the entry and then
+            # ABORTS the flow; there is no CREATE_ENTRY on this path.
+            return {"type": FlowResultType.ABORT, "reason": "reconfigure_successful"}
+
+        return (patch.object(hass.config_entries.flow, "async_init", _init),
+                patch.object(hass.config_entries.flow, "async_configure", _configure),
+                applied)
+
+    async def test_the_read_reports_the_mechanism_and_reads_data(
+        self, hass, data_entry, as_data_helper,
+    ):
+        init, configure, _ = self._reconfigure_flow(hass)
+        with init, configure:
+            content, outcome, _ = await _call(
+                "get_config_entry_options", {"entry_id": "data1"}, _token(), hass)
+        assert outcome == "allowed"
+        body = _json(content)
+        assert body["mechanism"] == "reconfigure"
+        # entry.data, not entry.options: an options flow would read the wrong store.
+        assert body["settings"] == {"entities": ["sensor.kitchen"]}
+        assert body["editable_settings"] == {"entities": ["sensor.kitchen"]}
+
+    async def test_a_successful_reconfigure_is_not_read_as_a_failure(
+        self, hass, data_entry, as_data_helper,
+    ):
+        """THE TRAP. An options flow signals success with CREATE_ENTRY; a
+        reconfigure signals it with ABORT + reason reconfigure_successful, so a
+        single "type != CREATE_ENTRY means nothing happened" test reports every
+        successful reconfigure as a failure."""
+        init, configure, applied = self._reconfigure_flow(hass)
+        with init, configure:
+            content, outcome, _ = await _call(
+                "set_config_entry_options",
+                {"entry_id": "data1", "settings": {"entities": ["sensor.other"]}},
+                _token(), hass)
+        assert outcome == "allowed"
+        assert applied["settings"] == {"entities": ["sensor.other"]}
+        assert _json(content)["settings"] == {"entities": ["sensor.other"]}
+
+    async def test_an_abort_for_any_other_reason_is_still_a_refusal(
+        self, hass, data_entry, as_data_helper,
+    ):
+        """Relaxing the success test for one abort reason must not relax it for
+        every abort: already_configured means nothing was written."""
+        init, configure, applied = self._reconfigure_flow(
+            hass, result={"type": FlowResultType.ABORT, "reason": "already_configured"})
+        with init, configure:
+            content, outcome, _ = await _call(
+                "set_config_entry_options",
+                {"entry_id": "data1", "settings": {"entities": ["sensor.other"]}},
+                _token(), hass)
+        assert outcome == "invalid_request"
+        assert "already_configured" in content["content"][0]["text"]
+        assert applied == {}
+
+    async def test_an_unfinished_reconfigure_aborts_on_the_right_manager(
+        self, hass, data_entry, as_data_helper,
+    ):
+        """The two mechanisms have SEPARATE flow managers, so aborting on the
+        options manager would silently leave a reconfigure flow open in the
+        operator's UI."""
+        init, configure, _ = self._reconfigure_flow(
+            hass, result={"type": FlowResultType.FORM, "step_id": "second"})
+        with init, configure, \
+                patch.object(hass.config_entries.flow, "async_abort") as flow_abort, \
+                patch.object(hass.config_entries.options, "async_abort") as options_abort:
+            await _call("set_config_entry_options",
+                        {"entry_id": "data1", "settings": {"entities": ["sensor.other"]}},
+                        _token(), hass)
+        flow_abort.assert_called_once_with("rf1")
+        options_abort.assert_not_called()
+
+    async def test_scope_is_enforced_on_the_reconfigure_path_too(
+        self, hass, data_entry, as_data_helper,
+    ):
+        hass.states.async_set("lock.secret", "locked", {})
+        _c, outcome, _ = await _call(
+            "set_config_entry_options",
+            {"entry_id": "data1", "settings": {"entities": ["lock.secret"]}}, _token(), hass)
+        assert outcome == "denied"
+
+    async def test_an_undescribable_schema_does_not_claim_there_are_no_fields(
+        self, hass, data_entry, as_data_helper,
+    ):
+        """An empty field list is a lie a caller acts on: it reads as "accepts
+        nothing", and the caller then sends nothing and clears every optional
+        setting. Say the form could not be described instead."""
+        async def _init(handler, *, context=None, data=None):
+            return {"type": FlowResultType.FORM, "flow_id": "rf1", "step_id": "reconfigure",
+                    # A shape voluptuous_serialize cannot convert.
+                    "data_schema": vol.Schema({vol.Required("entities"): list})}
+
+        with patch.object(hass.config_entries.flow, "async_init", _init), \
+                patch.object(hass.config_entries.flow, "async_abort"):
+            content, outcome, _ = await _call(
+                "get_config_entry_options", {"entry_id": "data1"}, _token(), hass)
+        assert outcome == "allowed"
+        body = _json(content)
+        assert "schema" not in body
+        assert "editable_settings" not in body
+        assert "could not be described" in body["note"]
+        assert body["settings"] == {"entities": ["sensor.kitchen"]}
+
+    async def test_a_confirm_only_step_has_no_fields_rather_than_unknown_ones(
+        self, hass, data_entry, as_data_helper,
+    ):
+        """A step with no schema genuinely accepts nothing, which is a different
+        answer from a schema that could not be described, and the caller acts on
+        them differently."""
+        async def _init(handler, *, context=None, data=None):
+            return {"type": FlowResultType.FORM, "flow_id": "rf1", "step_id": "confirm"}
+
+        with patch.object(hass.config_entries.flow, "async_init", _init), \
+                patch.object(hass.config_entries.flow, "async_abort"):
+            content, _, _ = await _call(
+                "get_config_entry_options", {"entry_id": "data1"}, _token(), hass)
+        body = _json(content)
+        assert body["schema"] == []
+        assert body["editable_settings"] == {}
+        assert "could not be described" not in body["note"]
+
+    async def test_a_helper_with_neither_flow_says_so(self, hass, data_entry, as_data_helper):
+        object.__setattr__(data_entry, "_supports_reconfigure", False)
+        content, outcome, _ = await _call(
+            "get_config_entry_options", {"entry_id": "data1"}, _token(), hass)
+        assert outcome == "allowed"
+        body = _json(content)
+        assert body["mechanism"] is None
+        assert body["schema"] == []
+        assert "no way to change its settings" in body["note"]
