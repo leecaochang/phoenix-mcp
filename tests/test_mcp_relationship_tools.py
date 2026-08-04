@@ -707,6 +707,35 @@ class TestRelationshipCoverage:
         assert len(entry["referenced_by"]) == 1
         assert entry["referenced_by"][0]["name"] == "Morning"
 
+    async def test_a_non_default_yaml_layout_is_still_read(self, hass, rel_env):
+        """Both walks used to open automations.yaml and nothing else, so an
+        install routing the domain through !include_dir_list read as EMPTY and
+        the tool reported that nothing referenced the entity. Indistinguishable
+        from a genuinely unused entity, which is the worst answer here."""
+        os.remove(os.path.join(hass.config.config_dir, "automations.yaml"))
+        with open(hass.config.path("configuration.yaml"), "w", encoding="utf-8") as f:
+            f.write("automation: !include_dir_list automations/\n")
+        os.makedirs(os.path.join(hass.config.config_dir, "automations"), exist_ok=True)
+        _write(os.path.join(hass.config.config_dir, "automations", "one.yaml"), {
+            "id": "split1", "alias": "Split Out",
+            "trigger": [{"platform": "state", "entity_id": "light.kitchen"}], "action": [],
+        })
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        autos = [c for c in _json(content)["consumers"] if c["kind"] == "automation"]
+        assert autos and autos[0]["name"] == "Split Out"
+
+    async def test_a_package_tree_is_named_rather_than_silently_skipped(self, hass, rel_env):
+        """HA merges packages into the domain and this does not resolve them, so
+        the answer is incomplete and has to say so."""
+        with open(hass.config.path("configuration.yaml"), "w", encoding="utf-8") as f:
+            f.write("homeassistant:\n  packages: !include_dir_named packages/\n"
+                    "automation: !include automations.yaml\n")
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        body = _json(content)
+        # Still searched, just not exhaustively; both facts are reported.
+        assert "automation" in body["searched"]
+        assert any("packages" in n["reason"] for n in body["not_searched"])
+
     async def test_a_live_entity_is_never_reported_dangling(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         assert _dangling(_json(content)) == []
@@ -731,6 +760,16 @@ class TestDescribeEntity:
     async def test_inaccessible_not_found(self, hass, rel_env):
         _, outcome, _ = await _call("describe_entity", {"entity_id": "sensor.secret"}, _token(), hass)
         assert outcome == "not_found"
+
+    async def test_referenced_by_states_its_own_limit(self, hass, rel_env):
+        """This field covers three consumer kinds; get_relationships reaches five.
+        Unqualified, a short list here reads as PROOF nothing else uses the
+        entity, which is the confident wrong answer get_relationships exists to
+        avoid. The difference in coverage is fine; hiding it is not."""
+        content, _, _ = await _call("describe_entity", {"entity_id": "light.kitchen"}, _token(), hass)
+        note = _json(content)["referenced_by_note"]
+        assert "get_relationships" in note
+        assert "dashboards" in note and "config entries" in note
 
     async def test_entity_category_annotated(self, hass, rel_env):
         # describe_entity labels a config/diagnostic entity with its category

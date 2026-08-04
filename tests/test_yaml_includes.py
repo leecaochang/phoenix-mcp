@@ -892,3 +892,134 @@ def test_oracle_against_ha_loader(tmp_path):
     by_id = {a["id"]: a for a in resolved["automation"]}
     assert by_id["one"]["alias"] == "One v2"
     assert by_id["two"] == {"id": "two", "alias": "Two", "password": "hunter2"}
+
+
+# ---------------------------------------------------------------------------
+# read_all_entries: the READ counterpart to locate_entry
+# ---------------------------------------------------------------------------
+#
+# The reverse-reference walks behind get_relationships and describe_entity used
+# to open one hardcoded file per domain, so any layout other than HA's default
+# read as EMPTY and the caller reported that nothing referenced the entity. That
+# is indistinguishable from a genuinely unused entity, and it is the worst answer
+# those callers can give, since the whole question is "is anything still using
+# this". These cover every flavor HA accepts, plus the branches that stay
+# unreadable and must therefore be NAMED.
+
+
+def _seed(tmp_path: Path, config: str) -> Path:
+    write(tmp_path, "configuration.yaml", config)
+    return tmp_path
+
+
+def test_read_all_default_include(tmp_path):
+    _seed(tmp_path, "automation: !include automations.yaml\n")
+    write(tmp_path, "automations.yaml", """\
+        - id: a1
+          alias: One
+        - id: a2
+          alias: Two
+        """)
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert [e["id"] for e in found.entries] == ["a1", "a2"]
+    assert found.unreadable == ()
+
+
+def test_read_all_include_dir_list_is_one_entry_per_file(tmp_path):
+    """The layout that read as empty before: each file IS one automation."""
+    _seed(tmp_path, "automation: !include_dir_list automations/\n")
+    write(tmp_path, "automations/first.yaml", "id: a1\nalias: One\n")
+    write(tmp_path, "automations/second.yaml", "id: a2\nalias: Two\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert sorted(e["id"] for e in found.entries) == ["a1", "a2"]
+    assert found.unreadable == ()
+
+
+def test_read_all_include_dir_merge_list_is_a_list_per_file(tmp_path):
+    _seed(tmp_path, "automation: !include_dir_merge_list automations/\n")
+    write(tmp_path, "automations/pack.yaml", "- id: a1\n- id: a2\n")
+    write(tmp_path, "automations/more.yaml", "- id: a3\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert sorted(e["id"] for e in found.entries) == ["a1", "a2", "a3"]
+
+
+def test_read_all_include_dir_named_keys_by_filename(tmp_path):
+    _seed(tmp_path, "script: !include_dir_named scripts/\n")
+    write(tmp_path, "scripts/greet.yaml", "alias: Greet\nsequence: []\n")
+    write(tmp_path, "scripts/leave.yaml", "alias: Leave\nsequence: []\n")
+    found = yi.read_all_entries(str(tmp_path), "script")
+    assert set(found.entries) == {"greet", "leave"}
+    assert found.entries["greet"]["alias"] == "Greet"
+
+
+def test_read_all_include_dir_merge_named_is_a_mapping_per_file(tmp_path):
+    _seed(tmp_path, "script: !include_dir_merge_named scripts/\n")
+    write(tmp_path, "scripts/pack.yaml", "greet:\n  alias: Greet\nleave:\n  alias: Leave\n")
+    found = yi.read_all_entries(str(tmp_path), "script")
+    assert set(found.entries) == {"greet", "leave"}
+
+
+def test_read_all_reads_an_inline_domain(tmp_path):
+    """Readable here, unlike the WRITE path, which refuses inline as ambiguous:
+    reading it is unambiguous, splicing into it is not."""
+    _seed(tmp_path, "automation:\n  - id: a1\n    alias: Inline\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert [e["alias"] for e in found.entries] == ["Inline"]
+
+
+def test_read_all_merges_labeled_keys_with_the_bare_one(tmp_path):
+    """HA allows `automation manual:` alongside `automation:`."""
+    _seed(tmp_path, "automation: !include automations.yaml\n"
+                    "automation manual:\n  - id: m1\n")
+    write(tmp_path, "automations.yaml", "- id: a1\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert sorted(e["id"] for e in found.entries) == ["a1", "m1"]
+
+
+def test_read_all_names_packages_rather_than_guessing(tmp_path):
+    """HA merges packages into the domain; resolving that tree is not attempted,
+    so the caller is told its answer is incomplete."""
+    _seed(tmp_path, "homeassistant:\n  packages: !include_dir_named packages/\n"
+                    "automation: !include automations.yaml\n")
+    write(tmp_path, "automations.yaml", "- id: a1\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert [e["id"] for e in found.entries] == ["a1"]
+    assert any("packages" in r for r in found.unreadable)
+
+
+def test_read_all_names_a_leaf_it_could_not_parse(tmp_path):
+    _seed(tmp_path, "automation: !include_dir_merge_list automations/\n")
+    write(tmp_path, "automations/good.yaml", "- id: a1\n")
+    write(tmp_path, "automations/broken.yaml", "- id: [unclosed\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert [e["id"] for e in found.entries] == ["a1"]
+    assert any("broken.yaml" in r for r in found.unreadable)
+
+
+def test_read_all_names_a_missing_include_directory(tmp_path):
+    _seed(tmp_path, "automation: !include_dir_list automations/\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert found.entries == []
+    assert any("does not exist" in r for r in found.unreadable)
+
+
+def test_read_all_falls_back_to_the_legacy_leaf(tmp_path):
+    """An unreadable configuration.yaml must not make the DEFAULT layout
+    unreadable too; this mirrors OpResult.fallback on the write side."""
+    write(tmp_path, "configuration.yaml", "this: [is not valid\n")
+    write(tmp_path, "automations.yaml", "- id: a1\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert [e["id"] for e in found.entries] == ["a1"]
+
+
+def test_read_all_on_an_absent_config_dir_is_empty_not_an_error(tmp_path):
+    assert yi.read_all_entries(str(tmp_path), "automation").entries == []
+    assert yi.read_all_entries(str(tmp_path), "script").entries == {}
+
+
+def test_read_all_reports_a_shape_mismatch(tmp_path):
+    """`automation: !include_dir_named` is the wrong flavor for a list domain."""
+    _seed(tmp_path, "automation: !include_dir_named automations/\n")
+    write(tmp_path, "automations/one.yaml", "id: a1\n")
+    found = yi.read_all_entries(str(tmp_path), "automation")
+    assert found.unreadable

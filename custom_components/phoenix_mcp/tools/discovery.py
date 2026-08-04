@@ -54,12 +54,13 @@ from ..mesa import async_semantic_moments, build_expand_target, entity_control_m
 from ..mesa_core.trigger_validator import entities_by_role
 from ..mesa_tools import MESA_TOOLS_CAP, authored_restrictions
 from ..helpers import effective_cap, parse_time_param as _parse_time_param, redact_diagnostics as _redact_diagnostics, sanitize_service_data as _sanitize_service_data, str_arg, str_list_arg
-from .authoring import _AUTOMATION_YAML, _SCENE_CONFIG_PATH, _SCRIPT_CONFIG_PATH, _read_automations_yaml, _read_scenes_yaml, _read_scripts_yaml
+from .authoring import _AUTOMATION_YAML, _SCRIPT_CONFIG_PATH, _read_automations_yaml, _read_scripts_yaml
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
 from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
 from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_esphome_user_service, resolve_service_targets, scrub_sensitive_attributes
 from ..token_store import TokenRecord
+from .. import yaml_includes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +86,21 @@ def _collect_entity_id_values(node: Any, found: set[str]) -> None:
             _collect_entity_id_values(item, found)
 
 
+def _domain_entries(hass: HomeAssistant, domain: str) -> tuple[Any, list[dict]]:
+    """Every entry a domain defines, plus the branches that could not be read.
+
+    NOT a plain read of automations.yaml and its siblings, which is what both
+    reverse-reference walks used to do: an installation defining a domain inline
+    in configuration.yaml, or routing it through !include_dir_list, read as
+    EMPTY, and the caller reported that nothing referenced the entity. Nothing
+    distinguished that from a genuinely unused entity, which is the worst answer
+    this surface can give. Anything still unreadable (a package tree, a broken
+    leaf) is returned so a caller can say so rather than quietly omitting it.
+    """
+    found = yaml_includes.read_all_entries(hass.config.config_dir, domain)
+    return found.entries, [{"kind": domain, "reason": r} for r in found.unreadable]
+
+
 def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
     """Scope-agnostic reverse index: automations/scripts/scenes referencing entity_id.
 
@@ -100,8 +116,7 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
     refs: list[dict] = []
     expand = build_expand_target(hass)
 
-    auto_path = os.path.join(hass.config.config_dir, _AUTOMATION_YAML)
-    for cfg in _read_automations_yaml(auto_path):
+    for cfg in _domain_entries(hass, "automation")[0]:
         if not isinstance(cfg, dict):
             continue
         by_role = entities_by_role(cfg, expand)
@@ -109,8 +124,7 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
         if roles:
             refs.append({"kind": "automation", "id": str(cfg.get("id", "")), "name": cfg.get("alias"), "roles": roles})
 
-    scripts = _read_scripts_yaml(hass.config.path(_SCRIPT_CONFIG_PATH))
-    for script_id, cfg in scripts.items():
+    for script_id, cfg in _domain_entries(hass, "script")[0].items():
         if not isinstance(cfg, dict):
             continue
         found: set[str] = set()
@@ -118,7 +132,7 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
         if entity_id in found:
             refs.append({"kind": "script", "id": script_id, "name": cfg.get("alias"), "roles": ["sequence"]})
 
-    for scene in _read_scenes_yaml(hass.config.path(_SCENE_CONFIG_PATH)):
+    for scene in _domain_entries(hass, "scene")[0]:
         if not isinstance(scene, dict):
             continue
         members = scene.get("entities")
@@ -320,7 +334,7 @@ def _scan_relationships(
     scope: set[str],
     dashboards: list[tuple[str, str | None, Any]],
     entries: list[dict],
-) -> tuple[list[dict], dict[str, list[dict]]]:
+) -> tuple[list[dict], dict[str, list[dict]], list[dict]]:
     """Every consumer touching an entity in `scope`, and every entity id seen.
 
     ONE pass per source, not one pass per entity. The tool it replaces asked
@@ -343,13 +357,18 @@ def _scan_relationships(
     """
     consumers: list[dict] = []
     refs: dict[str, list[dict]] = {}
+    unreadable: list[dict] = []
     expand = build_expand_target(hass)
+
+    def _entries(domain: str) -> Any:
+        found, gaps = _domain_entries(hass, domain)
+        unreadable.extend(gaps)
+        return found
 
     def _note(entity_id: str, holder: dict) -> None:
         refs.setdefault(entity_id, []).append(holder)
 
-    auto_path = os.path.join(hass.config.config_dir, _AUTOMATION_YAML)
-    for cfg in _read_automations_yaml(auto_path):
+    for cfg in _entries("automation"):
         if not isinstance(cfg, dict):
             continue
         by_role = entities_by_role(cfg, expand)
@@ -363,7 +382,7 @@ def _scan_relationships(
         if entry["entities"]:
             consumers.append(entry)
 
-    for script_id, cfg in _read_scripts_yaml(hass.config.path(_SCRIPT_CONFIG_PATH)).items():
+    for script_id, cfg in _entries("script").items():
         if not isinstance(cfg, dict):
             continue
         found: set[str] = set()
@@ -377,7 +396,7 @@ def _scan_relationships(
         if entry["entities"]:
             consumers.append(entry)
 
-    for scene in _read_scenes_yaml(hass.config.path(_SCENE_CONFIG_PATH)):
+    for scene in _entries("scene"):
         if not isinstance(scene, dict):
             continue
         members = scene.get("entities")
@@ -422,7 +441,7 @@ def _scan_relationships(
         if entry["entities"]:
             consumers.append(entry)
 
-    return [_finish(c) for c in consumers], refs
+    return [_finish(c) for c in consumers], refs, unreadable
 
 
 def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str) -> list[str]:
@@ -1317,9 +1336,12 @@ async def _tool_get_relationships(
         entries = _relationship_config_entries(hass)
         searched.append("config_entry")
 
-    consumers, refs = await hass.async_add_executor_job(
+    consumers, refs, unreadable = await hass.async_add_executor_job(
         _scan_relationships, hass, scope, dashboards, entries,
     )
+    # A YAML branch this cannot read is the same class of gap as a capability it
+    # does not hold, so it lands in the same field rather than a second one.
+    not_searched.extend(unreadable)
     # Free, because the walk already visited every consumer: an id referenced by
     # something but present in neither hass.states nor the registry is rule 8's
     # ghost, i.e. a reference that can never resolve again for anyone. Reported
@@ -1379,6 +1401,18 @@ async def _tool_describe_entity(
         "writable": token.pass_through or perm == Permission.WRITE,
         "domain_services": sorted(hass.services.async_services().get(domain, {}).keys()),
         "referenced_by": await hass.async_add_executor_job(_references_for_entity, hass, entity_id),
+        # This field covers automations, scripts and scenes; get_relationships
+        # additionally reaches dashboards and config entries. The difference is
+        # deliberate (this is a cheap one-entity summary, and scanning dashboards
+        # costs a WS round trip per dashboard), but an unqualified "what
+        # references it" invites reading an empty or short list as PROOF nothing
+        # does, which is the confident wrong answer get_relationships exists to
+        # avoid. Naming the limit costs a line; the mesa_note precedent below.
+        "referenced_by_note": (
+            "Automations, scripts and scenes only. Call get_relationships for the "
+            "full picture, including dashboards and config entries such as helpers "
+            "built on this entity, and for entity IDs that no longer resolve."
+        ),
     }
 
     # entity_category (config/diagnostic) when set: tells the agent this is a

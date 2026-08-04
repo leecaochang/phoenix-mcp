@@ -67,6 +67,15 @@ DEFAULT_FILES = {
 # scripts.yaml is a mapping keyed by script id.
 _DOMAIN_SHAPES = {"automation": "list", "scene": "list", "script": "named"}
 
+# The leaf each domain uses in HA's default layout, and the only file the read
+# side used to open. read_all_entries falls back to it when configuration.yaml
+# itself cannot be parsed, matching OpResult.fallback on the write side.
+_LEGACY_LEAF = {
+    "automation": "automations.yaml",
+    "script": "scripts.yaml",
+    "scene": "scenes.yaml",
+}
+
 _LIST_FLAVORS = frozenset({"!include", "!include_dir_list", "!include_dir_merge_list"})
 _NAMED_FLAVORS = frozenset({"!include", "!include_dir_named", "!include_dir_merge_named"})
 
@@ -378,6 +387,110 @@ def _iter_dir_files(directory: str) -> list[str]:
                 continue
             found.append(os.path.join(root_dir, basename))
     return found
+
+
+@dataclass(frozen=True)
+class DomainEntries:
+    """Every entry a domain defines, and every branch that could not be read.
+
+    `unreadable` is the load-bearing half. The READ side of the tool surface used
+    to open one hardcoded file per domain (automations.yaml and siblings), so an
+    installation routing a domain any other way read as EMPTY and its callers
+    reported that nothing referenced an entity. That is a confident wrong answer
+    to the one question those callers exist to ask, and no caller could tell it
+    from a genuinely unused entity. Anything this cannot read is now named
+    instead of silently contributing nothing.
+    """
+
+    entries: Any                # list for automation/scene, dict for script
+    unreadable: tuple[str, ...]
+
+
+def _load_branch(path: str) -> Any:
+    """Parse one leaf file, or None when it is missing or unparseable."""
+    try:
+        return load_tagged(path)
+    except (OSError, yaml.YAMLError):
+        return None
+
+
+def read_all_entries(config_dir: str, domain: str) -> DomainEntries:
+    """Read every entry a domain defines, following configuration.yaml's includes.
+
+    The counterpart to locate_entry, which finds ONE entry to splice: this reads
+    them all, for the reverse-reference walks that ask what references an entity.
+    It has no need of spans, so it parses values rather than tracking source
+    positions.
+
+    Falls back to the legacy hardcoded leaf (automations.yaml / scripts.yaml /
+    scenes.yaml) when configuration.yaml is missing or unparseable, matching what
+    perform_create/edit/delete do with OpResult.fallback: a configuration.yaml
+    that cannot be read must not make the default layout unreadable too.
+
+    Packages are reported as unreadable rather than guessed at. HA merges them
+    into the domain and Phoenix cannot see which ones without resolving the whole
+    package tree, so a caller is told its answer is incomplete instead of being
+    handed one that looks whole.
+    """
+    shape = _DOMAIN_SHAPES[domain]
+    empty: Any = [] if shape == "list" else {}
+    layout = resolve_domain_layout(config_dir, domain)
+    if layout is None:
+        legacy = os.path.join(config_dir, _LEGACY_LEAF[domain])
+        loaded = _load_branch(legacy)
+        return DomainEntries(loaded if isinstance(loaded, type(empty)) else empty, ())
+
+    entries: Any = [] if shape == "list" else {}
+    unreadable: list[str] = []
+
+    if layout.error:
+        unreadable.append(layout.error)
+    if layout.has_packages:
+        unreadable.append(
+            f"{domain} may also be defined under homeassistant.packages, which is not read here"
+        )
+    if layout.has_inline:
+        # Readable, unlike the write path, which refuses inline as ambiguous.
+        root = _load_branch(os.path.join(config_dir, CONFIGURATION_YAML))
+        for key, value in (root or {}).items():
+            if not isinstance(key, str) or (key != domain and not key.startswith(domain + " ")):
+                continue
+            if shape == "list" and isinstance(value, list):
+                entries.extend(value)
+            elif shape == "named" and isinstance(value, dict):
+                entries.update(value)
+
+    for target in layout.targets:
+        if target.flavor == "!include":
+            loaded = _load_branch(target.path)
+            if loaded is None:
+                unreadable.append(f"{os.path.basename(target.path)} could not be read")
+            elif shape == "list" and isinstance(loaded, list):
+                entries.extend(loaded)
+            elif shape == "named" and isinstance(loaded, dict):
+                entries.update(loaded)
+            continue
+        if not os.path.isdir(target.path):
+            unreadable.append(f"{target.config_key} points at a directory that does not exist")
+            continue
+        for leaf in _iter_dir_files(target.path):
+            loaded = _load_branch(leaf)
+            if loaded is None:
+                unreadable.append(f"{os.path.basename(leaf)} could not be read")
+                continue
+            # Each flavor packages its files differently: *_dir_list gives one
+            # entry per file, *_dir_merge_list a list per file, *_dir_named keys
+            # by filename, *_dir_merge_named a mapping per file.
+            if target.flavor == "!include_dir_list":
+                entries.append(loaded)
+            elif target.flavor == "!include_dir_merge_list" and isinstance(loaded, list):
+                entries.extend(loaded)
+            elif target.flavor == "!include_dir_named":
+                entries[os.path.splitext(os.path.basename(leaf))[0]] = loaded
+            elif target.flavor == "!include_dir_merge_named" and isinstance(loaded, dict):
+                entries.update(loaded)
+
+    return DomainEntries(entries, tuple(unreadable))
 
 
 # ---------------------------------------------------------------------------
