@@ -3689,6 +3689,145 @@ async def test_wait_for_many_rejects_a_malformed_list(hass, bad):
     assert outcome == "invalid_request"
 
 
+def _authoring_result(is_error: bool = False, text: str | None = None) -> dict:
+    """An executor result shaped like a real authoring write.
+
+    edit_automation echoes the config it wrote, which is what makes a batch of
+    them large; the size is the point of the tests below, so this is generated
+    rather than stubbed as an empty content list.
+    """
+    body = text if text is not None else json.dumps({
+        "success": True,
+        "automation_id": "1699999999999",
+        "config": {
+            "alias": "Bedroom climate control",
+            "trigger": [{"platform": "state", "entity_id": f"sensor.temp_{i}"} for i in range(12)],
+            "action": [{"service": "climate.set_temperature",
+                        "target": {"entity_id": "climate.main_bedroom_a_c"},
+                        "data": {"temperature": 24, "hvac_mode": "cool"}} for _ in range(6)],
+        },
+    })
+    out: dict = {"content": [{"type": "text", "text": body}]}
+    if is_error:
+        out["isError"] = True
+    return out
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_summarizes_results_so_a_batch_fits_in_one_reply(hass):
+    """The live failure: twelve approved authoring writes came back as 80KB.
+
+    Each record echoes the config it wrote, which is the right answer for ONE
+    approval and makes a batch undeliverable. The caller asked which of its
+    twelve writes landed, and the size of the answer is what stopped it from
+    finding out.
+    """
+    from custom_components.phoenix_mcp.const import MAX_APPROVAL_RESULT_CHARS
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    records = []
+    for i in range(12):
+        rec = _approval_record("approved", result={"tool_result": _authoring_result()})
+        rec["id"] = f"appr-{i}"
+        rec["tool_name"] = "edit_automation"
+        records.append(rec)
+    data = _inline_wait_data(records)
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, outcome, _r = await _tool_wait_for_approval(
+        {"approval_ids": [r["id"] for r in records]}, token, hass, data)
+
+    raw = content["content"][0]["text"]
+    body = json.loads(raw)
+    assert outcome == "allowed"
+    assert len(body["approvals"]) == 12
+    # Every status still reaches the caller, which is what was asked for.
+    assert all(a["status"] == "approved" for a in body["approvals"])
+    # The full config does not. One record's own text is longer than the cap, so
+    # this asserts the clip really engaged rather than that the fixture was small.
+    assert all(a["result_truncated"] is True for a in body["approvals"])
+    assert all(len(a["result_text"]) == MAX_APPROVAL_RESULT_CHARS for a in body["approvals"])
+    assert "result" not in body["approvals"][0]
+    # The whole point is the size. Twelve unsummarized records are ~10x this.
+    assert len(raw) < 12 * (MAX_APPROVAL_RESULT_CHARS + 600)
+    assert "get_approval_status" in body["note"]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_keeps_a_failed_execution_readable(hass):
+    """The asymmetry that makes the summary safe.
+
+    A success only has to say it succeeded, but an agent told "rejected" with
+    the executor's reason buried retries the same doomed call, which is a loop
+    seen live. Error text is short, so it survives the clip intact.
+    """
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    reason = "Content hash mismatch: automations.yaml changed since you read it. Re-read and retry."
+    bad = _approval_record(
+        "rejected", result={"tool_result": _authoring_result(is_error=True, text=reason)},
+        rejected_reason="execution_failed")
+    bad["id"] = "appr-1"
+    good = _approval_record("approved", result={"tool_result": _authoring_result()})
+    good["id"] = "appr-2"
+    data = _inline_wait_data([bad, good])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, _o, _r = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-1", "appr-2"]}, token, hass, data)
+
+    first, second = json.loads(content["content"][0]["text"])["approvals"]
+    assert first["result_is_error"] is True
+    assert first["result_text"] == reason  # whole message, not a clipped head
+    assert first["result_truncated"] is False
+    assert first["rejected_reason"] == "execution_failed"
+    assert second["result_is_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_single_id_wait_still_returns_the_full_result(hass):
+    """The summary is the PLURAL form's rule only.
+
+    A caller that wants everything about one approval has a way to ask, which is
+    what the batch note points at; narrowing both forms would leave none.
+    """
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    rec = _approval_record("approved", result={"tool_result": _authoring_result()})
+    rec["id"] = "appr-1"
+    data = _inline_wait_data([rec])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, _o, _r = await _tool_wait_for_approval({"approval_id": "appr-1"}, token, hass, data)
+
+    body = json.loads(content["content"][0]["text"])
+    assert body["result"]["tool_result"]["content"][0]["text"].count("sensor.temp_") == 12
+    assert "result_text" not in body
+
+
+@pytest.mark.asyncio
+async def test_wait_for_many_reports_a_pending_record_with_no_result_fields(hass):
+    """A record that never ran has nothing to summarize, and an empty
+    result_text would read as an executor that returned nothing."""
+    from custom_components.phoenix_mcp.mcp_view import _tool_wait_for_approval
+
+    still = _approval_record("pending")
+    still["id"] = "appr-1"
+    data = _inline_wait_data([still])
+    token = _make_physical_token("confirm")
+    token.id = "tid"
+
+    content, _o, _r = await _tool_wait_for_approval(
+        {"approval_ids": ["appr-1"], "timeout": 0}, token, hass, data)
+
+    entry = json.loads(content["content"][0]["text"])["approvals"][0]
+    assert entry["status"] == "pending"
+    assert "result_text" not in entry and "result_is_error" not in entry
+
+
 @pytest.mark.asyncio
 async def test_wait_for_many_dedupes_repeated_ids(hass):
     """A repeated id would otherwise be reported twice and count against itself."""

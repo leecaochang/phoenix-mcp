@@ -222,7 +222,10 @@ _ENTITY_TOOL_DEFS: list[dict] = [
             "whatever order or batch suits, and one call here waits for the whole set. Waiting on them one "
             "at a time instead would block on the first while later ones were already resolved. The result "
             "then carries every approval's status plus the ids still outstanding, so a timeout tells you "
-            "exactly which ones landed."
+            "exactly which ones landed. In that plural form each approval's result is SUMMARIZED to "
+            "result_is_error plus a clipped result_text, so a batch of large writes still fits in one "
+            "reply; a failure's message is short and arrives intact. Call get_approval_status with a "
+            "single approval_id when you need one approval's full result."
         ),
         "inputSchema": {
             "type": "object",

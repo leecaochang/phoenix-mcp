@@ -267,7 +267,11 @@ must approve it. Handle it like this:
   `approval_ids` (a list) with every approval you are waiting on; it blocks
   until they resolve instead of you polling. Use `approval_id` for a lone one,
   or `get_approval_status` for a one-shot check. Each resolves to `approved`
-  (with the result), `rejected` (often with a reason), or `expired`.
+  (with the result), `rejected` (often with a reason), or `expired`. In the
+  plural form each result is summarized to `result_is_error` plus a clipped
+  `result_text`, so a whole batch fits in one reply and a failure's message
+  still arrives intact; call `get_approval_status` with a single `approval_id`
+  when you need one approval's full result.
 - If nothing you have left to do depends on them, tell the user what is awaiting
   their approval and finish.
 - Approval is the operator's intent to stay in the loop. Respect it; do not look

@@ -916,6 +916,17 @@ MAX_COMPARE_LIST_VALUES = 25
 # a caller could have asked for separately is withheld.
 MAX_COMPARE_VALUE_CHARS = 200
 
+# wait_for_approval, PLURAL form only: how many characters of one approval's
+# tool result are echoed. A batch is a list of STATUSES, not a list of results.
+# Twelve approved `edit_automation` records each echo their whole config, which
+# measured 80KB live and blew the caller's output limit, so the answer to "did
+# my twelve writes land" could not be delivered at all. An ERROR's text is the
+# part that has to survive, and it is short: an agent told only "rejected",
+# with the executor's reason buried, retries the same doomed call. A success
+# only needs to say it succeeded. The single-id form stays unbounded and is
+# where a full result is read.
+MAX_APPROVAL_RESULT_CHARS = 500
+
 MAX_SEARCH_QUERY_LEN = 512
 
 # Hard cap (and default) for the bounded watch_entity tool.

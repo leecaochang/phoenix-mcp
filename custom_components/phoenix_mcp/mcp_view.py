@@ -29,7 +29,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
 from .ws_dispatch import WsDispatchError, async_ws_command
@@ -1543,6 +1543,44 @@ def _approval_status_payload(record: Any, *, resolved: bool) -> dict:
     }
 
 
+def _approval_batch_payload(record: Any, *, resolved: bool) -> dict:
+    """One approval's status in the PLURAL form, with its result summarized.
+
+    Built from `_approval_status_payload` and then narrowed, so the two forms
+    share ONE definition of the status fields and cannot drift into answering
+    the same question differently depending on how many ids were asked about.
+
+    The `result` a single-id call returns is the executor's whole
+    CallToolResult, which for an authoring tool is the config it just wrote.
+    That is the right answer for one record and the wrong one for a set: twelve
+    approved `edit_automation` records came back as 80KB and exceeded the
+    caller's output limit, so a batch could not report its own outcome. What
+    survives is what a caller acts on: whether each one errored, and the text
+    if it did, because an agent told only "rejected" with the executor's reason
+    buried retries the same doomed call.
+    """
+    payload = _approval_status_payload(record, resolved=resolved)
+    payload.pop("result", None)
+    payload.update(_approval_result_digest(record))
+    return payload
+
+
+def _approval_result_digest(record: Any) -> dict:
+    """Whether this approval's stored result was an error, and its text, bounded."""
+    tool_result = (record.result or {}).get("tool_result")
+    if not isinstance(tool_result, dict):
+        return {}
+    text = "\n".join(
+        c.get("text", "") for c in tool_result.get("content", [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ).strip()
+    digest: dict[str, Any] = {"result_is_error": bool(tool_result.get("isError"))}
+    if text:
+        digest["result_text"] = text[:MAX_APPROVAL_RESULT_CHARS]
+        digest["result_truncated"] = len(text) > MAX_APPROVAL_RESULT_CHARS
+    return digest
+
+
 async def _wait_for_many_approvals(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
@@ -1611,11 +1649,16 @@ async def _wait_for_many_approvals(
     still_pending = [i for i, r in latest.items() if r.status == STATUS_PENDING]
     payload = {
         "approvals": [
-            _approval_status_payload(r, resolved=r.status != STATUS_PENDING)
+            _approval_batch_payload(r, resolved=r.status != STATUS_PENDING)
             for r in latest.values()
         ],
         "resolved": not still_pending,
         "pending": still_pending,
+        "note": (
+            "Each approval's result is summarized here so a whole batch fits in "
+            "one reply. Call get_approval_status with a single approval_id for "
+            "that one's full result."
+        ),
     }
     result = _tool_success(json.dumps(payload, default=str))
     # The accepted-note applies as soon as ANY of them landed as an operator
