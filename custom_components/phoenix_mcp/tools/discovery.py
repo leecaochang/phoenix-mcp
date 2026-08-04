@@ -213,16 +213,34 @@ def _dangling_candidates(typed: set[str], walked: set[str], hass: HomeAssistant)
     Template syntax is excluded from both. A value carrying `{{ }}` is not an id,
     it is an id computed at runtime, and Phoenix cannot know what it resolves to.
     HA's `all` wildcard goes with it, having no dot to split on.
+
+    A walked value that is a REGISTERED SERVICE is excluded too, and the reason
+    it is that test rather than "skip the service/perform_action fields" is
+    `script.*`: calling a script IS its service name, so a card whose
+    perform_action names a script that no longer exists is one of the most
+    valuable things here, and a field-name rule would throw those away with the
+    noise. Registration separates them exactly, because it asks whether the
+    string still names something REAL. Live: `button.press` and
+    `input_button.press` (both registered, both from a card's perform_action)
+    dropped out, while `script.jacuzzi_lights_off` and `script.area_on_or_off`
+    (unregistered, because the scripts are gone) stayed. Typed sources are
+    exempt, as ever: an `entity_id:` key saying `button.press` is a config
+    error worth reporting, not a service call.
     """
     def _real(value: str) -> bool:
         return "." in value and not any(m in value for m in _TEMPLATE_MARKERS)
+
+    def _is_service(value: str) -> bool:
+        domain, _, name = value.partition(".")
+        return hass.services.has_service(domain, name)
 
     domains = {state.entity_id.split(".", 1)[0] for state in hass.states.async_all()}
     domains |= {entry.entity_id.split(".", 1)[0] for entry in er.async_get(hass).entities.values()}
     domains |= set(hass.services.async_services())
     return (
         {v for v in typed if _real(v)}
-        | {v for v in walked if _real(v) and v.split(".", 1)[0] in domains}
+        | {v for v in walked
+           if _real(v) and v.split(".", 1)[0] in domains and not _is_service(v)}
     )
 
 

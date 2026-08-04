@@ -514,6 +514,74 @@ class TestRelationshipCoverage:
             _token(cap_lovelace_write="allow"), hass)
         assert "lock.front_door" in _json(content)["dangling_references"]
 
+    async def test_a_card_calling_a_service_is_not_a_dead_entity(self, hass, rel_env, monkeypatch):
+        """Live-found. A card's perform_action holds `button.press`, which has
+        the exact shape of an entity id in the exact position the value walk
+        reads. Registration is what separates it from a real dead reference."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        hass.services.async_register("button", "press", lambda call: None)
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [{
+                "type": "button", "entity": "light.kitchen",
+                "tap_action": {"action": "perform-action", "perform_action": "button.press"},
+            }]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        assert _json(content)["dangling_references"] == []
+
+    async def test_a_card_calling_a_script_that_is_gone_is_still_reported(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """The reason the rule is registration and not the field name: running a
+        script IS its service name, so a card pointing at a deleted script looks
+        exactly like the service call above and is the most valuable find here.
+        A field-name rule would discard it with the noise."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        # Any instance that can have a dead script reference has the script
+        # integration loaded, which is what puts `script` in the domain set.
+        hass.services.async_register("script", "turn_on", lambda call: None)
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [{
+                "type": "button", "entity": "light.kitchen",
+                "tap_action": {"action": "perform-action",
+                               "perform_action": "script.deleted_last_year"},
+            }]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        assert _json(content)["dangling_references"] == ["script.deleted_last_year"]
+
+    async def test_a_script_targeting_a_service_name_is_still_a_bad_reference(self, hass, rel_env):
+        """The service exclusion is scoped to the value walk, and this is why.
+        An `entity_id:` key states that its value was MEANT to be an entity, so
+        one holding a service name is a config error worth surfacing, not a
+        service call to filter away."""
+        hass.services.async_register("button", "press", lambda call: None)
+        _write(hass.config.path("scripts.yaml"), {
+            "greet": {"alias": "Greet", "sequence": [
+                {"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}},
+                {"service": "button.press", "target": {"entity_id": "button.press"}}]},
+        })
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        assert _json(content)["dangling_references"] == ["button.press"]
+
     async def test_a_live_entity_is_never_reported_dangling(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         assert _json(content)["dangling_references"] == []
