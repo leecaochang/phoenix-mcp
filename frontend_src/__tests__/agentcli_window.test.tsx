@@ -1278,3 +1278,39 @@ describe("modelCaps with probed effort levels", () => {
     expect(vals3(c)).toEqual(vals3(shipped));
   });
 });
+
+// The aggregator case: one key fronting many vendors, where no built-in answer
+// fits and a reasoning model was therefore losing its reasoning entirely.
+describe("modelCaps for aggregator providers", () => {
+  const vals4 = (c: { thinking: { value: string }[] }) => c.thinking.map((o) => o.value);
+
+  it.each(["openrouter", "nvidia"] as const)("%s starts with no thinking control", (kind) => {
+    expect(modelCaps(kind, "vendor/model", false).thinking).toEqual([]);
+  });
+
+  it.each(["openrouter", "nvidia"] as const)("probed levels CREATE the control on %s", (kind) => {
+    const c = modelCaps(kind, "vendor/reasoner", false, { effort_levels: ["low", "high"] });
+    // "off" is added because a created control the operator cannot decline is
+    // worse than no control at all.
+    expect(vals4(c)).toEqual(["off", "low", "high"]);
+    expect(c.defaultLevel).toBe("high");
+  });
+
+  it("a created control still defaults to a level the probe accepted", () => {
+    const c = modelCaps("openrouter", "vendor/m", false, { effort_levels: ["low"] });
+    expect(c.defaultLevel).toBe("low");
+  });
+
+  it("no probed levels means no control, not an empty dropdown", () => {
+    // A model the aggregator does not validate establishes nothing, and the
+    // starting point stands.
+    expect(modelCaps("openrouter", "vendor/m", false, { temperature: true }).thinking).toEqual([]);
+  });
+
+  it("a boolean backend is still never given levels", () => {
+    // Ollama normalizes reasoning to one flag across every model, so there is no
+    // level vocabulary to discover and none may be invented.
+    const c = modelCaps("ollama", "deepseek-r1:8b", false, { effort_levels: ["low", "high"] });
+    expect(vals4(c)).toEqual(["off", "on"]);
+  });
+});

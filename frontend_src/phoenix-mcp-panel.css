@@ -2320,12 +2320,21 @@ hui-card { display: block; min-width: 0; }
 
 /* agentCLI settings card */
 .agentcli-settings-providers { display: flex; flex-direction: column; gap: 8px; }
-.agentcli-settings-provider { border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm); padding: 8px 10px; }
+/* The card is a row: everything readable on the left, the actions anchored to the
+   BOTTOM right. Aligning them to the model line instead left the icons floating at
+   different heights from card to card, since some carry a status line or a warning
+   underneath and some do not. Wraps on a narrow panel so the icons drop below the
+   text rather than squeezing it. */
+.agentcli-settings-provider {
+  border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm); padding: 8px 10px;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+.agentcli-settings-provider-main { flex: 1 1 240px; min-width: 0; }
 .agentcli-settings-provider-head { display: flex; align-items: center; justify-content: space-between; }
 .agentcli-badge { font-size: 11px; color: var(--phx-text-2); border: 1px solid var(--phx-border); border-radius: 999px; padding: 1px 8px; }
 .agentcli-badge.ok { color: var(--phx-accent); border-color: var(--phx-accent); }
-.agentcli-settings-provider-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.agentcli-settings-model { font-size: 12px; color: var(--phx-text-2); margin-right: auto; }
+.agentcli-settings-model { display: block; margin-top: 6px; font-size: 12px; color: var(--phx-text-2); }
 .agentcli-settings-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .agentcli-settings-form .banner-error { white-space: pre-line; }
 .agentcli-settings-form input {

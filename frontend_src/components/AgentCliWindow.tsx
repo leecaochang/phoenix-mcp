@@ -148,8 +148,15 @@ function applyDeclared(caps: ModelCaps, declared?: DeclaredModelCaps): ModelCaps
   // style must be "effort": a boolean control (Ollama's `think` flag) has no
   // level vocabulary, so replacing its on/off pair with effort levels would
   // build a dropdown whose values the backend does not know how to send.
-  if (declared.effort_levels?.length && out.style === "effort" && out.thinking.length) {
-    const keepOff = out.thinking.some((o) => o.value === "off");
+  //
+  // Probed levels may also CREATE a control the table does not offer, which is
+  // the aggregator case: one key fronting many vendors, where no single built-in
+  // answer fits and a reasoning model was therefore losing its reasoning
+  // altogether. Creating one is justified by the same evidence as narrowing one,
+  // since the probe proved the field is validated AND which values pass. A
+  // created control always gets "off", or the operator could not decline it.
+  if (declared.effort_levels?.length && out.style === "effort") {
+    const keepOff = out.thinking.length === 0 || out.thinking.some((o) => o.value === "off");
     out.thinking = [
       ...(keepOff ? thinkOpts(["off"]) : []),
       ...thinkOpts(declared.effort_levels),
@@ -247,10 +254,12 @@ function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: bool
       return { thinking: thinkOpts(["off", "on"]), style: "boolean", defaultLevel: "on", temperature: true };
     case "openrouter":
     case "nvidia":
-      // OpenRouter and NVIDIA both front many vendors' models behind one key; a
-      // single thinking control can't fit them all, so no thinking level is
-      // exposed (reasoning models still reason at their own default) and
-      // temperature is offered.
+      // Aggregators: one key fronting many vendors' models, so no built-in
+      // answer fits and none is guessed at. This is the starting point rather
+      // than the verdict: checking a model's options establishes its real levels
+      // per model, and those CREATE the control here rather than only narrowing
+      // it. Until then the model still reasons at its own default; what is
+      // missing is the ability to choose.
       return { thinking: [], style: "effort", defaultLevel: "high", temperature: true };
     default:
       return { thinking: [], style: "effort", defaultLevel: "high", temperature: false };

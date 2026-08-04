@@ -17,6 +17,7 @@ persisted into a transcript, or echoed in an error payload.
 
 import asyncio
 import dataclasses
+from datetime import timedelta
 import ipaddress
 import json
 import logging
@@ -33,7 +34,7 @@ from .view_base import PhoenixView
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
-from homeassistant.util.dt import utcnow
+from homeassistant.util.dt import parse_datetime, utcnow
 
 from .admin_view import _err, _ok, _read_body, require_admin
 from .approvals import (
@@ -55,6 +56,8 @@ from .const import (
     AGENTCLI_CLIENT_IP,
     AGENTCLI_CAPABILITY_CONCURRENCY,
     AGENTCLI_EFFORT_LEVEL_ORDER,
+    AGENTCLI_LEARNABLE_OPTIONS,
+    AGENTCLI_LEARNED_REFUSAL_TTL_DAYS,
     AGENTCLI_PROBE_MAX_CALLS,
     AGENTCLI_PROBE_SENTINEL,
     AGENTCLI_DEEPSEEK_BASE_URL,
@@ -199,6 +202,33 @@ def _instance_name(inst: dict, has_dupes: bool) -> str:
     return f"{label} ({tail})" if tail else label
 
 
+def _with_learned(inst: dict) -> dict:
+    """Declared and probed capabilities, with unexpired learned refusals on top.
+
+    Expiry is applied HERE, on read, rather than by sweeping storage: a refusal
+    that has aged out simply stops being returned, so nothing has to run on a
+    timer and a clock change cannot leave a stale record behind. An unparseable
+    timestamp is treated as expired, which fails toward offering the control
+    rather than toward hiding it.
+    """
+    caps = {model: dict(vals) for model, vals in (inst.get("capabilities") or {}).items()
+            if isinstance(vals, dict)}
+    learned = inst.get("learned") or {}
+    if not isinstance(learned, dict):
+        return caps
+    cutoff = utcnow() - timedelta(days=AGENTCLI_LEARNED_REFUSAL_TTL_DAYS)
+    for model, options in learned.items():
+        if not isinstance(options, dict):
+            continue
+        for option, at in options.items():
+            cap = AGENTCLI_LEARNABLE_OPTIONS.get(option)
+            when = parse_datetime(at) if isinstance(at, str) else None
+            if cap is None or when is None or when < cutoff:
+                continue
+            caps.setdefault(model, {})[cap] = False
+    return caps
+
+
 class AgentCliStore:
     """Provider accounts ("instances") in a dedicated Store, separate from tokens.
 
@@ -283,6 +313,26 @@ class AgentCliStore:
         await self._save()
         return True
 
+    async def record_refusal(self, instance_id: str, model: str, option: str, at: str) -> bool:
+        """Remember that a real turn had this option refused for this model.
+
+        Kept SEPARATE from `capabilities` rather than written into it, and that
+        separation is what makes expiry possible at all: declared and probed
+        facts are durable statements about the API, while this one is an
+        observation from a single moment that has to fade. Merged over the
+        durable facts at read time, so nothing here can corrupt them.
+        """
+        cfg = self._data.get(instance_id)
+        if not isinstance(cfg, dict) or not model:
+            return False
+        learned = dict(cfg.get("learned") or {})
+        per_model = dict(learned.get(model) or {})
+        per_model[option] = at
+        learned[model] = per_model
+        cfg["learned"] = learned
+        await self._save()
+        return True
+
     async def delete(self, instance_id: str) -> None:
         if instance_id in self._data:
             del self._data[instance_id]
@@ -305,7 +355,7 @@ class AgentCliStore:
                 "name": _instance_name(inst, counts[kind] > 1),
                 "model": inst.get("model", ""),
                 "base_url": inst.get("base_url", ""),
-                "capabilities": inst.get("capabilities") or {},
+                "capabilities": _with_learned(inst),
                 "capabilities_checked_at": inst.get("capabilities_checked_at") or None,
             })
         # Sort by the DISPLAY name, not the kind key: the panel dropdowns show
@@ -685,7 +735,8 @@ class ClaudeProvider:
                         retryable = False
                     yield _norm(EV_ERROR, status=resp.status,
                                 code=_claude_err_code(resp.status),
-                                message=msg[:600], retryable=retryable)
+                                message=msg[:600], retryable=retryable,
+                                refused=_refused_option(resp.status, msg, body))
                     return
                 async for ev in self._parse(resp):
                     yield ev
@@ -840,13 +891,37 @@ def _filter_openrouter_models(data: list[dict]) -> list[str]:
     return tool_ids or sorted(m["id"] for m in data if m.get("id"))
 
 
+def _refused_option(status: int, message: str, sent: dict) -> str | None:
+    """The request key a provider just refused, when it named one of ours.
+
+    Bounded three ways, because a wrong answer here disables a control the
+    operator was using. It must be a 400 (a refusal, not an outage or a quota);
+    the key must be one whose refusal has a single unambiguous consequence; and
+    Phoenix must have ACTUALLY SENT it in this request. That last guard is what
+    stops an error mentioning "temperature" for some unrelated reason from
+    teaching us that temperature is unsupported.
+    """
+    if status != 400 or not message:
+        return None
+    low = message.lower()
+    for key in AGENTCLI_LEARNABLE_OPTIONS:
+        if key in sent and re.search(rf"\b{re.escape(key)}\b", low):
+            return key
+    return None
+
+
 def _effort_probe_body(kind: str, level: str) -> dict | None:
     """The request fragment that carries an effort level for this backend.
 
     None for a backend with no effort control at all, which is then not probed:
-    Ollama takes a boolean `think`, MiniMax an adaptive object, and NVIDIA and
-    OpenRouter pass whatever the underlying model takes, which varies per model
-    and is not this account's property to record.
+    Ollama takes a boolean `think` and MiniMax an adaptive object, neither of
+    which has a level vocabulary.
+
+    The aggregators (OpenRouter, NVIDIA) ARE probed, and excluding them was a
+    wrong call worth not repeating. The reason given was that they pass through
+    whatever the underlying model takes, which varies per model, but that is an
+    argument FOR probing rather than against: a probe runs against the one
+    selected model, so per-model variation is precisely what it handles.
 
     DeepSeek's fragment carries the thinking toggle too, because it only reads
     the effort when thinking is enabled: probing the level alone would test
@@ -856,19 +931,25 @@ def _effort_probe_body(kind: str, level: str) -> dict | None:
         return {"output_config": {"effort": level}}
     if kind == "deepseek":
         return {"thinking": {"type": "enabled"}, "reasoning_effort": level}
-    if kind in ("chatgpt", "grok", "gemini", "kimi", "meta"):
+    if kind in ("chatgpt", "grok", "gemini", "kimi", "meta", "openrouter", "nvidia"):
         return {"reasoning_effort": level}
     return None
 
 
 async def async_probe_capabilities(
     session: ClientSession, cfg: ProviderConfig,
-) -> tuple[dict, int]:
+) -> tuple[dict, int, bool]:
     """What this model's API actually accepts, established by asking it.
 
-    Returns (capabilities, calls_made). Every value is omitted rather than
-    guessed when the answer could not be established, so a partial or failed
+    Returns (capabilities, calls_made, answered). Every value is omitted rather
+    than guessed when the answer could not be established, so a partial or failed
     probe narrows nothing.
+
+    `answered` is False when NO call came back with a usable status. A key with
+    no credit, a revoked key or an unreachable host answers the same way to every
+    question, and reporting that as "this provider does not validate its options"
+    blames the provider for an account problem. Only 200 and 400 are answers
+    here; everything else is the provider declining to be asked.
 
     TWO STAGES, and the order is the whole method. Stage one sends a
     deliberately INVALID effort and asks whether the field is VALIDATED: a 400
@@ -888,11 +969,13 @@ async def async_probe_capabilities(
     provider = build_provider(cfg)
     caps: dict = {}
     calls = 0
+    answered = False
 
     fragment = _effort_probe_body(cfg.kind, AGENTCLI_PROBE_SENTINEL)
     if fragment is not None:
         status = await provider.probe_option(session, fragment)
         calls += 1
+        answered = answered or status in (200, 400)
         # Only a 400 is evidence. Unreachable (None) says nothing, and a 200
         # means the field is ignored or leniently defaulted, which are
         # indistinguishable and equally useless.
@@ -904,7 +987,9 @@ async def async_probe_capabilities(
                 body = _effort_probe_body(cfg.kind, level)
                 if body is None:
                     continue
-                if await provider.probe_option(session, body) == 200:
+                level_status = await provider.probe_option(session, body)
+                answered = answered or level_status in (200, 400)
+                if level_status == 200:
                     levels.append(level)
                 calls += 1
             # An empty result means every level was refused, which cannot be
@@ -920,10 +1005,11 @@ async def async_probe_capabilities(
         # accepted temperature may still be ignored.
         status = await provider.probe_option(session, {"temperature": 0.7})
         calls += 1
+        answered = answered or status in (200, 400)
         if status == 400:
             caps["temperature"] = False
 
-    return caps, calls
+    return caps, calls, answered
 
 
 def _openrouter_capabilities(data: list[dict]) -> dict[str, dict]:
@@ -1263,6 +1349,21 @@ class OpenAICompatProvider:
                 body["thinking"] = {"type": "enabled" if thinking else "disabled"}
             if effort:
                 body["reasoning_effort"] = effort
+        elif self.cfg.kind in ("openrouter", "nvidia"):
+            # Aggregators: one key fronting many vendors' models. Phoenix used to
+            # offer no thinking control here at all, on the grounds that a single
+            # control cannot fit every model behind the key. That reasoning is
+            # obsolete now that capabilities are established PER MODEL: a
+            # reasoning model reached through an aggregator was silently losing
+            # its reasoning, while the same model reached directly kept it.
+            #
+            # Which field carries it is not assumed either. Both speak the
+            # OpenAI shape, so `reasoning_effort` is the candidate, and the probe
+            # is what confirms it: if the aggregator does not validate the field,
+            # no levels are established, the panel offers none, and this branch
+            # never fires. The wrong guess costs nothing.
+            if effort:
+                body["reasoning_effort"] = effort
         elif self.cfg.kind == "meta":
             # Meta's Model API takes a top-level reasoning_effort (minimal/low/
             # medium/high/xhigh; "none" is rejected by Muse Spark, which always
@@ -1306,7 +1407,8 @@ class OpenAICompatProvider:
                         if err_code == "insufficient_quota":
                             code = "quota"
                     yield _norm(EV_ERROR, status=resp.status, code=code,
-                                message=msg[:600], retryable=retryable)
+                                message=msg[:600], retryable=retryable,
+                                refused=_refused_option(resp.status, msg, body))
                     return
                 async for ev in self._parse(resp, show_thinking):
                     yield ev
@@ -1835,7 +1937,11 @@ async def _consume_model_stream(
             assistant_msg = ev["assistant_msg"]
         elif etype == EV_ERROR:
             await emit("error", {"code": ev.get("code"), "message": ev.get("message"),
-                                 "retryable": ev.get("retryable", False)})
+                                 "retryable": ev.get("retryable", False),
+                                 # Which of Phoenix's own request keys the provider
+                                 # refused, when it named one. The layer holding the
+                                 # store records it; nothing down here can.
+                                 **({"refused": ev["refused"]} if ev.get("refused") else {})})
             errored = True
 
     return _ModelCallResult(
@@ -2600,6 +2706,14 @@ class PhoenixAgentCliChatView(PhoenixView):
         cancel = asyncio.Event()
 
         async def emit(name: str, payload: dict) -> None:
+            # Learn from a refusal the model gave during REAL work. This is the
+            # backstop under the declared and probed answers: it costs nothing
+            # extra, it is ground truth rather than an inference, and it covers
+            # the providers that publish nothing and validate nothing, which
+            # neither of the other two mechanisms can reach.
+            refused = payload.get("refused") if name == "error" else None
+            if refused and cfg.model:
+                await store.record_refusal(instance_id, cfg.model, refused, utcnow().isoformat())
             frame = f"event: {name}\ndata: {json.dumps(payload, default=str)}\n\n"
             try:
                 await resp.write(frame.encode("utf-8"))
@@ -2916,7 +3030,7 @@ class PhoenixAgentCliProbeCapsView(PhoenixView):
         if not cfg.model:
             return _err("invalid_request", "Choose a model for this account first.", 400, rid)
         session = async_get_clientsession(self.hass)
-        probed, calls = await async_probe_capabilities(session, cfg)
+        probed, calls, answered = await async_probe_capabilities(session, cfg)
 
         # Merged over what the provider DECLARED rather than replacing it: the two
         # answer different questions (declared says what exists, probed says what
@@ -2940,6 +3054,10 @@ class PhoenixAgentCliProbeCapsView(PhoenixView):
             # reported the second as the first on a backend whose thinking
             # control is a boolean flag.
             "effort_checkable": _effort_probe_body(cfg.kind, AGENTCLI_PROBE_SENTINEL) is not None,
+            # False when the provider declined every question (no credit, a bad
+            # key, unreachable). Reporting that as a finding about the model
+            # would blame the provider for an account problem.
+            "answered": answered,
         }, request_id=rid)
 
 

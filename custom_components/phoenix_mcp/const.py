@@ -192,6 +192,23 @@ AGENTCLI_PROBE_SENTINEL = "phoenix-probe-invalid"
 # construction (one validation check plus five levels plus temperature), so this
 # is a backstop against a future knob turning a button into an unbounded spend.
 AGENTCLI_PROBE_MAX_CALLS = 10
+
+# How long a refusal LEARNED from a real turn is honoured before Phoenix tries
+# the option again. It expires because the fact came from one moment in one
+# provider's history: a model that rejects a parameter today may accept it after
+# an upgrade, and a permanent "no" learned from a transient refusal is the same
+# silently-stale answer this whole area exists to remove, with our name on it.
+AGENTCLI_LEARNED_REFUSAL_TTL_DAYS = 30
+
+# Request keys a refusal can be learned for, mapped to the capability it settles.
+# Deliberately short: a key is here only when refusing it has ONE unambiguous
+# consequence for what the panel should offer.
+AGENTCLI_LEARNABLE_OPTIONS = {
+    "temperature": "temperature",
+    "reasoning_effort": "thinking",
+    "thinking": "thinking",
+    "think": "thinking",
+}
 # Per-turn cap on provider<->tool round trips before the loop pauses. In the
 # interactive chat this is a "continue?" checkpoint (the operator can grant
 # another N rounds), not a hard stop; the headless voice/AI-task loops stop

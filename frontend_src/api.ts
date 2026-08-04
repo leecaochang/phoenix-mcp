@@ -358,7 +358,7 @@ export const api = {
     req<{ models: string[]; capabilities: Record<string, DeclaredModelCaps>; declared: boolean; checked_at: string }>(
       "POST", `/agentcli/providers/${encodeURIComponent(id)}/refresh`),
   probeAgentCliCapabilities: (id: string) =>
-    req<{ model: string; probed: DeclaredModelCaps & { effort_levels?: string[] }; calls: number; checked_at: string; effort_checkable: boolean }>(
+    req<{ model: string; probed: DeclaredModelCaps & { effort_levels?: string[] }; calls: number; checked_at: string; effort_checkable: boolean; answered: boolean }>(
       "POST", `/agentcli/providers/${encodeURIComponent(id)}/probe`),
   setAgentCliProviderModel: (id: string, model: string) =>
     req<{ instance: { id: string; model: string } }>(

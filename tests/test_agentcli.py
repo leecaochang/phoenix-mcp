@@ -2476,8 +2476,8 @@ class TestCapabilityProbe:
         cfg = agentcli.ProviderConfig(kind=kind, model=model, base_url="https://x", api_key="k")
         prov = _ProbeProvider(answer)
         with patch.object(agentcli, "build_provider", return_value=prov):
-            caps, calls = await agentcli.async_probe_capabilities(MagicMock(), cfg)
-        return caps, calls, prov
+            caps, calls, answered = await agentcli.async_probe_capabilities(MagicMock(), cfg)
+        return caps, calls, prov, answered
 
     @pytest.mark.asyncio
     async def test_finds_the_levels_a_validated_field_accepts(self, hass):
@@ -2490,7 +2490,7 @@ class TestCapabilityProbe:
                 return 200                      # the temperature probe
             return 200 if level in accepted else 400
 
-        caps, _calls, prov = await self._probe(hass, "deepseek", answer)
+        caps, _calls, prov, _a = await self._probe(hass, "deepseek", answer)
         assert caps["effort_levels"] == ["low", "high", "max"]
         # The sentinel went first: the validation question has to be answered
         # before any level result can be read.
@@ -2503,7 +2503,7 @@ class TestCapabilityProbe:
     async def test_a_server_that_ignores_unknown_parameters_teaches_nothing(self, hass):
         """The failure this whole design exists to avoid: everything answers 200,
         which would read as "supports all five levels"."""
-        caps, calls, prov = await self._probe(hass, "deepseek", lambda extra: 200)
+        caps, calls, prov, _a = await self._probe(hass, "deepseek", lambda extra: 200)
         assert "effort_levels" not in caps
         # One sentinel call, then it gave up on levels entirely.
         assert calls == 2  # sentinel + temperature
@@ -2511,14 +2511,14 @@ class TestCapabilityProbe:
 
     @pytest.mark.asyncio
     async def test_an_unreachable_provider_records_nothing(self, hass):
-        caps, _calls, _p = await self._probe(hass, "deepseek", lambda extra: None)
+        caps, _calls, _p, _a = await self._probe(hass, "deepseek", lambda extra: None)
         assert caps == {}
 
     @pytest.mark.asyncio
     async def test_every_level_refused_records_nothing(self, hass):
         """Cannot be true of a working model, so something else answered the
         calls; recording it would strip the control entirely."""
-        caps, _calls, _p = await self._probe(hass, "deepseek", lambda extra: 400)
+        caps, _calls, _p, _a = await self._probe(hass, "deepseek", lambda extra: 400)
         assert "effort_levels" not in caps
 
     @pytest.mark.asyncio
@@ -2527,12 +2527,12 @@ class TestCapabilityProbe:
             if "temperature" in extra:
                 return 400
             return 200 if _effort_of(extra) != "phoenix-probe-invalid" else 400
-        caps, _c, _p = await self._probe(hass, "chatgpt", refuses_temp)
+        caps, _c, _p, _a = await self._probe(hass, "chatgpt", refuses_temp)
         assert caps["temperature"] is False
 
         def accepts_temp(extra):
             return 200 if "temperature" in extra else 400
-        caps, _c, _p = await self._probe(hass, "chatgpt", accepts_temp)
+        caps, _c, _p, _a = await self._probe(hass, "chatgpt", accepts_temp)
         # An accepted temperature may still be ignored, so 200 records nothing.
         assert "temperature" not in caps
 
@@ -2541,14 +2541,14 @@ class TestCapabilityProbe:
         """Ollama takes a boolean think flag and OpenRouter passes through
         whatever the underlying model takes, so there is no vocabulary here that
         belongs to the account."""
-        caps, calls, prov = await self._probe(hass, "ollama", lambda extra: 400)
+        caps, calls, prov, _a = await self._probe(hass, "ollama", lambda extra: 400)
         assert "effort_levels" not in caps
         assert calls == 1                       # temperature only
         assert all(_effort_of(s) is None for s in prov.sent)
 
     @pytest.mark.asyncio
     async def test_claude_uses_its_own_nested_effort_field(self, hass):
-        caps, _c, prov = await self._probe(
+        caps, _c, prov, _a = await self._probe(
             hass, "claude", lambda extra: 400 if _effort_of(extra) == "phoenix-probe-invalid" else 200)
         assert caps["effort_levels"] == list(
             __import__("custom_components.phoenix_mcp.const", fromlist=["x"]).AGENTCLI_EFFORT_LEVEL_ORDER)
@@ -2557,6 +2557,207 @@ class TestCapabilityProbe:
     @pytest.mark.asyncio
     async def test_the_run_is_bounded(self, hass):
         from custom_components.phoenix_mcp.const import AGENTCLI_PROBE_MAX_CALLS
-        _caps, calls, _p = await self._probe(
+        _caps, calls, _p, _a = await self._probe(
             hass, "deepseek", lambda extra: 400 if _effort_of(extra) == "phoenix-probe-invalid" else 200)
         assert calls <= AGENTCLI_PROBE_MAX_CALLS
+
+
+# --- learning from a refusal during real work (the always-on backstop) ---
+
+
+class TestLearnedRefusals:
+    """Covers the providers the other two mechanisms cannot reach: the ones that
+    publish no capabilities AND do not validate a probe. A real turn refusing a
+    parameter is ground truth, costs nothing extra, and is the only signal left."""
+
+    def test_names_the_option_the_provider_refused(self):
+        assert agentcli._refused_option(
+            400, "Unsupported parameter: 'temperature' is not supported with this model.",
+            {"temperature": 0.7}) == "temperature"
+
+    def test_ignores_an_option_phoenix_did_not_send(self):
+        """The guard that stops an unrelated error mentioning a knob from
+        teaching us the knob is unsupported."""
+        assert agentcli._refused_option(
+            400, "temperature must be provided by the caller", {"model": "m"}) is None
+
+    @pytest.mark.parametrize("status", [401, 429, 500, 503])
+    def test_only_a_400_teaches_anything(self, status):
+        """An outage, a quota or an auth failure says nothing about the option."""
+        assert agentcli._refused_option(
+            status, "'temperature' is not supported", {"temperature": 1}) is None
+
+    def test_a_substring_match_is_not_enough(self):
+        """`max_temperature` is not `temperature`; a word boundary keeps a
+        neighbouring field name from disabling the wrong control."""
+        assert agentcli._refused_option(
+            400, "max_temperature out of range", {"temperature": 1}) is None
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_narrows_what_the_panel_offers(self, hass):
+        from homeassistant.helpers.storage import Store
+        from homeassistant.util.dt import utcnow
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_learned"))
+        iid = await store.add("chatgpt", {"api_key": "k", "model": "o9"})
+
+        assert await store.record_refusal(iid, "o9", "temperature", utcnow().isoformat()) is True
+
+        row = next(i for i in store.list_instances() if i["id"] == iid)
+        assert row["capabilities"]["o9"]["temperature"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_expires(self, hass):
+        from datetime import timedelta
+        from homeassistant.helpers.storage import Store
+        from homeassistant.util.dt import utcnow
+        from custom_components.phoenix_mcp.const import AGENTCLI_LEARNED_REFUSAL_TTL_DAYS
+
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_learned_old"))
+        iid = await store.add("chatgpt", {"api_key": "k", "model": "o9"})
+        stale = (utcnow() - timedelta(days=AGENTCLI_LEARNED_REFUSAL_TTL_DAYS + 1)).isoformat()
+        await store.record_refusal(iid, "o9", "temperature", stale)
+
+        # A model that rejected a parameter a month ago may accept it after an
+        # upgrade. A permanent "no" learned from one moment is the same silently
+        # stale answer this whole area exists to remove.
+        row = next(i for i in store.list_instances() if i["id"] == iid)
+        assert row["capabilities"].get("o9", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_timestamp_expires_rather_than_sticking(self, hass):
+        from homeassistant.helpers.storage import Store
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_learned_bad"))
+        iid = await store.add("chatgpt", {"api_key": "k", "model": "o9"})
+        await store.record_refusal(iid, "o9", "temperature", "not-a-date")
+        # Fails toward offering the control rather than hiding it.
+        row = next(i for i in store.list_instances() if i["id"] == iid)
+        assert row["capabilities"].get("o9", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_learning_never_overwrites_a_declared_fact_on_disk(self, hass):
+        """Declared and probed answers are durable statements about the API;
+        a learned refusal is one observation that has to fade, so it is stored
+        apart and merged only on read."""
+        from homeassistant.helpers.storage import Store
+        from homeassistant.util.dt import utcnow
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_learned_merge"))
+        iid = await store.add("openrouter", {"api_key": "k", "model": "a/b"})
+        await store.set_capabilities(iid, {"a/b": {"tools": True, "temperature": True}}, utcnow().isoformat())
+        await store.record_refusal(iid, "a/b", "temperature", utcnow().isoformat())
+
+        row = next(i for i in store.list_instances() if i["id"] == iid)
+        assert row["capabilities"]["a/b"]["temperature"] is False             # overlaid on read
+        assert row["capabilities"]["a/b"]["tools"] is True
+        # AFTER the overlay ran, not before: get() copies only the top level, so
+        # an overlay that wrote through would corrupt the stored fact and a check
+        # taken beforehand would never see it.
+        assert store.get(iid)["capabilities"]["a/b"]["temperature"] is True
+        row2 = next(i for i in store.list_instances() if i["id"] == iid)
+        assert row2["capabilities"]["a/b"]["temperature"] is False
+
+
+class TestProbeAnswered:
+    """A provider that declines every question has said nothing about the model.
+
+    Live-hit with an OpenRouter key that had no credit: every probe came back
+    refused for an ACCOUNT reason, and the panel reported it as a finding about
+    the model. Only 200 and 400 are answers; everything else is the provider
+    declining to be asked.
+    """
+
+    async def _probe(self, hass, answer):
+        from unittest.mock import MagicMock, patch
+        cfg = agentcli.ProviderConfig(kind="deepseek", model="m", base_url="https://x", api_key="k")
+        with patch.object(agentcli, "build_provider", return_value=_ProbeProvider(answer)):
+            return await agentcli.async_probe_capabilities(MagicMock(), cfg)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 402, 429, 503, None])
+    async def test_a_declined_probe_is_not_an_answer(self, hass, status):
+        _caps, _calls, answered = await self._probe(hass, lambda extra: status)
+        assert answered is False
+
+    @pytest.mark.asyncio
+    async def test_a_400_counts_as_an_answer(self, hass):
+        """A refusal IS information: it proves the request reached the model."""
+        _caps, _calls, answered = await self._probe(hass, lambda extra: 400)
+        assert answered is True
+
+    @pytest.mark.asyncio
+    async def test_a_200_counts_as_an_answer(self, hass):
+        _caps, _calls, answered = await self._probe(hass, lambda extra: 200)
+        assert answered is True
+
+
+class TestAggregatorEffort:
+    """An aggregator fronts many vendors behind one key, so no built-in answer
+    fits every model. Excluding them from probing was backwards: a probe runs
+    against ONE selected model, which is exactly what per-model variation needs.
+    """
+
+    @pytest.mark.parametrize("kind", ["openrouter", "nvidia"])
+    def test_the_probe_asks_them_about_effort(self, kind):
+        assert agentcli._effort_probe_body(kind, "high") == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize("kind", ["ollama", "ollama_cloud", "minimax"])
+    def test_a_backend_with_no_level_vocabulary_is_still_skipped(self, kind):
+        """Ollama normalizes reasoning to one boolean flag across every model,
+        so there is nothing to enumerate."""
+        assert agentcli._effort_probe_body(kind, "high") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["openrouter", "nvidia"])
+    async def test_an_effort_reaches_the_request(self, hass, kind):
+        cfg = agentcli.ProviderConfig(kind=kind, model="vendor/m", base_url="https://x", api_key="k")
+        # Capture the request the real builder produces.
+        provider = agentcli.OpenAICompatProvider(cfg)
+        sent = {}
+
+        class _Resp:
+            status = 200
+            async def text(self): return ""
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            @property
+            def content(self): raise AssertionError("not reached")
+
+        def _post(url, **kw):
+            sent.update(kw.get("json") or {})
+            return _Resp()
+
+        session = MagicMock()
+        session.post = _post
+        gen = provider.stream_turn(session, system_prompt="s", messages=[], tools=[],
+                                   options={"effort": "high"})
+        try:
+            async for _ev in gen:
+                break
+        except Exception:
+            pass
+        assert sent.get("reasoning_effort") == "high"
+
+    @pytest.mark.asyncio
+    async def test_no_effort_means_no_field(self, hass):
+        """A turn that chose nothing must not force a level on the model."""
+        cfg = agentcli.ProviderConfig(kind="openrouter", model="vendor/m",
+                                      base_url="https://x", api_key="k")
+        provider = agentcli.OpenAICompatProvider(cfg)
+        sent = {}
+
+        class _Resp:
+            status = 200
+            async def text(self): return ""
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            @property
+            def content(self): raise AssertionError("not reached")
+
+        session = MagicMock()
+        session.post = lambda url, **kw: (sent.update(kw.get("json") or {}), _Resp())[1]
+        gen = provider.stream_turn(session, system_prompt="s", messages=[], tools=[], options={})
+        try:
+            async for _ev in gen:
+                break
+        except Exception:
+            pass
+        assert "reasoning_effort" not in sent

@@ -394,7 +394,7 @@ describe("AgentCliSettings capability probe", () => {
     getAgentCliModels.mockResolvedValue({ models: ["deepseek-v4-flash"] });
     probeAgentCliCapabilities.mockResolvedValue({
       model: "deepseek-v4-flash", probed: { effort_levels: ["low", "high", "max"] },
-      calls: 7, checked_at: "2026-08-04T00:00:00Z", effort_checkable: true,
+      calls: 7, checked_at: "2026-08-04T00:00:00Z", effort_checkable: true, answered: true,
     });
   });
 
@@ -428,7 +428,7 @@ describe("AgentCliSettings capability probe", () => {
     // Not a failure: a provider that ignores unknown parameters cannot be asked
     // this way, and reporting that as an error would send someone debugging.
     probeAgentCliCapabilities.mockResolvedValue({
-      model: "m", probed: {}, calls: 2, checked_at: "2026-08-04T00:00:00Z", effort_checkable: true,
+      model: "m", probed: {}, calls: 2, checked_at: "2026-08-04T00:00:00Z", effort_checkable: true, answered: true,
     });
     renderCard();
     fireEvent.click(await screen.findByLabelText("Check options"));
@@ -451,7 +451,7 @@ describe("AgentCliSettings capability probe", () => {
     // nobody had asked.
     probeAgentCliCapabilities.mockResolvedValue({
       model: "gemma", probed: {}, calls: 1, checked_at: "2026-08-04T00:00:00Z",
-      effort_checkable: false,
+      effort_checkable: false, answered: true,
     });
     renderCard();
     fireEvent.click(await screen.findByLabelText("Check options"));
@@ -510,7 +510,7 @@ describe("AgentCliSettings account actions", () => {
     // conversation, not after one behaves oddly.
     createAgentCliProvider.mockResolvedValue({ instance: { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" } });
     probeAgentCliCapabilities.mockResolvedValue({
-      model: "claude-opus-4-8", probed: {}, calls: 2, checked_at: "x", effort_checkable: true,
+      model: "claude-opus-4-8", probed: {}, calls: 2, checked_at: "x", effort_checkable: true, answered: true,
     });
     renderCard();
     fireEvent.click(await screen.findByText("Add new provider…"));
@@ -543,5 +543,142 @@ describe("AgentCliSettings account actions", () => {
     fireEvent.click(await screen.findByText("Done"));
     await waitFor(() => expect(createAgentCliProvider).toHaveBeenCalled());
     expect(screen.queryByText("rate limited")).toBeNull();
+  });
+});
+
+describe("AgentCliSettings probe could not run", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "openrouter", name: "OpenRouter", model: "openai/gpt-5" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["openai/gpt-5"] });
+  });
+
+  it("says the provider declined, not that it does not validate options", async () => {
+    // Live-hit with a key that had no credit: every probe came back refused for
+    // an ACCOUNT reason, and reporting that as a finding about the model blames
+    // the provider for something it never got to answer.
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "openai/gpt-5", probed: {}, calls: 2, checked_at: "x",
+      effort_checkable: false, answered: false,
+    });
+    renderCard();
+    fireEvent.click(await screen.findByLabelText(/^Check options/));
+    fireEvent.click(await screen.findByText("Check now"));
+    expect(await screen.findByText(/declined every one/)).toBeTruthy();
+    expect(screen.queryByText(/no levels to check/)).toBeNull();
+  });
+
+  it("offers the check when the default model is changed", async () => {
+    // A different model has different options, so the offer belongs here too.
+    setAgentCliProviderModel.mockResolvedValue({ instance: { id: "i1", model: "openai/gpt-5-mini" } });
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "openai/gpt-5-mini", probed: {}, calls: 2, checked_at: "x",
+      effort_checkable: false, answered: true,
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["openai/gpt-5", "openai/gpt-5-mini"] });
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Change default model"));
+    fireEvent.change(await screen.findByLabelText("Select default model:"),
+                     { target: { value: "openai/gpt-5-mini" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(probeAgentCliCapabilities).toHaveBeenCalledWith("i1"));
+  });
+
+  it("changing the model without the check spends nothing", async () => {
+    setAgentCliProviderModel.mockResolvedValue({ instance: { id: "i1", model: "openai/gpt-5-mini" } });
+    getAgentCliModels.mockResolvedValue({ models: ["openai/gpt-5", "openai/gpt-5-mini"] });
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Change default model"));
+    fireEvent.click(await screen.findByLabelText(/Check which options this model accepts/));
+    fireEvent.change(await screen.findByLabelText("Select default model:"),
+                     { target: { value: "openai/gpt-5-mini" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(setAgentCliProviderModel).toHaveBeenCalled());
+    expect(probeAgentCliCapabilities).not.toHaveBeenCalled();
+  });
+});
+
+// Whoever asked for the check gets the answer. Running it silently on the add
+// and save paths meant paying for an answer and not being shown it.
+describe("AgentCliSettings reports every check", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "openrouter", name: "OpenRouter", model: "a/one" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["a/one", "a/two"] });
+    setAgentCliProviderModel.mockResolvedValue({ instance: { id: "i1", model: "a/two" } });
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "a/two", probed: {}, calls: 1, checked_at: "x",
+      effort_checkable: false, answered: true,
+    });
+  });
+
+  it("shows the result after changing the default model", async () => {
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Change default model"));
+    fireEvent.change(await screen.findByLabelText("Select default model:"), { target: { value: "a/two" } });
+    fireEvent.click(screen.getByText("Save"));
+    expect(await screen.findByText(/no levels to check/)).toBeTruthy();
+  });
+
+  it("shows the result after adding an account", async () => {
+    const added = { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" };
+    createAgentCliProvider.mockResolvedValue({ instance: added });
+    // The reload after Done returns the new account, as the server would; the
+    // result has to land on ITS card, which only exists once it is listed.
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "openrouter", name: "OpenRouter", model: "a/one" }, added],
+    });
+    renderCard();
+    fireEvent.click(await screen.findByText("Add new provider…"));
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
+    fireEvent.click(screen.getByText("Validate"));
+    fireEvent.click(await screen.findByText("Done"));
+    expect(await screen.findByText(/no levels to check/)).toBeTruthy();
+  });
+
+  it("a failed check is reported rather than swallowed", async () => {
+    probeAgentCliCapabilities.mockRejectedValue(new Error("rate limited"));
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Change default model"));
+    fireEvent.change(await screen.findByLabelText("Select default model:"), { target: { value: "a/two" } });
+    fireEvent.click(screen.getByText("Save"));
+    // Reported, but the model change still stands: the two are separate.
+    expect(await screen.findByText("rate limited")).toBeTruthy();
+    await waitFor(() => expect(setAgentCliProviderModel).toHaveBeenCalled());
+  });
+});
+
+// A check that writes new capabilities has to announce them: both chat-window
+// hosts hold accounts as state and reload on this event.
+describe("AgentCliSettings announces capability changes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "openrouter", name: "OpenRouter", model: "a/one" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["a/one"] });
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "a/one", probed: { effort_levels: ["low", "high"] }, calls: 7,
+      checked_at: "x", effort_checkable: true, answered: true,
+    });
+  });
+
+  it("fires providers-changed after a manual check", async () => {
+    const seen = vi.fn();
+    window.addEventListener("phx-agentcli-providers-changed", seen);
+    renderCard();
+    fireEvent.click(await screen.findByLabelText(/^Check options/));
+    fireEvent.click(await screen.findByText("Check now"));
+    // Without this the chat window keeps its old accounts, so a Thinking control
+    // the check just established never appears and the check looks broken.
+    await waitFor(() => expect(seen).toHaveBeenCalled());
+    window.removeEventListener("phx-agentcli-providers-changed", seen);
   });
 });

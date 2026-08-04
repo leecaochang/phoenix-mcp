@@ -118,6 +118,37 @@ const TrashIcon = () => (
   <svg {...ICON_PROPS}><path d="M4 7h16" /><path d="M9 7V5h6v2" /><path d="M6 7l1 13h10l1-13" /></svg>
 );
 
+/** What a refresh or an options check found, held as data rather than prose.
+ *
+ *  Storing the rendered sentence was a real bug: switching the panel language
+ *  repaints the card, but a string baked at the time the action ran keeps the
+ *  old language forever. Anything shown to the operator has to be translated at
+ *  RENDER time, which means state holds the facts and never the words. */
+type CardResult =
+  | { kind: "refreshed"; models: number; declared: boolean }
+  | { kind: "probed"; calls: number; levels?: string[]; effortCheckable: boolean; answered: boolean }
+  | { kind: "failed"; message: string };
+
+function cardResultText(r: CardResult): string {
+  if (r.kind === "failed") return r.message;
+  if (r.kind === "refreshed") {
+    return r.declared
+      ? t("settings.agentcliRefreshed", { models: r.models })
+      : t("settings.agentcliRefreshedNoCaps", { models: r.models });
+  }
+  // Four outcomes. The provider declining every question is not a finding about
+  // the model, so it is reported first and on its own.
+  if (!r.answered) return t("settings.agentcliProbedUnanswered", { calls: r.calls });
+  const found = r.levels?.length
+    ? t("settings.agentcliProbedLevels", {
+        levels: r.levels.map(effortLevelLabel).join(t("common.listSeparator")),
+      })
+    : r.effortCheckable
+      ? t("settings.agentcliProbedNothing")
+      : t("settings.agentcliProbedNoLevels");
+  return t("settings.agentcliProbed", { calls: r.calls, found });
+}
+
 function notifyChanged() {
   window.dispatchEvent(new CustomEvent("phx-agentcli-providers-changed"));
 }
@@ -163,6 +194,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   const [liveModels, setLiveModels] = useState<Record<string, string[]>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState("");
+  const [probeOnSave, setProbeOnSave] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
 
   const load = () => api.getAgentCliProviders().then((r) => setInstances(r.instances)).catch(() => setInstances([]));
@@ -221,28 +253,26 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
     });
 
   const [refreshing, setRefreshing] = useState<string | null>(null);
-  const [refreshResult, setRefreshResult] = useState<Record<string, string>>({});
+  const [refreshResult, setRefreshResult] = useState<Record<string, CardResult | null>>({});
 
   const refresh = async (inst: AgentCliInstance) => {
     setRefreshing(inst.id);
-    setRefreshResult((r) => ({ ...r, [inst.id]: "" }));
+    setRefreshResult((r) => ({ ...r, [inst.id]: null }));
     try {
       const r = await api.refreshAgentCliProvider(inst.id);
       setLiveModels((m) => ({ ...m, [inst.id]: r.models }));
       await load();
+      // "This provider publishes none" is a real answer and must not read like a
+      // failed refresh: most providers report an id and an owner and nothing
+      // else, so an empty result is the norm rather than a fault.
       setRefreshResult((res) => ({
         ...res,
-        // "This provider publishes none" is a real answer and must not read like
-        // a failed refresh: most providers report an id and an owner and nothing
-        // else, so an empty result is the norm rather than a fault.
-        [inst.id]: r.declared
-          ? t("settings.agentcliRefreshed", { models: r.models.length })
-          : t("settings.agentcliRefreshedNoCaps", { models: r.models.length }),
+        [inst.id]: { kind: "refreshed", models: r.models.length, declared: r.declared },
       }));
     } catch (err: unknown) {
       setRefreshResult((res) => ({
         ...res,
-        [inst.id]: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed"),
+        [inst.id]: { kind: "failed", message: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed") },
       }));
     } finally {
       setRefreshing(null);
@@ -270,29 +300,45 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   const [probing, setProbing] = useState<string | null>(null);
   const [confirmProbe, setConfirmProbe] = useState<AgentCliInstance | null>(null);
 
-  const probeCaps = async (inst: AgentCliInstance) => {
-    setProbing(inst.id);
-    setConfirmProbe(null);
-    setRefreshResult((r) => ({ ...r, [inst.id]: "" }));
+  /** Run the check and REPORT it, whichever path asked for it.
+   *
+   *  One helper because the result has to reach the operator identically from
+   *  all three: the manual button, adding an account, and changing the default
+   *  model. The add and save paths ran it silently, which is the worst of both
+   *  ways to spend someone's credit, since they paid for an answer and were not
+   *  shown it. Never throws: the account is already stored and working.
+   */
+  const runProbe = async (id: string) => {
     try {
-      const r = await api.probeAgentCliCapabilities(inst.id);
-      await load();
-      // Three outcomes, not two. "Nothing to ask" and "asked and learned
-      // nothing" are different facts, and reporting the first as the second
-      // blames a provider for ignoring a question nobody put to it.
-      const found = r.probed.effort_levels?.length
-        ? t("settings.agentcliProbedLevels", {
-            levels: r.probed.effort_levels.map(effortLevelLabel).join(t("common.listSeparator")),
-          })
-        : r.effort_checkable
-          ? t("settings.agentcliProbedNothing")
-          : t("settings.agentcliProbedNoLevels");
-      setRefreshResult((res) => ({ ...res, [inst.id]: t("settings.agentcliProbed", { calls: r.calls, found }) }));
+      const r = await api.probeAgentCliCapabilities(id);
+      setRefreshResult((res) => ({
+        ...res,
+        [id]: {
+          kind: "probed", calls: r.calls, answered: r.answered,
+          levels: r.probed.effort_levels, effortCheckable: r.effort_checkable,
+        },
+      }));
     } catch (err: unknown) {
       setRefreshResult((res) => ({
         ...res,
-        [inst.id]: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed"),
+        [id]: { kind: "failed", message: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed") },
       }));
+    }
+  };
+
+  const probeCaps = async (inst: AgentCliInstance) => {
+    setProbing(inst.id);
+    setConfirmProbe(null);
+    setRefreshResult((r) => ({ ...r, [inst.id]: null }));
+    try {
+      await runProbe(inst.id);
+      await load();
+      // Both chat-window hosts hold their accounts as state and reload on this
+      // event. Without it the check writes new capabilities that the window
+      // cannot see, so a control it just established does not appear until the
+      // page is reloaded: the answer was correct and invisible, which reads
+      // exactly like the check not working.
+      notifyChanged();
     } finally {
       setProbing(null);
     }
@@ -303,6 +349,10 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
     setModelError(null);
     try {
       await api.setAgentCliProviderModel(id, modelDraft);
+      // A different model has different options, and nothing is known about the
+      // new one yet. Same offer as the add flow, at the same moment: before the
+      // first conversation rather than after one behaves oddly.
+      if (probeOnSave) await runProbe(id);
       await load();
       notifyChanged();
       setEditing(null);
@@ -356,7 +406,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
       // Best-effort: a failed check must not fail the account, which is already
       // stored and working. The operator can run it again from the card.
       if (form.probe && form.model && created.instance?.id) {
-        try { await api.probeAgentCliCapabilities(created.instance.id); } catch { /* card can retry */ }
+        await runProbe(created.instance.id);
       }
       await load();
       notifyChanged();
@@ -496,6 +546,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
       <div className="agentcli-settings-providers">
         {(instances ?? []).map((inst) => (
           <div key={inst.id} className="agentcli-settings-provider">
+            <div className="agentcli-settings-provider-main">
             <div className="agentcli-settings-provider-head">
               <span>{inst.name}</span>
             </div>
@@ -527,6 +578,11 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
                     </option>
                   )}
                 </select>
+                <label className="agentcli-settings-probe-opt">
+                  <input type="checkbox" checked={probeOnSave}
+                         onChange={(e) => setProbeOnSave(e.target.checked)} />
+                  <span>{t("settings.agentcliProbeOnAdd")}</span>
+                </label>
                 <button className="btn btn-primary btn-sm"
                         disabled={busy || !modelDraft || modelDraft === inst.model}
                         onClick={() => void saveModel(inst.id)}>{t("common.save")}</button>
@@ -534,8 +590,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
                         onClick={() => { setEditing(null); setModelError(null); }}>{t("settings.cancel")}</button>
               </div>
             ) : (
-              <div className="agentcli-settings-provider-actions">
-                <span className="agentcli-settings-model">
+              <span className="agentcli-settings-model">
                   {t("settings.agentcliDefaultModel", { model: inst.model || t("settings.agentcliNotSet") })}
                   {modelIsStale(inst) && isDismissed(inst, "retired") && (
                     <WarningBadge text={t("settings.agentcliModelRetired", { model: inst.model })}
@@ -545,8 +600,25 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
                     <WarningBadge text={t("settings.agentcliDefaultNoTools", { model: inst.model })}
                                   onShow={() => setDismissedFlag(inst, "notools", false)} />
                   )}
-                </span>
-                <div className="agentcli-icon-row">
+              </span>
+            )}
+            {refreshResult[inst.id] && (
+              <div className="agentcli-settings-hint" role="status">
+                {cardResultText(refreshResult[inst.id]!)}
+              </div>
+            )}
+            {inst.model && cannotCallTools(inst, inst.model) && !isDismissed(inst, "notools") && (
+              <DismissibleWarning
+                text={t("settings.agentcliDefaultNoTools", { model: inst.model })}
+                onDismiss={() => setDismissedFlag(inst, "notools", true)}
+              />
+            )}
+            {editing === inst.id && modelError && (
+              <div className="banner banner-error" role="alert">{modelError}</div>
+            )}
+            </div>
+            {editing !== inst.id && (
+              <div className="agentcli-icon-row">
                   <IconButton label={t("settings.agentcliChangeModel")} disabled={busy}
                               onClick={() => { setEditing(inst.id); setModelDraft(inst.model); setModelError(null); }}>
                     <EditIcon />
@@ -573,20 +645,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
                               disabled={busy} onClick={() => setConfirmRemove(inst)}>
                     <TrashIcon />
                   </IconButton>
-                </div>
               </div>
-            )}
-            {refreshResult[inst.id] && (
-              <div className="agentcli-settings-hint" role="status">{refreshResult[inst.id]}</div>
-            )}
-            {inst.model && cannotCallTools(inst, inst.model) && !isDismissed(inst, "notools") && (
-              <DismissibleWarning
-                text={t("settings.agentcliDefaultNoTools", { model: inst.model })}
-                onDismiss={() => setDismissedFlag(inst, "notools", true)}
-              />
-            )}
-            {editing === inst.id && modelError && (
-              <div className="banner banner-error" role="alert">{modelError}</div>
             )}
           </div>
         ))}
