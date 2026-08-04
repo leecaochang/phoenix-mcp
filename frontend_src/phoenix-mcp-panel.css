@@ -1520,6 +1520,13 @@ select.input {
 .approvals-list { display: flex; flex-direction: column; gap: 8px; }
 
 /* Batch approve: the tick column plus the select-all / run bar above the list. */
+/* "N others are waiting" inside the detail modal, shown only on the notification
+   deep-link path. Wraps rather than shrinking the button, since the sentence
+   grows with the count and translations run longer than the English. */
+.approval-others-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
 .approvals-batch-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 8px 12px; margin-bottom: 8px;

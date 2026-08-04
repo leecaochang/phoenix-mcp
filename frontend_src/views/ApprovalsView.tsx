@@ -8,7 +8,7 @@ import { collectPreviewViews, DashboardPreview, rememberPreviewMode, SegmentedTo
 import { YamlView, toYaml } from "../components/YamlView";
 import { approvalStatusLabel, formatDateTime, friendlyToolName } from "../utils";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
-import { hasMessage, t } from "../i18n";
+import { hasMessage, t, tn } from "../i18n";
 
 interface Props {
   /** Which sub-tab is active. Owned by the parent so it survives this view
@@ -111,6 +111,17 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ApprovalRecord | null>(null);
+  // Which approval the open modal was reached from a notification deep-link FOR,
+  // rather than a boolean beside `selected`: two states would have to be kept in
+  // sync by every open path, and comparing ids cannot desync. An operator who
+  // opened the modal from the list already has the queue and its batch controls
+  // on screen behind it, so the "others are waiting" banner would repeat what
+  // they can see, and a signal that is always present is one that gets skipped.
+  const [deepLinkedId, setDeepLinkedId] = useState<string | null>(null);
+  // Pre-slice total from the pending fetch, not shown.length: the list pages at
+  // HISTORY_PAGE, so counting the loaded rows would under-report the queue to an
+  // operator deciding whether it is worth opening.
+  const [pendingTotal, setPendingTotal] = useState(0);
   const [histFilter, setHistFilter] = useState<ApprovalStatus | "all">("all");
   const [search, setSearch] = useState("");
   const [hasMore, setHasMore] = useState(false);
@@ -123,12 +134,20 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchApproveResult | null>(null);
 
+  // Closing forgets the deep-link, so reopening the SAME approval from the list
+  // is treated as what it is: an operator who is looking at the queue.
+  const closeRecord = useCallback(() => {
+    setDeepLinkedId(null);
+    setSelected(null);
+  }, []);
+
   const loadPending = useCallback(async (offset = 0) => {
     setError(null);
     try {
       const resp = await api.listApprovals({ status: "pending", limit: HISTORY_PAGE, offset });
       setRecords((prev) => (offset === 0 ? resp.approvals : [...prev, ...resp.approvals]));
       setRawOffset(offset + resp.approvals.length);
+      setPendingTotal(resp.total);
       setHasMore(offset + resp.approvals.length < resp.total);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : t("approvals.loadFailed"));
@@ -206,11 +225,11 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       .then((rec) => {
         if (cancelled) return;
         if (rec.status !== "pending") {
-          setSelected(null);
+          closeRecord();
           onCountChange?.();
         }
       })
-      .catch(() => { if (!cancelled) setSelected(null); });  // gone/expired: close
+      .catch(() => { if (!cancelled) closeRecord(); });  // gone/expired: close
     return () => { cancelled = true; };
   }, [refreshSignal, selected, onCountChange]);
 
@@ -222,6 +241,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       .then((rec) => {
         if (cancelled) return;
         onTabChange(rec.status === "pending" ? "pending" : "history");
+        setDeepLinkedId(rec.id);
         setSelected(rec);
       })
       .catch(() => { /* stale/unknown id: ignore */ })
@@ -230,7 +250,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   }, [openApprovalId, onConsumedDeepLink, onTabChange]);
 
   function handleResolved(updated: ApprovalRecord) {
-    setSelected(null);
+    closeRecord();
     setRecords((prev) => prev.filter((r) => r.id !== updated.id));
     if (tab === "pending") loadPending();
     onCountChange?.();
@@ -447,8 +467,19 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
         <ApprovalDetailModal
           record={selected}
           claimed={isClaimed(selected)}
-          onClose={() => setSelected(null)}
+          onClose={closeRecord}
           onResolved={handleResolved}
+          // Only from a notification, and only for a pending record: that is the
+          // path on which the queue is invisible. Gating on `tab === "pending"`
+          // also keeps pendingTotal fresh, since it is only written by the
+          // pending fetch and a deep-link onto an already-resolved record lands
+          // on History with a stale count.
+          othersPending={
+            deepLinkedId === selected.id && tab === "pending" && selected.status === "pending"
+              ? Math.max(0, pendingTotal - 1)
+              : 0
+          }
+          onReviewAll={closeRecord}
         />
       )}
       </div>
@@ -595,9 +626,14 @@ interface DetailProps {
   claimed?: boolean;
   onClose: () => void;
   onResolved: (updated: ApprovalRecord) => void;
+  /** How many OTHER approvals are waiting, when this modal was reached from a
+   *  notification. Zero everywhere else, which hides the banner entirely. */
+  othersPending?: number;
+  /** Leave this one approval and show the whole queue. */
+  onReviewAll?: () => void;
 }
 
-function ApprovalDetailModal({ record, claimed, onClose, onResolved }: DetailProps) {
+function ApprovalDetailModal({ record, claimed, onClose, onResolved, othersPending = 0, onReviewAll }: DetailProps) {
   const [activeTab, setActiveTab] = useState<"diff" | "args" | "result">("diff");
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -704,6 +740,21 @@ function ApprovalDetailModal({ record, claimed, onClose, onResolved }: DetailPro
         <span className="stat-label">{t("approvals.metaStatus")}</span>
         <span><StatusBadge status={record.status} /></span>
       </div>
+
+      {/* A notification links to ONE approval, so an operator arriving here has
+          no way to know a queue exists, let alone that it can be cleared in a
+          single action: the tick boxes live on the list this modal covers. It
+          deliberately routes to that list rather than offering approve-all from
+          here, because everything else in the queue is unreviewed and approval
+          is the operator's intent to look at each change. */}
+      {othersPending > 0 && onReviewAll && (
+        <div className="banner banner-info approval-others-banner">
+          <span>{tn("approvals.othersPending", othersPending)}</span>
+          <button type="button" className="btn btn-sm" onClick={onReviewAll}>
+            {t("approvals.reviewAll")}
+          </button>
+        </div>
+      )}
 
       {!isPending && record.rejected_reason && (
         <div className="banner banner-error">

@@ -84,6 +84,11 @@
       },
       "reasonExecutionFailedDetail": "Execution failed: {detail}",
       "reasonLabel": "Optional rejection reason",
+      "othersPending": {
+        "one": "1 other approval is waiting for review.",
+        "other": "{count} other approvals are waiting for review."
+      },
+      "reviewAll": "Review all",
       "reasonPlaceholder": "Explain why this request was rejected",
       "reasonPrefix": "Reason: {reason}",
       "reject": "Reject",
