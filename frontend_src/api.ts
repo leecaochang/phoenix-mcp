@@ -12,6 +12,7 @@ import type {
   CardCatalogResponse,
   ArchivedTokenRecord,
   CreateTokenBody,
+  DeclaredModelCaps,
   EntityTree,
   GlobalSettings,
   MesaExportArchive,
@@ -353,6 +354,9 @@ export const api = {
     kind: AgentCliProviderKind,
     body: { api_key?: string; base_url?: string; model?: string },
   ) => req<{ instance: AgentCliInstance }>("POST", "/agentcli/providers", { kind, ...body }),
+  refreshAgentCliProvider: (id: string) =>
+    req<{ models: string[]; capabilities: Record<string, DeclaredModelCaps>; declared: boolean; checked_at: string }>(
+      "POST", `/agentcli/providers/${encodeURIComponent(id)}/refresh`),
   setAgentCliProviderModel: (id: string, model: string) =>
     req<{ instance: { id: string; model: string } }>(
       "PATCH", `/agentcli/providers/${encodeURIComponent(id)}`, { model }),

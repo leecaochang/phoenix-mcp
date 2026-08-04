@@ -13,6 +13,7 @@ import PHOENIX_ICON from "../../custom_components/phoenix_mcp/brand/icon.png";
 import type {
   AgentCliProviderKind,
   AgentCliInstance,
+  DeclaredModelCaps,
   TokenRecord,
 } from "../types";
 import { hasMessage, localeClock, localeCompactNumber, localeNumber, t } from "../i18n";
@@ -129,7 +130,32 @@ function thinkOpts(values: string[]): ThinkOption[] {
   return values.map((v) => ({ value: v, label: LEVEL_LABEL[v] ? t(LEVEL_LABEL[v]) : v }));
 }
 
-export function modelCaps(kind: AgentCliProviderKind, model: string, thinkingOn: boolean): ModelCaps {
+/** Narrow the shipped table by what the provider DECLARED about this model.
+ *
+ *  Declared capabilities only ever REMOVE a control, never add one. A provider
+ *  saying a model has no reasoning is authoritative; a provider saying nothing
+ *  (which is most of them, and Ollama for temperature specifically) leaves the
+ *  table's answer standing. That asymmetry is the whole safety property: an
+ *  absent field can never be read as a limit, so a failed or unsupported
+ *  lookup degrades to today's behaviour instead of stripping a working model's
+ *  controls.
+ */
+function applyDeclared(caps: ModelCaps, declared?: DeclaredModelCaps): ModelCaps {
+  if (!declared) return caps;
+  const out = { ...caps };
+  if (declared.thinking === false) out.thinking = [];
+  if (declared.temperature === false) out.temperature = false;
+  return out;
+}
+
+export function modelCaps(
+  kind: AgentCliProviderKind, model: string, thinkingOn: boolean,
+  declared?: DeclaredModelCaps,
+): ModelCaps {
+  return applyDeclared(shippedCaps(kind, model, thinkingOn), declared);
+}
+
+function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: boolean): ModelCaps {
   const m = (model || "").toLowerCase();
   switch (kind) {
     case "claude":
@@ -409,7 +435,14 @@ export function AgentCliWindow({
   const instance = useMemo(() => instances.find((i) => i.id === instanceId), [instances, instanceId]);
   const kind: AgentCliProviderKind = instance?.kind ?? "claude";
   const instanceModel = instance?.model ?? "";
-  const caps = useMemo(() => modelCaps(kind, model, options.thinking), [kind, model, options.thinking]);
+  // What this account's provider declared about the selected model, when it has
+  // been refreshed at all. Absent for every provider that publishes nothing,
+  // which leaves the shipped table's answer standing.
+  const declaredCaps = useMemo(
+    () => instances.find((i) => i.id === instanceId)?.capabilities?.[model],
+    [instances, instanceId, model]);
+  const caps = useMemo(() => modelCaps(kind, model, options.thinking, declaredCaps),
+                       [kind, model, options.thinking, declaredCaps]);
 
   // Persist the selections, options, and geometry so they survive reopen/reload.
   useEffect(() => { patchDurable({ tokenId }); }, [tokenId]);

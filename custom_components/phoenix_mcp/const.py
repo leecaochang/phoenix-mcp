@@ -170,6 +170,12 @@ AGENTCLI_DEFAULT_MAX_TOKENS = 8192
 # documented 384K max output. Other OpenAI-compatible kinds are deliberately
 # not sent max_tokens (OpenAI reasoning models reject the field outright).
 AGENTCLI_DEEPSEEK_MAX_TOKENS = 32768
+# How many Ollama /api/show lookups run at once during a capability refresh.
+# Ollama is the only backend whose capabilities cost one request PER MODEL, and a
+# large local library would otherwise arrive as one burst against a machine that
+# is also running Home Assistant.
+AGENTCLI_CAPABILITY_CONCURRENCY = 6
+
 AGENTCLI_DEFAULT_EFFORT = "high"
 AGENTCLI_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 # Per-turn cap on provider<->tool round trips before the loop pauses. In the

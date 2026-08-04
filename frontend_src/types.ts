@@ -185,12 +185,30 @@ export type AgentCliProviderKind =
 
 // One configured provider account. Multiple of the same kind are allowed (e.g.
 // two Claude keys, two Ollama servers); `name` disambiguates duplicates.
+/** What one model's provider DECLARED it accepts.
+ *
+ *  A field is present only when the provider actually reports it, so `undefined`
+ *  means "not declared" and must never be read as false: only OpenRouter and
+ *  Ollama publish any of this, and Ollama omits `temperature` because it takes
+ *  one for every model. Treating absence as a limit would strip a working
+ *  model's controls. */
+export interface DeclaredModelCaps {
+  tools?: boolean;
+  thinking?: boolean;
+  temperature?: boolean;
+}
+
 export interface AgentCliInstance {
   id: string;
   kind: AgentCliProviderKind;
   name: string;
   model: string;
   base_url?: string;
+  /** Per-model declared capabilities, keyed by model id. Empty when this
+   *  provider publishes none, which is most of them. */
+  capabilities?: Record<string, DeclaredModelCaps>;
+  /** When the capability refresh last ran, ISO. Null if it never has. */
+  capabilities_checked_at?: string | null;
 }
 
 export type MesaMode = "off" | "advisory" | "enforced";

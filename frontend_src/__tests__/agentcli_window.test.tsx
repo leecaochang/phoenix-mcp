@@ -1202,3 +1202,46 @@ describe("AgentCliWindow generic activity line", () => {
     expect(screen.getByText(/calling/)).toBeInTheDocument();
   });
 });
+
+// Declared capabilities only ever REMOVE a control, never add one. A provider
+// saying "no reasoning" is authoritative; a provider saying nothing (which is
+// most of them) leaves the shipped table standing. That asymmetry is what makes
+// a failed or unsupported lookup degrade to today's behaviour instead of
+// stripping a working model's controls.
+describe("modelCaps with declared capabilities", () => {
+  const vals2 = (c: { thinking: { value: string }[] }) => c.thinking.map((o) => o.value);
+
+  it("removes the thinking control when the provider declares no reasoning", () => {
+    const c = modelCaps("openrouter", "some/model", false, { thinking: false, tools: true });
+    expect(c.thinking).toEqual([]);
+  });
+
+  it("removes temperature when the provider declares it unsupported", () => {
+    const c = modelCaps("openrouter", "some/model", false, { temperature: false });
+    expect(c.temperature).toBe(false);
+  });
+
+  it("leaves the shipped answer alone when nothing was declared", () => {
+    const shipped = modelCaps("deepseek", "deepseek-v4-flash", false);
+    const withEmpty = modelCaps("deepseek", "deepseek-v4-flash", false, {});
+    expect(vals2(withEmpty)).toEqual(vals2(shipped));
+    expect(withEmpty.temperature).toBe(shipped.temperature);
+  });
+
+  it("a declared TRUE never adds a control the table does not offer", () => {
+    // Declaring support is not the same as knowing the levels: OpenRouter says
+    // "reasoning", not which efforts. Adding a control from a bare boolean would
+    // offer levels the model may reject.
+    const shipped = modelCaps("claude", "claude-opus-4-8", false);
+    const declared = modelCaps("claude", "claude-opus-4-8", false, { thinking: true, temperature: true });
+    expect(vals2(declared)).toEqual(vals2(shipped));
+    expect(declared.temperature).toBe(shipped.temperature);
+  });
+
+  it("an undeclared field is not a limit", () => {
+    // Ollama omits temperature entirely because it takes one for every model.
+    const shipped = modelCaps("ollama", "llama3", false);
+    const declared = modelCaps("ollama", "llama3", false, { tools: true, thinking: true });
+    expect(declared.temperature).toBe(shipped.temperature);
+  });
+});

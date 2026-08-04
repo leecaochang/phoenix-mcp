@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
+import { formatDateTime } from "../utils";
 import type { AgentCliInstance, AgentCliProviderKind } from "../types";
 import { t } from "../i18n";
 import { tRich } from "../i18n/rich";
@@ -31,6 +32,51 @@ export const KINDS: { kind: AgentCliProviderKind; label: string; labelKey?: stri
 // just be a list of identical strings in every locale.
 export function kindLabel(k: { label: string; labelKey?: string }): string {
   return k.labelKey ? t(k.labelKey) : k.label;
+}
+
+// Which account warnings the operator has closed. Persisted, because the point
+// of closing one is that it stays closed across visits; an in-memory dismissal
+// would come straight back on the next card open, which is the complaint.
+//
+// The key includes the MODEL, so a warning about a different model is a
+// different warning and shows again on its own. That is what keeps a dismissal
+// from silently covering a NEW problem: the operator dismissed a statement about
+// one model, not a category of statement forever.
+const DISMISS_KEY = "phx-agentcli-dismissed";
+
+function readDismissed(): Record<string, true> {
+  try {
+    const raw = window.localStorage.getItem(DISMISS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, true>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDismissed(next: Record<string, true>) {
+  try {
+    window.localStorage.setItem(DISMISS_KEY, JSON.stringify(next));
+  } catch { /* private mode: the warning simply keeps showing, which is safe */ }
+}
+
+/** A warning the operator can close, leaving a marker that reopens it. */
+function DismissibleWarning({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  return (
+    <div className="banner banner-warn agentcli-warn">
+      <span>{text}</span>
+      <button type="button" className="agentcli-warn-close" onClick={onDismiss}
+              aria-label={t("settings.agentcliDismissWarning")}>&times;</button>
+    </div>
+  );
+}
+
+/** The marker a closed warning leaves behind, next to the model it is about. */
+function WarningBadge({ text, onShow }: { text: string; onShow: () => void }) {
+  return (
+    <button type="button" className="agentcli-warn-badge" onClick={onShow}
+            title={text} aria-label={text}>!</button>
+  );
 }
 
 function notifyChanged() {
@@ -113,6 +159,69 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
     const models = liveModels[inst.id];
     return Boolean(inst.model && models && models.length > 0 && !models.includes(inst.model));
   };
+
+  // Explicit refresh: re-read the model list AND whatever the provider declares
+  // about each model. Separate from the on-open list fetch because the two cost
+  // very different things: a model list is one request, while Ollama's
+  // capabilities are one request PER MODEL. Still no completion tokens.
+  const [dismissed, setDismissed] = useState<Record<string, true>>(readDismissed);
+
+  // A warning is identified by the account, which warning it is, and the model
+  // it is about, so changing the model retires the dismissal with it.
+  const warnKey = (inst: AgentCliInstance, kind: string) => `${inst.id}|${kind}|${inst.model}`;
+  const isDismissed = (inst: AgentCliInstance, kind: string) => dismissed[warnKey(inst, kind)] === true;
+  const setDismissedFlag = (inst: AgentCliInstance, kind: string, on: boolean) =>
+    setDismissed((prev) => {
+      const next = { ...prev };
+      if (on) next[warnKey(inst, kind)] = true;
+      else delete next[warnKey(inst, kind)];
+      writeDismissed(next);
+      return next;
+    });
+
+  const [refreshing, setRefreshing] = useState<string | null>(null);
+  const [refreshResult, setRefreshResult] = useState<Record<string, string>>({});
+
+  const refresh = async (inst: AgentCliInstance) => {
+    setRefreshing(inst.id);
+    setRefreshResult((r) => ({ ...r, [inst.id]: "" }));
+    try {
+      const r = await api.refreshAgentCliProvider(inst.id);
+      setLiveModels((m) => ({ ...m, [inst.id]: r.models }));
+      await load();
+      setRefreshResult((res) => ({
+        ...res,
+        // "This provider publishes none" is a real answer and must not read like
+        // a failed refresh: most providers report an id and an owner and nothing
+        // else, so an empty result is the norm rather than a fault.
+        [inst.id]: r.declared
+          ? t("settings.agentcliRefreshed", { models: r.models.length })
+          : t("settings.agentcliRefreshedNoCaps", { models: r.models.length }),
+      }));
+    } catch (err: unknown) {
+      setRefreshResult((res) => ({
+        ...res,
+        [inst.id]: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed"),
+      }));
+    } finally {
+      setRefreshing(null);
+    }
+  };
+
+  /** This model declared it cannot call tools, so Agent Chat cannot use it.
+   *
+   *  Surfaced ON THE OPTION rather than as a banner, which is where the two
+   *  live reports landed. Listing every unusable model was noise: OpenRouter
+   *  carries hundreds and already filters its own dropdown to the tool-capable
+   *  ones, so the banner named sixty-odd models the operator could not select
+   *  even if they wanted to. And it could not be dismissed, because there is
+   *  nothing to fix: a local library simply contains models that cannot do
+   *  this. A permanent banner about a choice nobody can make teaches the reader
+   *  to skip banners, which is the one place a genuinely broken account has to
+   *  be read. A BANNER now means only "this account is broken, fix it".
+   */
+  const cannotCallTools = (inst: AgentCliInstance, model: string) =>
+    inst.capabilities?.[model]?.tools === false;
 
   const saveModel = async (id: string) => {
     setBusy(true);
@@ -303,38 +412,77 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
             <div className="agentcli-settings-provider-head">
               <span>{inst.name}</span>
             </div>
-            {modelIsStale(inst) && (
-              <div className="banner banner-warn" role="alert">
-                {t("settings.agentcliModelRetired", { model: inst.model })}
-              </div>
+            {modelIsStale(inst) && !isDismissed(inst, "retired") && (
+              <DismissibleWarning
+                text={t("settings.agentcliModelRetired", { model: inst.model })}
+                onDismiss={() => setDismissedFlag(inst, "retired", true)}
+              />
             )}
             {editing === inst.id ? (
               <div className="agentcli-settings-model-edit">
                 <select value={modelDraft} disabled={busy}
                         aria-label={t("settings.agentcliSelectModel")}
                         onChange={(e) => setModelDraft(e.target.value)}>
-                  {(liveModels[inst.id] ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
-                  {/* The stored model when the provider no longer lists it, so the
-                      select shows what is actually configured rather than silently
-                      displaying someone else's model as if it were current. */}
-                  {inst.model && !(liveModels[inst.id] ?? []).includes(inst.model) && (
-                    <option value={inst.model}>{inst.model}</option>
+                  {(liveModels[inst.id] ?? []).map((m) => (
+                    <option key={m} value={m} disabled={cannotCallTools(inst, m)}>
+                      {cannotCallTools(inst, m) ? t("settings.agentcliModelNoTools", { model: m }) : m}
+                    </option>
+                  ))}
+                  {/* The stored model when the provider no longer lists it. It has
+                      to be PRESENT or the select silently displays some other
+                      model as though it were the configured one, and DISABLED or
+                      the card offers a choice it has just finished warning about.
+                      Showing it without disabling it was the first attempt and it
+                      let a deleted model be re-selected. */}
+                  {modelIsStale(inst) && (
+                    <option value={inst.model} disabled>
+                      {t("settings.agentcliModelUnavailable", { model: inst.model })}
+                    </option>
                   )}
                 </select>
-                <button className="btn btn-primary btn-sm" disabled={busy || !modelDraft}
+                <button className="btn btn-primary btn-sm"
+                        disabled={busy || !modelDraft || modelDraft === inst.model}
                         onClick={() => void saveModel(inst.id)}>{t("common.save")}</button>
                 <button className="btn btn-text btn-sm" disabled={busy}
                         onClick={() => { setEditing(null); setModelError(null); }}>{t("settings.cancel")}</button>
               </div>
             ) : (
               <div className="agentcli-settings-provider-actions">
-                <span className="agentcli-settings-model">{t("settings.agentcliDefaultModel", { model: inst.model || t("settings.agentcliNotSet") })}</span>
+                <span className="agentcli-settings-model">
+                  {t("settings.agentcliDefaultModel", { model: inst.model || t("settings.agentcliNotSet") })}
+                  {modelIsStale(inst) && isDismissed(inst, "retired") && (
+                    <WarningBadge text={t("settings.agentcliModelRetired", { model: inst.model })}
+                                  onShow={() => setDismissedFlag(inst, "retired", false)} />
+                  )}
+                  {inst.model && cannotCallTools(inst, inst.model) && isDismissed(inst, "notools") && (
+                    <WarningBadge text={t("settings.agentcliDefaultNoTools", { model: inst.model })}
+                                  onShow={() => setDismissedFlag(inst, "notools", false)} />
+                  )}
+                </span>
                 <button className="btn btn-sm" disabled={busy}
                         onClick={() => { setEditing(inst.id); setModelDraft(inst.model); setModelError(null); }}>
                   {t("settings.agentcliChangeModel")}
                 </button>
+                <button className="btn btn-sm" disabled={busy || refreshing !== null}
+                        onClick={() => void refresh(inst)}>
+                  {refreshing === inst.id ? t("settings.agentcliRefreshing") : t("settings.agentcliRefresh")}
+                </button>
                 <button className="btn btn-sm" disabled={busy} onClick={() => setConfirmRemove(inst)}>{t("settings.remove")}</button>
               </div>
+            )}
+            {refreshResult[inst.id] && (
+              <div className="agentcli-settings-hint" role="status">{refreshResult[inst.id]}</div>
+            )}
+            {inst.capabilities_checked_at && (
+              <div className="agentcli-settings-hint">
+                {t("settings.agentcliCapsChecked", { when: formatDateTime(inst.capabilities_checked_at) })}
+              </div>
+            )}
+            {inst.model && cannotCallTools(inst, inst.model) && !isDismissed(inst, "notools") && (
+              <DismissibleWarning
+                text={t("settings.agentcliDefaultNoTools", { model: inst.model })}
+                onDismiss={() => setDismissedFlag(inst, "notools", true)}
+              />
             )}
             {editing === inst.id && modelError && (
               <div className="banner banner-error" role="alert">{modelError}</div>

@@ -2324,3 +2324,116 @@ class TestSetDefaultModel:
                    AsyncMock(return_value=secret_store)):
             resp = await view.patch(_admin_request({"model": "m"}), instance_id="gone")
         assert resp.status == 404
+
+
+# --- declared model capabilities (only 2 of 12 providers publish any) ---
+
+
+class TestDeclaredCapabilities:
+    """Most provider APIs return an id and an owner and nothing else, so
+    capability discovery covers OpenRouter and Ollama and stops. The consumer
+    contract that matters is that a MISSING key means "not declared" and can
+    never be read as a limit."""
+
+    def test_openrouter_keeps_what_the_tools_filter_threw_away(self):
+        caps = agentcli._openrouter_capabilities([
+            {"id": "a/reasoner", "supported_parameters": ["tools", "reasoning", "temperature"]},
+            {"id": "b/plain", "supported_parameters": ["temperature"]},
+        ])
+        assert caps["a/reasoner"] == {"tools": True, "thinking": True, "temperature": True}
+        assert caps["b/plain"] == {"tools": False, "thinking": False, "temperature": True}
+
+    def test_openrouter_skips_a_model_that_declares_nothing(self):
+        """No supported_parameters is "not declared", so the model must be absent
+        rather than present with everything False, which would read as a model
+        that supports nothing at all."""
+        caps = agentcli._openrouter_capabilities([
+            {"id": "a/quiet"},
+            {"id": "b/loud", "supported_parameters": ["tools"]},
+        ])
+        assert "a/quiet" not in caps
+        assert caps["b/loud"]["tools"] is True
+
+    @pytest.mark.asyncio
+    async def test_ollama_reads_capabilities_and_omits_temperature(self):
+        """Ollama takes a temperature for every model through its options block
+        and does not list it, so claiming False would invent a limit."""
+        from unittest.mock import MagicMock
+
+        class _Resp:
+            status = 200
+            def __init__(self, body): self._body = body
+            async def json(self, content_type=None): return self._body
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        bodies = {
+            "toolful": {"capabilities": ["completion", "tools", "thinking"]},
+            "toolless": {"capabilities": ["completion"]},
+        }
+        session = MagicMock()
+        session.post = lambda url, **kw: _Resp(bodies[kw["json"]["model"]])
+
+        caps = await agentcli._ollama_capabilities(session, "http://h", {}, ["toolful", "toolless"])
+        assert caps["toolful"] == {"tools": True, "thinking": True}
+        assert caps["toolless"] == {"tools": False, "thinking": False}
+        assert "temperature" not in caps["toolful"]
+
+    @pytest.mark.asyncio
+    async def test_ollama_drops_a_model_whose_lookup_failed(self):
+        """A failed lookup says nothing about the model; recording it as
+        all-False would strip a working model's controls."""
+        from unittest.mock import MagicMock
+
+        class _Resp:
+            def __init__(self, status, body=None): self.status, self._body = status, body
+            async def json(self, content_type=None): return self._body
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+        session = MagicMock()
+        session.post = lambda url, **kw: (
+            _Resp(200, {"capabilities": ["tools"]}) if kw["json"]["model"] == "ok" else _Resp(500))
+
+        caps = await agentcli._ollama_capabilities(session, "http://h", {}, ["ok", "broken"])
+        assert set(caps) == {"ok"}
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_declares_nothing_returns_empty(self, hass):
+        from unittest.mock import MagicMock
+        cfg = agentcli.ProviderConfig(kind="deepseek", model="deepseek-v4-flash",
+                                      base_url="https://d", api_key="k")
+        caps = await agentcli.OpenAICompatProvider(cfg).list_model_capabilities(
+            MagicMock(), ["deepseek-v4-flash"])
+        assert caps == {}
+
+    @pytest.mark.asyncio
+    async def test_claude_declares_nothing(self, hass):
+        from unittest.mock import MagicMock
+        cfg = agentcli.ProviderConfig(kind="claude", model="claude-opus-4-8",
+                                      base_url="https://a", api_key="k")
+        assert await agentcli.ClaudeProvider(cfg).list_model_capabilities(MagicMock(), ["x"]) == {}
+
+    @pytest.mark.asyncio
+    async def test_store_records_capabilities_with_a_timestamp(self, hass):
+        from homeassistant.helpers.storage import Store
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_agentcli_caps"))
+        iid = await store.add("ollama", {"base_url": "http://h", "model": "m"})
+
+        assert await store.set_capabilities(iid, {"m": {"tools": True}}, "2026-08-04T00:00:00+00:00") is True
+
+        row = next(i for i in store.list_instances() if i["id"] == iid)
+        assert row["capabilities"] == {"m": {"tools": True}}
+        # The timestamp is half the value: capabilities have no invalidation
+        # signal of their own, so "last checked" is what lets an operator judge
+        # a silently ageing answer.
+        assert row["capabilities_checked_at"] == "2026-08-04T00:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_an_account_that_never_refreshed_reports_no_timestamp(self, hass):
+        from homeassistant.helpers.storage import Store
+        store = agentcli.AgentCliStore(Store(hass, 1, "phx_test_agentcli_nocaps"))
+        await store.add("claude", {"api_key": "k", "model": "m"})
+        row = store.list_instances()[0]
+        assert row["capabilities"] == {}
+        assert row["capabilities_checked_at"] is None

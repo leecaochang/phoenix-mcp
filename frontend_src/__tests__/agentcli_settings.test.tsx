@@ -226,14 +226,154 @@ describe("AgentCliSettings default model", () => {
     expect(screen.queryByText(/no longer offers/)).toBeNull();
   });
 
-  it("keeps a retired model selectable so the select shows what is configured", async () => {
+  it("shows the retired model but does not let it be picked again", async () => {
+    // Both halves matter and the first attempt only had one. It has to be
+    // PRESENT, or a select whose value matches no option silently displays some
+    // other model as though it were the configured one. It has to be DISABLED,
+    // or the card offers the very model it has just finished warning about,
+    // which is what happened live: a model deleted from the server was still
+    // selectable and saveable.
     getAgentCliProviders.mockResolvedValue({
-      instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-chat" }],
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "gone:8b" }],
     });
+    getAgentCliModels.mockResolvedValue({ models: ["still-here:8b"] });
     renderCard();
     fireEvent.click(await screen.findByText("Change model"));
     const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
-    expect(select.value).toBe("deepseek-chat");
-    expect([...select.options].map((o) => o.value)).toContain("deepseek-chat");
+    expect(select.value).toBe("gone:8b");
+    const stale = [...select.options].find((o) => o.value === "gone:8b");
+    expect(stale).toBeTruthy();
+    expect(stale!.disabled).toBe(true);
+    expect(stale!.text).toContain("no longer available");
+    // Nothing changed, so there is nothing to save: with the option disabled,
+    // pressing Save is the only way left to re-commit the dead model.
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a model still on offer is selectable and saveable", async () => {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "a:8b" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["a:8b", "b:8b"] });
+    renderCard();
+    fireEvent.click(await screen.findByText("Change model"));
+    const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
+    expect([...select.options].every((o) => !o.disabled)).toBe(true);
+    fireEvent.change(select, { target: { value: "b:8b" } });
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// Both reports from the same live session. A BANNER now means only "this account
+// is broken, fix it"; anything else belongs on the option it describes.
+describe("AgentCliSettings tool-calling capability", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAgentCliProviderModel.mockResolvedValue({ instance: { id: "i1", model: "good" } });
+  });
+
+  function withCaps(model: string, models: string[], caps: Record<string, { tools: boolean }>) {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model, capabilities: caps }],
+    });
+    getAgentCliModels.mockResolvedValue({ models });
+  }
+
+  it("marks an unusable model on its own option instead of in a banner", async () => {
+    withCaps("good", ["good", "notools"], { good: { tools: true }, notools: { tools: false } });
+    renderCard();
+    fireEvent.click(await screen.findByText("Change model"));
+    const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
+    const bad = [...select.options].find((o) => o.value === "notools")!;
+    expect(bad.disabled).toBe(true);
+    expect(bad.text).toContain("no tool calling");
+    expect([...select.options].find((o) => o.value === "good")!.disabled).toBe(false);
+  });
+
+  it("shows no banner when the account's own model is fine", async () => {
+    // The live report: a permanent banner naming every unusable model, none of
+    // which the operator could select, and with nothing to fix it could not be
+    // dismissed either.
+    withCaps("good", ["good", "notools"], { good: { tools: true }, notools: { tools: false } });
+    renderCard();
+    await screen.findByText("Change model");
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    expect(screen.queryByText(/cannot call tools/)).toBeNull();
+  });
+
+  it("banners only when the account's OWN default cannot call tools", async () => {
+    withCaps("notools", ["good", "notools"], { good: { tools: true }, notools: { tools: false } });
+    renderCard();
+    expect(await screen.findByText(/notools cannot call tools/)).toBeTruthy();
+  });
+
+  it("says nothing about a model whose capability was never declared", async () => {
+    // Most providers publish nothing. An undeclared model is not an unusable one.
+    withCaps("mystery", ["mystery"], {});
+    renderCard();
+    fireEvent.click(await screen.findByText("Change model"));
+    const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
+    expect([...select.options].every((o) => !o.disabled)).toBe(true);
+    expect(screen.queryByText(/cannot call tools/)).toBeNull();
+  });
+});
+
+// A warning about a broken account is worth showing, but not worth showing
+// forever with no way to acknowledge it.
+describe("AgentCliSettings dismissible warnings", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "gone:8b" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["here:8b"] });
+  });
+
+  it("closes on the X and leaves a marker that brings it back", async () => {
+    const { unmount } = renderCard();
+    fireEvent.click(await screen.findByLabelText("Dismiss this warning"));
+    await waitFor(() => expect(screen.queryByText(/no longer offers/)).toBeNull());
+
+    const badge = screen.getByLabelText(/no longer offers gone:8b/);
+    fireEvent.click(badge);
+    expect(await screen.findByText(/no longer offers gone:8b/)).toBeTruthy();
+
+    // Close it again and prove the dismissal SURVIVES a remount: an in-memory
+    // one would come straight back on the next card open, which is the whole
+    // complaint the X exists to answer.
+    fireEvent.click(screen.getByLabelText("Dismiss this warning"));
+    await waitFor(() => expect(screen.queryByText(/no longer offers/)).toBeNull());
+    unmount();
+    renderCard();
+    await screen.findByText("Change model");
+    expect(screen.queryByText(/no longer offers/)).toBeNull();
+    expect(screen.getByLabelText(/no longer offers gone:8b/)).toBeTruthy();
+  });
+
+  it("a dismissal does not cover a warning about a different model", async () => {
+    // Dismissing is acknowledging one statement about one model, not silencing
+    // the category: a NEW broken model has to speak up on its own.
+    const { unmount } = renderCard();
+    fireEvent.click(await screen.findByLabelText("Dismiss this warning"));
+    await waitFor(() => expect(screen.queryByText(/no longer offers/)).toBeNull());
+    unmount();
+
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "alsogone:8b" }],
+    });
+    renderCard();
+    expect(await screen.findByText(/no longer offers alsogone:8b/)).toBeTruthy();
+  });
+
+  it("no marker when there is nothing wrong", async () => {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "here:8b" }],
+    });
+    renderCard();
+    await screen.findByText("Change model");
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    expect(screen.queryByLabelText("Dismiss this warning")).toBeNull();
+    expect(screen.queryByText(/no longer offers/)).toBeNull();
   });
 });

@@ -33,6 +33,7 @@ from .view_base import PhoenixView
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
+from homeassistant.util.dt import utcnow
 
 from .admin_view import _err, _ok, _read_body, require_admin
 from .approvals import (
@@ -52,6 +53,7 @@ from .const import (
     AGENTCLI_CLAUDE_BASE_URL,
     AGENTCLI_CLAUDE_DEFAULT_MODEL,
     AGENTCLI_CLIENT_IP,
+    AGENTCLI_CAPABILITY_CONCURRENCY,
     AGENTCLI_DEEPSEEK_BASE_URL,
     AGENTCLI_DEEPSEEK_DEFAULT_MODEL,
     AGENTCLI_GEMINI_BASE_URL,
@@ -257,6 +259,27 @@ class AgentCliStore:
         await self._save()
         return True
 
+    async def set_capabilities(
+        self, instance_id: str, capabilities: dict, checked_at: str,
+    ) -> bool:
+        """Record what this account's provider DECLARED, with when it was asked.
+
+        Stored per account rather than per kind because the same kind can differ
+        by endpoint: two Ollama servers hold different libraries, and one
+        operator's OpenRouter key is entitled to models another's is not.
+
+        The timestamp is half the value. Capabilities have no invalidation signal
+        of their own, so "last checked" is what turns a silently ageing answer
+        into one the operator can judge.
+        """
+        cfg = self._data.get(instance_id)
+        if not isinstance(cfg, dict):
+            return False
+        cfg["capabilities"] = capabilities
+        cfg["capabilities_checked_at"] = checked_at
+        await self._save()
+        return True
+
     async def delete(self, instance_id: str) -> None:
         if instance_id in self._data:
             del self._data[instance_id]
@@ -279,6 +302,8 @@ class AgentCliStore:
                 "name": _instance_name(inst, counts[kind] > 1),
                 "model": inst.get("model", ""),
                 "base_url": inst.get("base_url", ""),
+                "capabilities": inst.get("capabilities") or {},
+                "capabilities_checked_at": inst.get("capabilities_checked_at") or None,
             })
         # Sort by the DISPLAY name, not the kind key: the panel dropdowns show
         # names, and the two diverge (kind "claude" displays as "Anthropic",
@@ -606,6 +631,12 @@ class ClaudeProvider:
             "content-type": "application/json",
         }
 
+    async def list_model_capabilities(
+        self, session: ClientSession, models: list[str],
+    ) -> dict[str, dict]:
+        """Anthropic's models endpoint reports no per-model parameters."""
+        return {}
+
     async def stream_turn(
         self, session: ClientSession, *, system_prompt: str, messages: list[dict],
         tools: list[dict], options: dict,
@@ -791,6 +822,69 @@ def _filter_openrouter_models(data: list[dict]) -> list[str]:
     return tool_ids or sorted(m["id"] for m in data if m.get("id"))
 
 
+def _openrouter_capabilities(data: list[dict]) -> dict[str, dict]:
+    """Per-model declared capabilities from OpenRouter's `supported_parameters`.
+
+    Phoenix already read this field to filter the dropdown by tool support and
+    then threw the rest away, so a model's declared reasoning and temperature
+    support were sitting in a response we had already paid for.
+
+    A key is emitted ONLY for something the provider actually declares. A missing
+    key means "not declared" and must never be read as False, which is the same
+    distinction the Energy issues array makes between an empty list and None.
+    """
+    out: dict[str, dict] = {}
+    for m in data:
+        model_id = m.get("id")
+        params = m.get("supported_parameters")
+        if not model_id or not isinstance(params, list):
+            continue
+        out[model_id] = {
+            "tools": "tools" in params,
+            "thinking": "reasoning" in params,
+            "temperature": "temperature" in params,
+        }
+    return out
+
+
+async def _ollama_capabilities(
+    session: ClientSession, base_url: str, headers: dict, models: list[str],
+) -> dict[str, dict]:
+    """Per-model declared capabilities from Ollama's /api/show.
+
+    Ollama is the one backend where a model that cannot call tools is an ordinary
+    thing to have installed: a local library is whatever the operator pulled, and
+    Agent Chat is useless without tool calling. `/api/tags` does not say, so this
+    costs one lookup per model, which is why it runs on an explicit refresh and
+    not on every card open.
+
+    `temperature` is deliberately NOT emitted: Ollama takes it for every model
+    through its options block and does not list it as a capability, so claiming
+    False would be inventing a limit the server does not have.
+    """
+    sem = asyncio.Semaphore(AGENTCLI_CAPABILITY_CONCURRENCY)
+
+    async def _one(name: str) -> tuple[str, dict] | None:
+        async with sem:
+            try:
+                async with session.post(
+                    f"{base_url}/api/show", headers=headers, json={"model": name},
+                    timeout=_PROBE_TIMEOUT, allow_redirects=False,
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    body = await resp.json(content_type=None)
+            except (ClientError, asyncio.TimeoutError, ValueError):
+                return None
+        caps = body.get("capabilities") if isinstance(body, dict) else None
+        if not isinstance(caps, list):
+            return None
+        return name, {"tools": "tools" in caps, "thinking": "thinking" in caps}
+
+    pairs = await asyncio.gather(*(_one(m) for m in models))
+    return dict(p for p in pairs if p is not None)
+
+
 def _filter_nvidia_models(models: list[str]) -> list[str]:
     """Drop NVIDIA's non-chat models (embedding/reranking) from the dropdown.
 
@@ -944,6 +1038,37 @@ class OpenAICompatProvider:
             return models or ([self.cfg.model] if self.cfg.model else [])
         except (ClientError, asyncio.TimeoutError):
             return [self.cfg.model] if self.cfg.model else []
+
+    async def list_model_capabilities(
+        self, session: ClientSession, models: list[str],
+    ) -> dict[str, dict]:
+        """What each model DECLARES it accepts; empty when the provider says nothing.
+
+        Only OpenRouter and Ollama report this at all. Every other backend's
+        models endpoint returns an id and an owner, which is why the shipped
+        capability table cannot simply be replaced by discovery and why probing
+        the knobs is a separate step rather than part of this one.
+
+        Empty means "the provider declared nothing", never "the model supports
+        nothing": a caller reading it the second way would strip a working
+        model's controls the moment a lookup failed.
+        """
+        try:
+            if self._is_ollama:
+                return await _ollama_capabilities(
+                    session, self.cfg.base_url, self._headers(), models)
+            if self.cfg.kind == "openrouter":
+                async with session.get(
+                    f"{self.cfg.base_url}/models", headers=self._headers(),
+                    timeout=_PROBE_TIMEOUT, allow_redirects=False,
+                ) as resp:
+                    if resp.status != 200:
+                        return {}
+                    body = await resp.json(content_type=None)
+                return _openrouter_capabilities(body.get("data", []))
+        except (ClientError, asyncio.TimeoutError, ValueError):
+            return {}
+        return {}
 
     async def stream_turn(
         self, session: ClientSession, *, system_prompt: str, messages: list[dict],
@@ -2588,6 +2713,49 @@ class PhoenixAgentCliModelsView(PhoenixView):
         return _ok({"models": models}, request_id=rid)
 
 
+class PhoenixAgentCliRefreshView(PhoenixView):
+    """POST /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/refresh.
+
+    Re-read one account's model list AND whatever capabilities its provider
+    declares, then store both with a timestamp. Separate from the GET models
+    endpoint because the two cost very different things: listing models is one
+    cheap request and runs whenever the settings card is opened, while Ollama's
+    capabilities cost one request PER MODEL, which is an explicit-button amount
+    of work rather than a page-load amount.
+
+    Nothing here spends completion tokens; probing the knobs that no provider
+    declares is a later, separately-consented step.
+    """
+
+    url = "/api/phoenix-mcp/admin/agentcli/providers/{instance_id}/refresh"
+    name = "api:phoenix-mcp:admin:agentcli:refresh"
+    requires_auth = True
+
+    @require_admin
+    async def post(self, request: web.Request, instance_id: str) -> web.Response:
+        rid = request.get("phoenix_mcp_rid", "")
+        store = await _get_secret_store(self.hass)
+        cfg = store.resolve(instance_id)
+        if cfg is None:
+            return _err("invalid_request", "Provider account is not configured.", 400, rid)
+        session = async_get_clientsession(self.hass)
+        provider = build_provider(cfg)
+        models = await provider.list_models(session)
+        capabilities = await provider.list_model_capabilities(session, models)
+        checked_at = utcnow().isoformat()
+        if not await store.set_capabilities(instance_id, capabilities, checked_at):
+            return _err("not_found", "Provider account not found.", 404, rid)
+        # `declared` tells the panel whether this provider reports capabilities at
+        # all, so it can say "this provider does not publish them" instead of
+        # showing an empty result that reads like a failed refresh.
+        return _ok({
+            "models": models,
+            "capabilities": capabilities,
+            "declared": bool(capabilities),
+            "checked_at": checked_at,
+        }, request_id=rid)
+
+
 class PhoenixAgentCliProbeView(PhoenixView):
     """POST /api/phoenix-mcp/admin/agentcli/probe.
 
@@ -2629,6 +2797,7 @@ ALL_AGENTCLI_ADMIN_VIEWS: list[type[PhoenixView]] = [
     PhoenixAgentCliProvidersView,
     PhoenixAgentCliProviderView,
     PhoenixAgentCliModelsView,
+    PhoenixAgentCliRefreshView,
     PhoenixAgentCliProbeView,
 ]
 ALL_AGENTCLI_CHAT_VIEWS: list[type[PhoenixView]] = [

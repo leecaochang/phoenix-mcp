@@ -2338,6 +2338,27 @@ hui-card { display: block; min-width: 0; }
 .agentcli-add-row select { flex: 0 1 auto; }
 .agentcli-add-form { border: 1px dashed var(--phx-border); border-radius: var(--phx-radius-sm); padding: 10px; margin-bottom: 10px; }
 .agentcli-settings-hint { font-size: 12px; color: var(--phx-text-2); }
+/* A closable account warning, and the marker it leaves behind. The close control
+   is pushed to the end rather than floated so a long message wraps under itself
+   instead of under the button. */
+.agentcli-warn { display: flex; align-items: flex-start; gap: 10px; }
+.agentcli-warn > span { flex: 1; }
+.agentcli-warn-close {
+  flex: none; background: none; border: 0; cursor: pointer; padding: 0 2px;
+  font-size: 16px; line-height: 1; color: inherit; opacity: 0.7;
+}
+.agentcli-warn-close:hover { opacity: 1; }
+/* Deliberately small and red: it stands for a message the operator has already
+   read and chosen to close, so it needs to be findable rather than loud. */
+.agentcli-warn-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 6px; padding: 0; cursor: pointer;
+  border: 1px solid var(--phx-error); border-radius: 50%;
+  background: none; color: var(--phx-error);
+  font-size: 10px; font-weight: 700; line-height: 1; vertical-align: middle;
+}
+.agentcli-warn-badge:hover { background: var(--phx-error-bg); }
+
 /* Inline default-model editor on a configured account. Wraps on a narrow panel
    rather than shrinking the select, since a model id is long and unabbreviable. */
 .agentcli-settings-model-edit {
