@@ -581,6 +581,7 @@
       "typeYamlConfig": "YAML 配置",
       "typeEsphomeYaml": "ESPHome YAML",
       "typeFile": "文件",
+      "typeConfigEntry": "助手设置",
       "typeEnergy": "能源仪表盘"
     },
     "perms": {
@@ -662,7 +663,8 @@
       "patch.set": "设置了 {subject}",
       "patch.append": "向 {subject} 追加了内容",
       "patch.remove": "删除了 {subject}",
-      "energy.sources": "{count} 个来源，{devices} 个设备"
+      "energy.sources": "{count} 个来源，{devices} 个设备",
+      "config_entry.options": "重新配置了 {subject}"
     },
     "diff": {
       "blueprint.create": "创建 {domain} 蓝图“{rel}”",
@@ -739,7 +741,8 @@
       "edit_energy_config.rename_device": "能源：将“{old_label}”重命名为“{label}”",
       "edit_energy_config.remove_source": "能源：移除{source_type}来源（{old_statistic}）",
       "patch_yaml_config.set": "设置 configuration.yaml 中的 {path}",
-      "patch_yaml_config.remove": "从 configuration.yaml 删除 {path}"
+      "patch_yaml_config.remove": "从 configuration.yaml 删除 {path}",
+      "config_entry.options": "更改助手“{label}”的 {keys}"
     },
     "approvals": {
       "approve": "批准并执行",

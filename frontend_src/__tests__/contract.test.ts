@@ -89,6 +89,7 @@ const VERSION_RESOURCE_TYPES = {
   esphome_yaml: true,
   energy: true,
   file: true,
+  config_entry: true,
 } satisfies Record<VersionResourceType, true>;
 
 describe("frontend/backend version resource type contract", () => {

@@ -3,6 +3,7 @@
   "version_resource_types": [
     "automation",
     "blueprint",
+    "config_entry",
     "dashboard",
     "energy",
     "entity",

@@ -54,6 +54,9 @@ from .tools.config_files import (
     _tool_write_file,
 )
 from .tools.helper import (
+    _execute_set_config_entry_options,
+    _tool_get_config_entry_options,
+    _tool_set_config_entry_options,
     _execute_create_helper,
     _execute_delete_helper,
     _execute_edit_helper,
@@ -1821,6 +1824,14 @@ async def async_restore_version(
             return await _execute_set_dashboard_config(
                 {"url_path": None if resource_id == "lovelace" else resource_id, "config": target},
                 token, hass, data,
+            )
+        if resource_type == "config_entry":
+            # Re-runs the helper's own options flow with the snapshot, so HA
+            # validates the restored settings exactly as it validated the write.
+            # No expected_hash: a restore deliberately overwrites whatever is
+            # there now, which is the whole point of choosing a snapshot.
+            return await _execute_set_config_entry_options(
+                {"entry_id": resource_id, "options": target}, token, hass, data,
             )
         if resource_type == "energy":
             # Energy is restore-only and deliberately WHOLESALE: the snapshot IS
@@ -3686,6 +3697,7 @@ _register_executor("edit_blueprint", _execute_edit_blueprint)
 _register_executor("delete_blueprint", _execute_delete_blueprint)
 _register_executor("set_yaml_config", _execute_set_yaml_config)
 _register_executor("patch_yaml_config", _execute_patch_yaml_config)
+_register_executor("set_config_entry_options", _execute_set_config_entry_options)
 _register_executor("set_esphome_yaml", _execute_set_esphome_yaml)
 _register_executor("delete_esphome_yaml", _execute_delete_esphome_yaml)
 _register_executor("rename_esphome_device", _execute_rename_esphome_device)
@@ -3838,6 +3850,8 @@ _register_tool("edit_energy_config", _tool_edit_energy_config)
 _register_tool("get_yaml_config", _tool_get_yaml_config)
 _register_tool("set_yaml_config", _tool_set_yaml_config)
 _register_tool("patch_yaml_config", _tool_patch_yaml_config)
+_register_tool("get_config_entry_options", _tool_get_config_entry_options)
+_register_tool("set_config_entry_options", _tool_set_config_entry_options)
 _register_tool("list_integrations", _tool_list_integrations)
 _register_tool("set_integration_enabled", _tool_set_integration_enabled)
 _register_tool("list_backups", _tool_list_backups)

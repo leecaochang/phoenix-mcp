@@ -73,7 +73,7 @@ MAX_VERSIONS_PER_RESOURCE = 20
 # silently failed to record).
 VERSIONED_RESOURCE_TYPES = frozenset(
     {"automation", "script", "scene", "helper", "dashboard", "yaml_config", "file", "entity",
-     "blueprint", "esphome_yaml", "energy"}
+     "blueprint", "esphome_yaml", "energy", "config_entry"}
 )
 
 # Dashboard card catalog. Which Lovelace cards this instance can actually render,
@@ -1056,6 +1056,7 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "set_yaml_config.removing": "Replace configuration.yaml, removing the top-level {keys}",
     "patch_yaml_config.set": "Set {path} in configuration.yaml",
     "patch_yaml_config.remove": "Remove {path} from configuration.yaml",
+    "config_entry.options": "Change {keys} on helper '{label}'",
     "write_file": "Write file '{path}'",
     "integration.enable": "Enable integration {label}",
     "integration.disable": "Disable integration {label}",
@@ -1156,6 +1157,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "loc.section": "section {index}",
     "loc.card": "card {index}",
     "energy.sources": "{count} sources, {devices} devices",
+    "config_entry.options": "reconfigured {subject}",
     "patch.set": "set {subject}",
     "patch.append": "appended to {subject}",
     "patch.remove": "removed {subject}",

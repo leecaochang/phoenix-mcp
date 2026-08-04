@@ -1905,6 +1905,55 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "get_config_entry_options",
+        "description": (
+            "Read a HELPER's settings and the schema for changing them. Helpers are the "
+            "entries Home Assistant classifies as helpers: threshold, derivative, switch_as_x, "
+            "min_max, utility_meter, attribute-as-sensor and similar, the ones built ON another "
+            "entity. Find the entry_id with get_relationships (a helper shows up as a "
+            "config_entry consumer of the entity it uses) or list_integrations. Returns the "
+            "current options, a content_hash to pass back as expected_hash, and schema: the "
+            "fields the helper accepts with their types, defaults and, for entity fields, the "
+            "domains they allow. Integration entries are not readable here."
+        ),
+        "cap": "cap_helper_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "The config entry id of the helper."},
+            },
+            "required": ["entry_id"],
+        },
+    },
+    {
+        "name": "set_config_entry_options",
+        "description": (
+            "Change a HELPER's settings, for example repointing one at a different source "
+            "entity after the original was removed. This is what finishes a migration: a helper "
+            "whose source is gone keeps existing and quietly produces nothing, and no other tool "
+            "can repoint it. Read get_config_entry_options first: options REPLACES the whole set, "
+            "so send them all back with your change applied, and pass that read's content_hash as "
+            "expected_hash so the write is refused if something else changed them meanwhile. Any "
+            "entity you name must be one this token could already control. May require admin "
+            "approval. The helper reloads with the new settings; no restart. Helpers only, and a "
+            "helper whose options flow has more than one step must be changed in the Home "
+            "Assistant UI."
+        ),
+        "cap": "cap_helper_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "The config entry id of the helper."},
+                "options": {
+                    "type": "object",
+                    "description": "The complete new settings, matching the schema from get_config_entry_options. Replaces the existing options rather than merging into them.",
+                },
+                "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_config_entry_options; the write is refused if the settings changed since then."},
+            },
+            "required": ["entry_id", "options"],
+        },
+    },
+    {
         "name": "list_integrations",
         "description": (
             "List Home Assistant config entries (integrations): entry_id, domain, title, state, and whether "
@@ -2683,6 +2732,8 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     # Destructive: set and remove both replace or drop whatever the path held.
     "patch_dashboard": _annot(False, True, True),
     "patch_yaml_config": _annot(False, True, True),
+    "get_config_entry_options": _annot(True, False, True),
+    "set_config_entry_options": _annot(False, True, True),
     "set_entity": _annot(False, True, True),
     "delete_entity": _annot(False, True, True),
     "write_file": _annot(False, True, True),

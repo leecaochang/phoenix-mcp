@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 113 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 115 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 113 of its own, 136 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 115 of its own, 138 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 136 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 138 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -530,6 +530,15 @@
             <div class="tool-head"><span class="tool-name">create_helper</span><span class="tool-name">edit_helper</span><span class="tool-name">delete_helper</span><span class="badge badge-cap">Helper write</span></div>
             <p class="tool-desc">Manage helpers (input_*, counter, timer). Confirm-eligible. Created helpers appear in the Helpers UI and persist in HA's storage collection, which HA flushes on a short (~10&nbsp;second) debounce. A graceful restart (including <code>restart_ha</code> or the <code>homeassistant.restart</code> service) flushes the pending write first, so the helper survives; only an abrupt restart or crash within a few seconds of creation can lose it. If one is lost that way, you can restore it from the Changes tab, since the create was recorded in version history immediately.</p>
             <dl><dt>params</dt><dd><code>helper_type</code> (required), <code>config</code> (required for create/edit), <code>helper_id</code> (required for edit/delete)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="write" data-search="get_config_entry_options set_config_entry_options helper reconfigure repoint source entity threshold derivative switch_as_x migration">
+            <div class="tool-head"><span class="tool-name">get_config_entry_options</span><span class="tool-name">set_config_entry_options</span><span class="badge badge-cap">Helper write</span></div>
+            <p class="tool-desc">Read and change the settings of a helper that was built on another entity: threshold, derivative, switch_as_x, min_max, utility_meter, attribute-as-sensor and the like. These are the helpers Home Assistant stores as configuration entries rather than in the helper collection above, and until now nothing here could touch them. Confirm-eligible.</p>
+            <p class="tool-desc"><strong>This is what finishes a migration.</strong> When the entity a helper was built on is removed, the helper keeps existing and keeps its own entity, and quietly produces nothing; no other tool can repoint it. <code>get_relationships</code> finds these (a helper appears as a <code>config_entry</code> consumer of the entity it uses), and this pair repoints them.</p>
+            <p class="tool-desc">The read returns the current options, a <code>content_hash</code>, and the <code>schema</code>: which fields the helper accepts, their types and defaults, and for an entity field the domains it allows. That is the same description Home Assistant's own UI works from. <code>options</code> on the write <strong>replaces</strong> the whole set rather than merging, because that is what an options flow does, so read first and send them all back with your change applied.</p>
+            <p class="tool-desc"><strong>Helpers only, and that boundary is the security decision.</strong> A helper's settings are entity references and numbers, so every entity named is checked against the token's write scope before anything lands. An integration's settings can carry a hostname and credentials, and repointing one at a server you do not control is a data-exfiltration route no scope check would catch, so integration entries are refused here and a nonexistent entry answers identically to one that is not a helper. Entities are checked for <em>write</em> access, not just read, because a helper both exposes the entity it points at and can actuate it, and nothing in the schema says which. A helper whose options flow asks for more than one step is refused with that reason; change it in the Home Assistant UI.</p>
+            <dl><dt>params</dt><dd><code>entry_id</code> (required for both), <code>options</code> (required for the write), and optional <code>expected_hash</code> from the read. Every change is recorded in Changes and can be rolled back, which re-runs the helper's own options flow with the snapshot. The helper reloads with the new settings; no restart.</dd></dl>
           </article>
 
           <article class="tool" data-cap="write" data-search="get_scene create_scene edit_scene delete_scene expected_hash">

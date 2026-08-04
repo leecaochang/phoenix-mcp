@@ -53,6 +53,7 @@ export const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
   esphome_yaml: "changes.typeEsphomeYaml",
   energy: "changes.typeEnergy",
   file: "changes.typeFile",
+  config_entry: "changes.typeConfigEntry",
 };
 
 function resourceTypeLabel(rt: string): string {
