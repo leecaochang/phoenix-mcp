@@ -57,7 +57,8 @@ from ..helpers import effective_cap, parse_time_param as _parse_time_param, reda
 from .authoring import _AUTOMATION_YAML, _SCENE_CONFIG_PATH, _SCRIPT_CONFIG_PATH, _read_automations_yaml, _read_scenes_yaml, _read_scripts_yaml
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
-from ..policy_engine import EntityCreationNotPermitted, Permission, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_esphome_user_service, resolve_service_targets, scrub_sensitive_attributes
+from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
+from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_esphome_user_service, resolve_service_targets, scrub_sensitive_attributes
 from ..token_store import TokenRecord
 
 _LOGGER = logging.getLogger(__name__)
@@ -125,6 +126,177 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
             refs.append({"kind": "scene", "id": str(scene.get("id", "")), "name": scene.get("name"), "roles": ["member"]})
 
     return refs
+
+
+# ---------------------------------------------------------------------------
+# Relationship scanning (get_relationships)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_area(hass: HomeAssistant, query: str) -> Any | None:
+    """An area by id, then by name, then by alias. One definition, two callers.
+
+    describe_area and get_relationships both take an operator-typed area, and an
+    agent that reaches one with a name expects the other to accept the same
+    string. Two copies of the fallback order is how that stops being true.
+    """
+    area_reg = ar.async_get(hass)
+    target = area_reg.async_get_area(query)
+    if target is not None:
+        return target
+    wanted = query.lower()
+    for area in area_reg.async_list_areas():
+        aliases = {alias.lower() for alias in (area.aliases or [])}
+        if (area.name or "").lower() == wanted or wanted in aliases:
+            return area
+    return None
+
+
+def _entity_id_strings(node: Any, path: list, out: list[tuple[list, str]]) -> None:
+    """Collect every entity-id-SHAPED string value in a structure, with its path.
+
+    Deliberately matches the VALUE, never the key name, which is the opposite of
+    _collect_entity_id_values above and is not a style difference. That one runs
+    on script configs, where HA defines the key names, so keying on `entity_id`
+    is exact. This one runs on dashboard cards and config-entry payloads, where
+    the key is whatever the card author or the integration chose: an
+    attribute_as_sensor helper stores its source under `entity_id`, a derivative
+    under `source`, a group under `entity_ids`, and a custom card under anything
+    at all. A key-name list would go stale silently and report NO dependency
+    where one exists, which is exactly the failure this tool exists to prevent
+    (it would have cleared an integration for removal while helpers were still
+    built on its entities). Over-reporting a coincidental string is the safe
+    direction here; under-reporting is not.
+
+    The path is recorded in patch_dashboard's own addressing form (a list of
+    mapping keys and list indexes), so a dashboard hit is directly actionable
+    rather than something the caller has to go and find.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _entity_id_strings(value, [*path, key], out)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            _entity_id_strings(value, [*path, index], out)
+    elif isinstance(node, str) and _ENTITY_ID_RE.match(node):
+        out.append((path, node))
+
+
+def _consumer(kind: str, cid: str, name: Any) -> dict:
+    return {"kind": kind, "id": cid, "name": name if isinstance(name, str) else None,
+            "entities": {}, "roles": set()}
+
+
+def _record(consumer: dict, entity_id: str, role: str) -> None:
+    consumer["entities"].setdefault(entity_id, set()).add(role)
+    consumer["roles"].add(role)
+
+
+def _finish(consumer: dict) -> dict:
+    """Render one consumer's accumulated sets as the sorted lists a caller reads."""
+    return {
+        "kind": consumer["kind"],
+        "id": consumer["id"],
+        "name": consumer["name"],
+        "roles": sorted(consumer["roles"]),
+        "entities": [
+            {"entity_id": eid, "roles": sorted(roles)}
+            for eid, roles in sorted(consumer["entities"].items())
+        ],
+        **({"paths": consumer["paths"]} if consumer.get("paths") else {}),
+    }
+
+
+def _scan_relationships(
+    hass: HomeAssistant,
+    scope: set[str],
+    dashboards: list[tuple[str, str | None, Any]],
+    entries: list[dict],
+) -> tuple[list[dict], set[str]]:
+    """Every consumer touching an entity in `scope`, and every entity id seen.
+
+    ONE pass per source, not one pass per entity. The tool it replaces asked
+    about a single entity and re-read all three YAML files each time, so
+    sweeping six devices' worth of entities took ~74 calls against a 60/min rate
+    limit, 63 of them returning nothing. Scanning a SET collapses that to one.
+
+    The second return value is every entity id referenced by any consumer,
+    in scope or not, which is what makes the dangling-reference report free: the
+    walk has already visited every consumer, so the caller only has to ask the
+    registry which of those ids no longer exist.
+
+    Runs in an executor because it reads the automation/script/scene YAML.
+    Dashboards and config entries are snapshotted by the caller in the event
+    loop, since obtaining them needs loop access, and are passed in.
+    """
+    consumers: list[dict] = []
+    seen: set[str] = set()
+    expand = build_expand_target(hass)
+
+    auto_path = os.path.join(hass.config.config_dir, _AUTOMATION_YAML)
+    for cfg in _read_automations_yaml(auto_path):
+        if not isinstance(cfg, dict):
+            continue
+        by_role = entities_by_role(cfg, expand)
+        entry = _consumer("automation", str(cfg.get("id", "")), cfg.get("alias"))
+        for role, ents in by_role.items():
+            seen.update(ents)
+            for eid in ents:
+                if eid in scope:
+                    _record(entry, eid, role)
+        if entry["entities"]:
+            consumers.append(entry)
+
+    for script_id, cfg in _read_scripts_yaml(hass.config.path(_SCRIPT_CONFIG_PATH)).items():
+        if not isinstance(cfg, dict):
+            continue
+        found: set[str] = set()
+        _collect_entity_id_values(cfg, found)
+        seen.update(found)
+        entry = _consumer("script", script_id, cfg.get("alias"))
+        for eid in found & scope:
+            _record(entry, eid, "sequence")
+        if entry["entities"]:
+            consumers.append(entry)
+
+    for scene in _read_scenes_yaml(hass.config.path(_SCENE_CONFIG_PATH)):
+        if not isinstance(scene, dict):
+            continue
+        members = scene.get("entities")
+        if not isinstance(members, dict):
+            continue
+        seen.update(m for m in members if isinstance(m, str))
+        entry = _consumer("scene", str(scene.get("id", "")), scene.get("name"))
+        for eid in set(members) & scope:
+            _record(entry, eid, "member")
+        if entry["entities"]:
+            consumers.append(entry)
+
+    for url_path, title, config in dashboards:
+        hits: list[tuple[list, str]] = []
+        _entity_id_strings(config, [], hits)
+        seen.update(eid for _p, eid in hits)
+        entry = _consumer("dashboard", url_path, title)
+        entry["paths"] = []
+        for path, eid in hits:
+            if eid in scope:
+                _record(entry, eid, "card")
+                entry["paths"].append(path)
+        if entry["entities"]:
+            consumers.append(entry)
+
+    for record in entries:
+        hits = []
+        _entity_id_strings(record["payload"], [], hits)
+        seen.update(eid for _p, eid in hits)
+        entry = _consumer("config_entry", record["entry_id"], record["title"])
+        for _path, eid in hits:
+            if eid in scope:
+                _record(entry, eid, record["domain"])
+        if entry["entities"]:
+            consumers.append(entry)
+
+    return [_finish(c) for c in consumers], seen
 
 
 def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str) -> list[str]:
@@ -622,15 +794,7 @@ async def _tool_describe_area(
     if not area_query:
         return _tool_error("Missing required argument: area"), "invalid_request", "describe_area"
 
-    area_reg = ar.async_get(hass)
-    target = area_reg.async_get_area(area_query)
-    if target is None:
-        ql = area_query.lower()
-        for a in area_reg.async_list_areas():
-            aliases = {al.lower() for al in (a.aliases or [])}
-            if (a.name or "").lower() == ql or ql in aliases:
-                target = a
-                break
+    target = _resolve_area(hass, area_query)
 
     registry = er.async_get(hass)
     dev_reg = dr.async_get(hass)
@@ -848,25 +1012,215 @@ async def _tool_check_config(
     return _tool_success(json.dumps(body, default=str)), "allowed", "check_config"
 
 
+_RELATIONSHIP_SELECTORS = ("entity_id", "device_id", "integration", "area", "label")
+
+_SCOPE_NOT_FOUND = (
+    "Nothing accessible matched that scope. Check the selector value, or the entities "
+    "it names may be outside this token's permission tree."
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Scope:
+    """One resolved selector and the accessible entity ids it names."""
+
+    selector: str
+    value: str
+    entity_ids: set[str]
+
+
+def _relationship_scope(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _Scope | tuple[dict, str, str]:
+    """Resolve exactly one selector to the accessible entity ids it names.
+
+    Every branch ends in the same filter, so the scope can never contain an
+    entity the token cannot read, and a selector naming nothing accessible is
+    byte-identical to one naming nothing at all (rule 12): a device id, area,
+    label, or integration that does not exist must not be distinguishable from
+    one whose entities are simply out of scope.
+
+    device/area/label go through mesa.build_expand_target, the one definition of
+    "which entities does this indirect reference name", rather than a second
+    copy of the registry walk. `integration` has no expander because it is not a
+    target selector HA understands; it reads the registry's own platform field.
+    """
+    given = [s for s in _RELATIONSHIP_SELECTORS if str_arg(args.get(s)).strip()]
+    if len(given) != 1:
+        return (
+            _tool_error(
+                "Pass exactly one of: " + ", ".join(_RELATIONSHIP_SELECTORS)
+                + ". entity_id asks what references one entity; the others ask the same "
+                "question about everything a device, integration, area, or label covers."
+            ),
+            "invalid_request", "get_relationships",
+        )
+    selector = given[0]
+    value = str_arg(args.get(selector)).strip()
+
+    if selector == "entity_id":
+        candidates = [value]
+    elif selector == "integration":
+        candidates = [
+            e.entity_id for e in er.async_get(hass).entities.values()
+            if e.platform == value and e.disabled_by is None
+        ]
+    elif selector == "area":
+        area = _resolve_area(hass, value)
+        candidates = build_expand_target(hass)("area_id", area.id) if area is not None else []
+    else:
+        kind = "device_id" if selector == "device_id" else "label_id"
+        candidates = build_expand_target(hass)(kind, value)
+
+    scope = {
+        eid for eid in candidates
+        if resolve(eid, token, hass) in (Permission.READ, Permission.WRITE)
+    }
+    if not scope:
+        # Byte-identical for "does not exist" and "not in your tree", and for the
+        # single-entity form this is the same "Entity not found." the tool has
+        # always returned.
+        message = "Entity not found." if selector == "entity_id" else _SCOPE_NOT_FOUND
+        return _tool_error(message), "not_found", f"{selector}:{value}"
+    return _Scope(selector, value, scope)
+
+
+async def _relationship_dashboards(
+    hass: HomeAssistant,
+) -> tuple[list[tuple[str, str | None, Any]], list[dict]]:
+    """(url_path, title, config) per readable dashboard, plus what was NOT read.
+
+    Fail-quiet per dashboard, because one unreadable dashboard must not cost the
+    caller the whole answer. But quiet is not the same as silent: a YAML-mode
+    dashboard is rejected by async_get_lovelace_config and an auto-generated one
+    has no stored config, so skipping either while the response still said
+    "searched: dashboard" would be the exact confident-wrong-answer this tool
+    exists to avoid. Every skip is returned and surfaces in `not_searched`.
+
+    A failed LIST is the worse case and says so differently: it means no named
+    dashboard was examined at all, rather than one being missed.
+    """
+    out: list[tuple[str, str | None, Any]] = []
+    skipped: list[dict] = []
+    listed: list[dict] = []
+    try:
+        result = await async_ws_command(hass, "lovelace/dashboards/list", {})
+        listed = [d for d in result if isinstance(d, dict)] if isinstance(result, list) else []
+    except WsDispatchError as exc:
+        _LOGGER.debug("get_relationships could not list dashboards", exc_info=True)
+        skipped.append({"kind": "dashboard",
+                        "reason": f"could not list dashboards, so none were searched: {exc}"})
+    # None is the default dashboard, which the list command does not report. It
+    # is skipped QUIETLY when absent: an auto-generated default has no stored
+    # config to search and reporting that on every call would be noise, whereas
+    # a NAMED dashboard that cannot be read is a real hole in the answer.
+    for url_path, title in [(None, None)] + [
+        (d.get("url_path"), d.get("title")) for d in listed if d.get("url_path")
+    ]:
+        try:
+            config = await async_get_lovelace_config(hass, url_path)
+        except WsDispatchError as exc:
+            if url_path is not None:
+                skipped.append({"kind": "dashboard", "id": url_path,
+                                "reason": f"not readable (YAML-mode dashboards cannot be searched): {exc}"})
+            continue
+        if isinstance(config, dict):
+            out.append((url_path or "lovelace", title, config))
+        elif url_path is not None:
+            skipped.append({"kind": "dashboard", "id": url_path,
+                            "reason": "no stored configuration to search (auto-generated)"})
+    return out, skipped
+
+
+def _relationship_config_entries(hass: HomeAssistant) -> list[dict]:
+    """Snapshot config-entry payloads in the loop for the executor to walk.
+
+    Only entity ids are ever read back out of `payload`; the entries themselves
+    hold credentials, so nothing from here reaches a response except an id that
+    was already in the caller's scope.
+    """
+    return [
+        {
+            "entry_id": entry.entry_id,
+            "domain": entry.domain,
+            "title": entry.title,
+            "payload": {"data": dict(entry.data), "options": dict(entry.options)},
+        }
+        for entry in hass.config_entries.async_entries()
+    ]
+
+
 async def _tool_get_relationships(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
-    """MCP tool: reverse and forward references for an accessible entity."""
+    """MCP tool: what consumes the entities a selector names.
+
+    Grouped by CONSUMER, not by entity. The entity-keyed shape made a caller
+    union N results by hand to learn which automations to edit; a consumer
+    carrying the in-scope entities it touches and their roles IS the edit work
+    list.
+
+    Coverage is reported rather than assumed. Dashboards and config entries need
+    their own capabilities to name, so a token without them gets a narrower
+    answer, and `not_searched` says so: a fast call with silent blind spots is
+    worse than a slow one, because it produces a CONFIDENT wrong answer. This
+    tool's whole job is answering "is anything still using these", and the one
+    unacceptable reply is a wrong no.
+    """
     if effective_cap(token, "cap_search") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "get_relationships"
 
-    entity_id = str_arg(args.get("entity_id"))
-    if not entity_id:
-        return _tool_error("Missing required argument: entity_id"), "invalid_request", "get_relationships"
-    if resolve(entity_id, token, hass) not in (Permission.READ, Permission.WRITE):
-        return _tool_error("Entity not found."), "not_found", entity_id
+    resolved = _relationship_scope(args, token, hass)
+    if isinstance(resolved, tuple):
+        return resolved
+    selector, value, scope = resolved.selector, resolved.value, resolved.entity_ids
 
-    body = {
-        "entity_id": entity_id,
-        "referenced_by": await hass.async_add_executor_job(_references_for_entity, hass, entity_id),
-        "references": await hass.async_add_executor_job(_forward_references, hass, token, entity_id),
+    searched = ["automation", "script", "scene"]
+    not_searched: list[dict] = []
+    dashboards: list[tuple[str, str | None, Any]] = []
+    entries: list[dict] = []
+    if effective_cap(token, "cap_lovelace_write") == CAP_DENY:
+        not_searched.append({"kind": "dashboard", "reason": "requires cap_lovelace_write"})
+    else:
+        dashboards, skipped = await _relationship_dashboards(hass)
+        not_searched.extend(skipped)
+        searched.append("dashboard")
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        not_searched.append({"kind": "config_entry", "reason": "requires cap_integration_write"})
+    else:
+        entries = _relationship_config_entries(hass)
+        searched.append("config_entry")
+
+    consumers, seen = await hass.async_add_executor_job(
+        _scan_relationships, hass, scope, dashboards, entries,
+    )
+    # Free, because the walk already visited every consumer: an id referenced by
+    # something but present in neither hass.states nor the registry is rule 8's
+    # ghost, i.e. a reference that can never resolve again for anyone. Reported
+    # for the whole walk rather than for the scope, since a dead reference is
+    # worth surfacing wherever it was found.
+    registry = er.async_get(hass)
+    dangling = sorted(
+        eid for eid in seen
+        if hass.states.get(eid) is None and registry.async_get(eid) is None
+    )
+
+    body: dict[str, Any] = {
+        "scope": {"selector": selector, "value": value,
+                  "entity_ids": sorted(scope), "count": len(scope)},
+        "consumers": consumers,
+        "consumer_count": len(consumers),
+        "dangling_references": dangling,
+        "searched": searched,
     }
-    return _tool_success(json.dumps(body, default=str)), "allowed", entity_id
+    if not_searched:
+        body["not_searched"] = not_searched
+    if selector == "entity_id":
+        # Only meaningful for a single automation or script: what IT references.
+        body["references"] = await hass.async_add_executor_job(
+            _forward_references, hass, token, value,
+        )
+    return _tool_success(json.dumps(body, default=str)), "allowed", f"{selector}:{value}"
 
 
 async def _tool_describe_entity(

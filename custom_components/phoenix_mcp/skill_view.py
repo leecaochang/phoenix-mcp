@@ -60,7 +60,14 @@ grain of the model gives the smoothest results and avoids dead ends.
 - `describe_area`: a registry, state, and MESA rollup for one area.
 - `find_available_actions`: the services you may actually invoke on an entity or
   area, already filtered by your capabilities and MESA's control mode.
-- `get_relationships`: which automations, scripts, and scenes touch an entity.
+- `get_relationships`: what still USES something, before you change or remove
+  it. Pass ONE selector: `entity_id`, or `device_id` / `integration` / `area` /
+  `label` to ask about everything that covers in a single call. Reach for the
+  broadest one that answers your question: "what references this integration"
+  is one call, where asking per entity can be dozens. Results are grouped by
+  consumer with the entities and roles each one touches, which is the edit list.
+  Read `not_searched` before concluding nothing uses something: it names any
+  consumer kind skipped because this token lacks the capability to see it.
 - `get_history` (transitions by default), `get_statistics`, `recent_activity`,
   `compare_state`: what changed and when. Use relative time strings like `24h`,
   `7d`, `2w`, `1m`.

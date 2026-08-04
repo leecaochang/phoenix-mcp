@@ -1479,17 +1479,30 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "get_relationships",
         "description": (
-            "Find how an accessible entity relates to automations, scripts, and scenes: which ones "
-            "reference it (referenced_by), and, if it is itself an automation or script, which "
-            "accessible entities it references (references). Returns 'not found' if not accessible."
+            "Find what still USES a set of entities, before you change or remove anything. Pass "
+            "exactly ONE selector: entity_id for a single entity, or device_id / integration / "
+            "area / label to ask the same question about everything that covers at once. Ask it "
+            "the broadest way you can: 'what references this integration' is one call, where the "
+            "same question per entity can be dozens. Results are grouped by CONSUMER, each naming "
+            "the in-scope entities it touches and their roles, so the response is the list of "
+            "things you would have to edit. Covers automations, scripts, scenes, dashboards (with "
+            "the card path, which patch_dashboard accepts directly), and config entries such as "
+            "helpers built on another entity. 'searched' lists the consumer kinds actually "
+            "checked and 'not_searched' names any skipped for lack of a capability, so a partial "
+            "answer is never mistaken for a clean one. 'dangling_references' reports entity IDs "
+            "referenced by something but no longer existing anywhere. With entity_id it also "
+            "returns 'references': what that automation or script itself uses."
         ),
         "cap": "cap_search",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "The entity to analyze."},
+                "entity_id": {"type": "string", "description": "Ask about one entity."},
+                "device_id": {"type": "string", "description": "Ask about every accessible entity of one device."},
+                "integration": {"type": "string", "description": "Ask about every accessible entity created by one integration, by its platform name, e.g. 'hue' or 'smartthings'. Use this before removing an integration."},
+                "area": {"type": "string", "description": "Ask about every accessible entity in one area, by area id or name."},
+                "label": {"type": "string", "description": "Ask about every accessible entity carrying one label, by label id."},
             },
-            "required": ["entity_id"],
         },
     },
     {

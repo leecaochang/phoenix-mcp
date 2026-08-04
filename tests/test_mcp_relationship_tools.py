@@ -88,21 +88,45 @@ class TestGetRelationships:
         _, outcome, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(cap_search="deny"), hass)
         assert outcome == "denied"
 
-    async def test_reverse_references(self, hass, rel_env):
+    async def test_consumers_are_grouped_by_consumer(self, hass, rel_env):
+        """The grouping IS the point: entity -> consumers made a caller union N
+        results by hand to learn which automations to edit."""
         content, outcome, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         assert outcome == "allowed"
         body = _json(content)
-        by_kind = {r["kind"]: r for r in body["referenced_by"]}
+        by_kind = {c["kind"]: c for c in body["consumers"]}
         assert by_kind["automation"]["name"] == "Morning"
         assert by_kind["automation"]["roles"] == ["trigger"]
+        assert by_kind["automation"]["entities"] == [
+            {"entity_id": "light.kitchen", "roles": ["trigger"]}]
         assert by_kind["script"]["id"] == "greet"
         assert by_kind["scene"]["name"] == "Evening"
+        assert body["scope"] == {
+            "selector": "entity_id", "value": "light.kitchen",
+            "entity_ids": ["light.kitchen"], "count": 1}
+
+    async def test_a_consumer_reports_each_entity_in_its_own_role(self, hass, rel_env):
+        """One automation can use A as a trigger and B as an action; a single
+        roles list would say both entities do both."""
+        content, _, _ = await _call(
+            "get_relationships", {"integration": "test_integration"}, _token(), hass)
+        auto = next(c for c in _json(content)["consumers"] if c["kind"] == "automation")
+        roles = {e["entity_id"]: e["roles"] for e in auto["entities"]}
+        assert roles["light.kitchen"] == ["trigger"]
+        assert roles["light.bedroom"] == ["action"]
+        assert auto["roles"] == ["action", "trigger"]
 
     async def test_forward_references_scoped(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": rel_env["automation"]}, _token(), hass)
         body = _json(content)
         # The automation references both lights; both are accessible.
         assert set(body["references"]) == {"light.bedroom", "light.kitchen"}
+
+    async def test_forward_references_only_for_a_single_entity(self, hass, rel_env):
+        """"What does it reference" has no meaning for a set of entities."""
+        content, _, _ = await _call(
+            "get_relationships", {"integration": "test_integration"}, _token(), hass)
+        assert "references" not in _json(content)
 
     async def test_forward_excludes_out_of_scope(self, hass, rel_env):
         # Add an action targeting sensor.secret (denied); it must not appear.
@@ -120,10 +144,18 @@ class TestGetRelationships:
         _, outcome, _ = await _call("get_relationships", {"entity_id": "sensor.secret"}, _token(), hass)
         assert outcome == "not_found"
 
+    async def test_an_out_of_scope_entity_never_appears_as_a_consumer_entity(self, hass, rel_env):
+        """Scope is built from resolve() before any scan, so a denied entity
+        cannot be named even when a consumer in scope also touches it."""
+        content, _, _ = await _call(
+            "get_relationships", {"integration": "test_integration"}, _token(), hass)
+        named = {e["entity_id"] for c in _json(content)["consumers"] for e in c["entities"]}
+        assert "sensor.secret" not in named
+
     async def test_uses_executor_for_file_io(self, hass, rel_env, monkeypatch):
-        """_references_for_entity/_forward_references read YAML files synchronously;
-        they must run via async_add_executor_job rather than blocking the event loop."""
-        from custom_components.phoenix_mcp.tools.discovery import _forward_references, _references_for_entity
+        """_scan_relationships/_forward_references read YAML files synchronously;
+        they must run via async_add_executor_job rather than blocking the loop."""
+        from custom_components.phoenix_mcp.tools.discovery import _forward_references, _scan_relationships
 
         seen_fns = []
         orig = hass.async_add_executor_job
@@ -134,13 +166,13 @@ class TestGetRelationships:
 
         monkeypatch.setattr(hass, "async_add_executor_job", spy)
         await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
-        assert _references_for_entity in seen_fns
+        assert _scan_relationships in seen_fns
         assert _forward_references in seen_fns
 
     async def test_reverse_references_follow_device_triggers(self, hass, rel_env):
         """An automation referencing this entity only through a device trigger
-        (no entity_id anywhere in its config) still shows in referenced_by,
-        via mesa-core's expand_target host callback."""
+        (no entity_id anywhere in its config) still shows up, via mesa-core's
+        expand_target host callback."""
         from homeassistant.helpers import device_registry as dr
         from homeassistant.helpers import entity_registry as er_mod
 
@@ -164,9 +196,226 @@ class TestGetRelationships:
         content, outcome, _ = await _call(
             "get_relationships", {"entity_id": dev_light.entity_id}, _token(), hass)
         assert outcome == "allowed"
-        autos = [r for r in _json(content)["referenced_by"] if r["kind"] == "automation"]
+        autos = [c for c in _json(content)["consumers"] if c["kind"] == "automation"]
         assert autos and autos[0]["name"] == "Device trig"
         assert autos[0]["roles"] == ["trigger"]
+
+
+class TestRelationshipSelectors:
+    """One call per SCOPE, not per entity. Sweeping six devices' worth of
+    entities took ~74 calls against a 60/min rate limit, 63 of them empty."""
+
+    async def test_exactly_one_selector_is_required(self, hass, rel_env):
+        for args in ({}, {"entity_id": "light.kitchen", "integration": "test_integration"}):
+            content, outcome, _ = await _call("get_relationships", args, _token(), hass)
+            assert outcome == "invalid_request"
+            assert "exactly one" in content["content"][0]["text"]
+
+    async def test_integration_scope_covers_every_entity_at_once(self, hass, rel_env):
+        content, outcome, _ = await _call(
+            "get_relationships", {"integration": "test_integration"}, _token(), hass)
+        assert outcome == "allowed"
+        body = _json(content)
+        assert set(body["scope"]["entity_ids"]) >= {"light.kitchen", "light.bedroom"}
+        assert {c["kind"] for c in body["consumers"]} == {"automation", "script", "scene"}
+
+    async def test_device_scope(self, hass, rel_env):
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er_mod
+
+        entry = MockConfigEntry(domain="test_integration", entry_id="dev_scope")
+        entry.add_to_hass(hass)
+        device = dr.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={("test_integration", "dscope")})
+        light = er_mod.async_get(hass).async_get_or_create(
+            "light", "test_integration", "uid_scope", config_entry=entry,
+            suggested_object_id="desk", device_id=device.id)
+        hass.states.async_set(light.entity_id, "on", {})
+        _write(os.path.join(hass.config.config_dir, "automations.yaml"), [
+            {"id": "a", "alias": "Desk", "trigger": [], "action": [
+                {"service": "light.turn_on", "target": {"entity_id": light.entity_id}}]},
+        ])
+        content, outcome, _ = await _call(
+            "get_relationships", {"device_id": device.id}, _token(), hass)
+        assert outcome == "allowed"
+        assert _json(content)["scope"]["entity_ids"] == [light.entity_id]
+        assert _json(content)["consumers"][0]["name"] == "Desk"
+
+    async def test_area_scope_accepts_a_name_as_well_as_an_id(self, hass, rel_env):
+        from homeassistant.helpers import area_registry as ar
+        from homeassistant.helpers import entity_registry as er_mod
+
+        area = ar.async_get(hass).async_get_or_create("Kitchen")
+        er_mod.async_get(hass).async_update_entity("light.kitchen", area_id=area.id)
+        for value in (area.id, "Kitchen", "kitchen"):
+            content, outcome, _ = await _call(
+                "get_relationships", {"area": value}, _token(), hass)
+            assert outcome == "allowed", value
+            assert _json(content)["scope"]["entity_ids"] == ["light.kitchen"]
+
+    async def test_label_scope(self, hass, rel_env):
+        from homeassistant.helpers import entity_registry as er_mod
+
+        er_mod.async_get(hass).async_update_entity("light.kitchen", labels={"critical"})
+        content, outcome, _ = await _call(
+            "get_relationships", {"label": "critical"}, _token(), hass)
+        assert outcome == "allowed"
+        assert _json(content)["scope"]["entity_ids"] == ["light.kitchen"]
+
+    async def test_an_empty_scope_is_the_same_answer_however_it_got_there(self, hass, rel_env):
+        """Rule 12: a device that does not exist and one whose entities are out
+        of this token's tree must not be distinguishable."""
+        missing, out1, _ = await _call(
+            "get_relationships", {"device_id": "no_such_device"}, _token(), hass)
+        unknown_platform, out2, _ = await _call(
+            "get_relationships", {"integration": "not_installed"}, _token(), hass)
+        assert out1 == out2 == "not_found"
+        assert missing["content"][0]["text"] == unknown_platform["content"][0]["text"]
+
+
+class TestRelationshipCoverage:
+    """A fast call with silent blind spots is worse than a slow one: it produces
+    a confident wrong answer to "is anything still using this"."""
+
+    async def test_missing_caps_are_reported_not_hidden(self, hass, rel_env):
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        body = _json(content)
+        assert body["searched"] == ["automation", "script", "scene"]
+        assert {n["kind"] for n in body["not_searched"]} == {"dashboard", "config_entry"}
+        assert all("requires cap_" in n["reason"] for n in body["not_searched"])
+
+    async def test_dashboards_are_searched_with_a_patchable_path(self, hass, rel_env, monkeypatch):
+        """The path is patch_dashboard's own addressing form, so a hit is
+        directly actionable rather than something to go and find."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        layout = {"views": [{"cards": [
+            {"type": "tile", "entity": "light.kitchen"},
+            {"type": "tile", "entity": "light.elsewhere"},
+        ]}]}
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return layout if url_path == "home" else None
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        body = _json(content)
+        assert "dashboard" in body["searched"]
+        dash = next(c for c in body["consumers"] if c["kind"] == "dashboard")
+        assert dash["id"] == "home" and dash["name"] == "Home"
+        assert dash["paths"] == [["views", 0, "cards", 0, "entity"]]
+
+    async def test_an_unreadable_dashboard_is_reported_not_skipped(self, hass, rel_env, monkeypatch):
+        """A YAML-mode dashboard cannot be searched. Skipping it while still
+        claiming "searched: dashboard" is the confident-wrong-answer this whole
+        tool exists to avoid, so the skip has to be visible."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+        from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "yamlmode", "title": "Legacy"}]
+
+        async def _config(hass_, url_path):
+            raise WsDispatchError("dashboard is not in storage mode")
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        body = _json(content)
+        skipped = [n for n in body["not_searched"] if n.get("id") == "yamlmode"]
+        assert skipped and "YAML-mode" in skipped[0]["reason"]
+
+    async def test_a_failed_dashboard_list_says_none_were_searched(self, hass, rel_env, monkeypatch):
+        import custom_components.phoenix_mcp.tools.discovery as disc
+        from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError
+
+        async def _list(hass_, cmd, payload):
+            raise WsDispatchError("lovelace not loaded")
+
+        async def _config(hass_, url_path):
+            return None
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        reasons = [n["reason"] for n in _json(content)["not_searched"]]
+        assert any("none were searched" in r for r in reasons)
+
+    async def test_an_absent_default_dashboard_is_not_reported_as_a_gap(self, hass, rel_env, monkeypatch):
+        """An auto-generated default has nothing stored to search, and saying so
+        on every call would train the reader to ignore the field."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        async def _list(hass_, cmd, payload):
+            return []
+
+        async def _config(hass_, url_path):
+            return None
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        body = _json(content)
+        assert "dashboard" in body["searched"]
+        assert not [n for n in body.get("not_searched", []) if n["kind"] == "dashboard"]
+
+    async def test_a_config_entry_built_on_an_entity_is_found(self, hass, rel_env):
+        """The live gap this closes: a helper config entry keeps an integration
+        alive, and nothing in HA records that dependency."""
+        helper = MockConfigEntry(
+            domain="attribute_as_sensor", entry_id="helper1", title="Kitchen brightness",
+            options={"entity_id": "light.kitchen", "attribute": "brightness"},
+        )
+        helper.add_to_hass(hass)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_integration_write="allow"), hass)
+        body = _json(content)
+        assert "config_entry" in body["searched"]
+        entry = next(c for c in body["consumers"] if c["kind"] == "config_entry")
+        assert entry["id"] == "helper1" and entry["name"] == "Kitchen brightness"
+        assert entry["roles"] == ["attribute_as_sensor"]
+
+    async def test_a_config_entry_key_name_is_never_assumed(self, hass, rel_env):
+        """Integrations store their source entity under whatever key they like
+        (entity_id, source, entity_ids); matching the VALUE is what keeps this
+        from silently reporting no dependency."""
+        helper = MockConfigEntry(
+            domain="derivative", entry_id="helper2", title="Rate",
+            options={"source": "light.kitchen"},
+        )
+        helper.add_to_hass(hass)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_integration_write="allow"), hass)
+        assert any(c["id"] == "helper2" for c in _json(content)["consumers"])
+
+    async def test_dangling_references_come_free_with_the_walk(self, hass, rel_env):
+        """An id referenced by something but present in neither hass.states nor
+        the registry can never resolve again, for anyone."""
+        _write(os.path.join(hass.config.config_dir, "automations.yaml"), [
+            {"id": "a", "alias": "Dead", "trigger": [
+                {"platform": "state", "entity_id": "light.kitchen"}], "action": [
+                {"service": "lock.lock", "target": {"entity_id": "lock.front_door"}}]},
+        ])
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        assert "lock.front_door" in _json(content)["dangling_references"]
+
+    async def test_a_live_entity_is_never_reported_dangling(self, hass, rel_env):
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        assert _json(content)["dangling_references"] == []
 
 
 class TestDescribeEntity:
