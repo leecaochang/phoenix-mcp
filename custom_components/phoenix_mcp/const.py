@@ -106,7 +106,13 @@ AGENTCLI_CLAUDE_BASE_URL = "https://api.anthropic.com"
 AGENTCLI_CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
 AGENTCLI_ANTHROPIC_VERSION = "2023-06-01"
 AGENTCLI_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-AGENTCLI_DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
+# `deepseek-chat` and `deepseek-reasoner` were RETIRED on 2026-07-24 and now
+# answer an HTTP error. They were never separate models, only routing labels for
+# the non-thinking and thinking modes of the current generation, which is why the
+# replacement is one id plus the `thinking` field rather than two ids. A shipped
+# default is a guess that rots: the provider card refuses to store a model the
+# provider does not list, so this constant is a starting point and not a promise.
+AGENTCLI_DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 # ChatGPT (OpenAI) is OpenAI-compatible; base already includes /v1.
 AGENTCLI_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # Gemini via Google's OpenAI-compatible endpoint (Authorization: Bearer <key>);

@@ -943,10 +943,11 @@ class OpenAICompatProvider:
         thinking = options.get("thinking")
         effort = options.get("effort")
         # Map the panel's thinking selection to each backend's real API knob:
-        #   DeepSeek: a thinking on/off toggle + reasoning_effort (high/max; it
-        #     remaps low/medium to high and xhigh to max). Thinking mode ignores
-        #     temperature, so we drop it while thinking is on. deepseek-reasoner
-        #     (retiring) sends neither and reasons intrinsically.
+        #   DeepSeek: a thinking on/off toggle + reasoning_effort (low/high/max,
+        #     default high; xhigh maps to max). Thinking mode ignores temperature,
+        #     so we drop it while thinking is on. `low` became real when the v4
+        #     models replaced the retired deepseek-chat / deepseek-reasoner
+        #     aliases; before that low and medium both remapped to high.
         #   OpenAI reasoning models: reasoning_effort only (none/minimal/low/
         #     medium/high; none disables it), and they reject a custom temperature.
         #   Ollama: a boolean `think` flag.

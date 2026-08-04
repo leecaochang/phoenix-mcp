@@ -1227,7 +1227,6 @@
       "clearHistory": "清除聊天记录",
       "configureFirst": "请先配置一个服务商",
       "continue": "继续",
-      "deepseekReasonerNote": "此模型始终进行推理，无法关闭思考。",
       "executionFailed": "已批准，但执行失败",
       "levelHigh": "高",
       "levelLow": "低",

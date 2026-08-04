@@ -18,7 +18,7 @@ vi.mock("../api", () => ({
 import { AgentCliSettings } from "../components/AgentCliSettings";
 
 function instances() {
-  return { instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-chat" }] };
+  return { instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" }] };
 }
 
 function renderCard() {

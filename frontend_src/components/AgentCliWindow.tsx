@@ -136,16 +136,15 @@ export function modelCaps(kind: AgentCliProviderKind, model: string, thinkingOn:
       // Anthropic output_config.effort. Opus does not take temperature.
       return { thinking: thinkOpts(["off", "low", "medium", "high", "xhigh", "max"]),
                style: "effort", defaultLevel: "high", temperature: false };
-    case "deepseek": {
-      // deepseek-reasoner reasons intrinsically (being retired). Newer models take
-      // a thinking toggle; reasoning_effort accepts only high/max (low/medium map
-      // to high, xhigh to max), and thinking mode ignores temperature.
-      if (m.includes("reasoner"))
-        return { thinking: [], style: "effort", defaultLevel: "high", temperature: false,
-                 note: t("agentchat.deepseekReasonerNote") };
-      return { thinking: thinkOpts(["off", "high", "max"]), style: "effort",
+    case "deepseek":
+      // A thinking on/off toggle plus reasoning_effort low/high/max, default high;
+      // thinking mode ignores temperature. `low` was added when the v4 models
+      // replaced the retired deepseek-chat / deepseek-reasoner aliases, which had
+      // remapped low and medium to high. Nothing about the model NAME says which
+      // set it takes, which is why this table is a starting point that the
+      // provider card's capability refresh corrects rather than the last word.
+      return { thinking: thinkOpts(["off", "low", "high", "max"]), style: "effort",
                defaultLevel: "high", temperature: !thinkingOn };
-    }
     case "chatgpt": {
       // OpenAI reasoning_effort (Chat Completions). gpt-5 supports none/minimal/
       // low/medium/high (none = reasoning off); o-series is low/medium/high with

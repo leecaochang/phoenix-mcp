@@ -181,7 +181,7 @@ async def test_openai_stream_accumulates_split_tool_args():
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
         "data: [DONE]",
     )
-    cfg = ProviderConfig(kind="deepseek", model="deepseek-chat", base_url="https://d", api_key="k")
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
     provider = OpenAICompatProvider(cfg)
     session = _FakeSession(_FakeResp(200, body))
     events = await _collect(provider.stream_turn(
@@ -223,7 +223,7 @@ async def test_openai_usage_chunk_with_empty_choices_reports_usage():
         'data: {"choices":[],"usage":{"prompt_tokens":812,"completion_tokens":90,"total_tokens":902}}',
         "data: [DONE]",
     )
-    cfg = ProviderConfig(kind="deepseek", model="deepseek-chat", base_url="https://d", api_key="k")
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
     provider = OpenAICompatProvider(cfg)
     events = await _collect(provider.stream_turn(
         _FakeSession(_FakeResp(200, body)), system_prompt="s", messages=[], tools=[], options={}))
@@ -283,7 +283,7 @@ async def test_openai_reasoning_content_surfaces_as_thinking():
         'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}',
         "data: [DONE]",
     )
-    cfg = ProviderConfig(kind="deepseek", model="deepseek-reasoner", base_url="https://d", api_key="k")
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
     provider = OpenAICompatProvider(cfg)
     session = _FakeSession(_FakeResp(200, body))
     events = await _collect(provider.stream_turn(
@@ -302,7 +302,7 @@ async def test_openai_reasoning_hidden_when_show_thinking_off():
         'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}',
         "data: [DONE]",
     )
-    cfg = ProviderConfig(kind="deepseek", model="deepseek-reasoner", base_url="https://d", api_key="k")
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
     provider = OpenAICompatProvider(cfg)
     session = _FakeSession(_FakeResp(200, body))
     events = await _collect(provider.stream_turn(
@@ -341,7 +341,7 @@ async def test_openai_inline_think_tags_are_split_out():
 @pytest.mark.asyncio
 async def test_deepseek_thinking_toggle_maps_to_body():
     body = _sse('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}', "data: [DONE]")
-    cfg = ProviderConfig(kind="deepseek", model="deepseek-chat", base_url="https://d", api_key="k")
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
     provider = OpenAICompatProvider(cfg)
     # Thinking on: enabled toggle + reasoning_effort; temperature is dropped
     # (thinking mode does not support it).
@@ -800,7 +800,7 @@ async def test_truncated_tool_args_at_output_limit_reports_truncation():
         'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
         "data: [DONE]",
     )
-    cfg = ProviderConfig(kind="deepseek", model="deepseek-chat", base_url="https://d", api_key="k")
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
     provider = OpenAICompatProvider(cfg)
     session = _FakeSession(_FakeResp(200, body))
     events = await _collect(provider.stream_turn(
@@ -817,7 +817,7 @@ async def test_deepseek_gets_explicit_max_tokens_other_kinds_do_not():
     # Phoenix MCP now pins an explicit ceiling for DeepSeek only. ChatGPT must NOT get
     # max_tokens (OpenAI reasoning models reject the field).
     body = _sse('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}', "data: [DONE]")
-    ds = OpenAICompatProvider(ProviderConfig(kind="deepseek", model="deepseek-chat", base_url="https://d", api_key="k"))
+    ds = OpenAICompatProvider(ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k"))
     session = _FakeSession(_FakeResp(200, body))
     await _collect(ds.stream_turn(session, system_prompt="s", messages=[], tools=[], options={"thinking": True}))
     assert session.calls[-1][1]["json"]["max_tokens"] == AGENTCLI_DEEPSEEK_MAX_TOKENS

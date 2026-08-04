@@ -188,13 +188,16 @@ describe("agentCLI model capabilities (real per-provider levels)", () => {
     expect(c.temperature).toBe(false);
     expect(vals(c)).toEqual(["off", "low", "medium", "high", "xhigh", "max"]);
   });
-  it("deepseek: off/high/max; temperature only when thinking off; reasoner has no toggle", () => {
-    expect(vals(modelCaps("deepseek", "deepseek-chat", true))).toEqual(["off", "high", "max"]);
-    expect(modelCaps("deepseek", "deepseek-chat", true).temperature).toBe(false);
-    expect(modelCaps("deepseek", "deepseek-chat", false).temperature).toBe(true);
-    const r = modelCaps("deepseek", "deepseek-reasoner", true);
-    expect(r.thinking).toEqual([]);
-    expect(r.note).toBeTruthy();
+  it("deepseek: off/low/high/max; temperature only when thinking off", () => {
+    // `low` is real on the v4 models. The retired deepseek-chat / deepseek-reasoner
+    // aliases remapped low and medium to high, and the reasoner branch that used to
+    // sit here described a model that no longer answers.
+    expect(vals(modelCaps("deepseek", "deepseek-v4-flash", true))).toEqual(["off", "low", "high", "max"]);
+    expect(modelCaps("deepseek", "deepseek-v4-flash", true).temperature).toBe(false);
+    expect(modelCaps("deepseek", "deepseek-v4-flash", false).temperature).toBe(true);
+    // No model-NAME special cases left: every deepseek model gets the same set,
+    // which is what makes the capability refresh the thing that corrects it.
+    expect(vals(modelCaps("deepseek", "deepseek-v4-pro", true))).toEqual(["off", "low", "high", "max"]);
   });
   it("chatgpt: gpt-5 none..high, o-series low..high, plain gpt-* no thinking + temperature", () => {
     expect(vals(modelCaps("chatgpt", "gpt-5", false))).toEqual(["none", "minimal", "low", "medium", "high"]);

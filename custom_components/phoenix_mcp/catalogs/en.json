@@ -1222,7 +1222,6 @@
       "clearHistory": "Clear chat history",
       "configureFirst": "Configure a provider first",
       "continue": "Continue",
-      "deepseekReasonerNote": "This model always reasons; thinking cannot be toggled.",
       "executionFailed": "approved, but execution failed",
       "levelHigh": "High",
       "levelLow": "Low",
