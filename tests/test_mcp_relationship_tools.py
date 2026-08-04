@@ -40,6 +40,12 @@ def _json(content: dict) -> dict:
     return json.loads(content["content"][0]["text"])
 
 
+def _dangling(body: dict) -> list[str]:
+    """Just the dead ids. Most assertions are about WHICH ids survive the
+    filter; the holder detail has its own test."""
+    return [d["entity_id"] for d in body["dangling_references"]]
+
+
 async def _call(name, args, token, hass):
     data = MagicMock()
     data.mesa = None  # deterministic: describe_entity skips the MESA block
@@ -411,7 +417,7 @@ class TestRelationshipCoverage:
                 {"service": "lock.lock", "target": {"entity_id": "lock.front_door"}}]},
         ])
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
-        assert "lock.front_door" in _json(content)["dangling_references"]
+        assert "lock.front_door" in _dangling(_json(content))
 
     async def test_a_dead_reference_in_a_domain_that_is_gone_is_still_reported(self, hass, rel_env):
         """The first filter tried was a domain-existence check on everything,
@@ -425,7 +431,7 @@ class TestRelationshipCoverage:
                 {"service": "lock.lock", "target": {"entity_id": "lock.front_door"}}]},
         ])
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
-        assert "lock.front_door" in _json(content)["dangling_references"]
+        assert "lock.front_door" in _dangling(_json(content))
 
     @pytest.mark.parametrize("value", [
         "{{ trigger.entity_id }}", "input_boolean.{{ fan | lower }}_state", "all",
@@ -439,7 +445,7 @@ class TestRelationshipCoverage:
                 {"service": "light.turn_off", "target": {"entity_id": value}}]},
         })
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
-        assert _json(content)["dangling_references"] == []
+        assert _dangling(_json(content)) == []
 
     @pytest.mark.parametrize("junk", ["1.3em", "3.4", "attributes.device_class", "deye_p3.yaml"])
     async def test_a_dashboard_string_that_merely_looks_like_an_id_is_not_reported(
@@ -462,7 +468,7 @@ class TestRelationshipCoverage:
         content, _, _ = await _call(
             "get_relationships", {"entity_id": "light.kitchen"},
             _token(cap_lovelace_write="allow"), hass)
-        assert _json(content)["dangling_references"] == []
+        assert _dangling(_json(content)) == []
 
     async def test_a_dashboard_reference_to_a_removed_entity_is_still_reported(
         self, hass, rel_env, monkeypatch,
@@ -485,7 +491,7 @@ class TestRelationshipCoverage:
         content, _, _ = await _call(
             "get_relationships", {"entity_id": "light.kitchen"},
             _token(cap_lovelace_write="allow"), hass)
-        assert _json(content)["dangling_references"] == ["light.removed_last_year"]
+        assert _dangling(_json(content)) == ["light.removed_last_year"]
 
     async def test_a_domain_with_services_but_no_entities_still_counts(
         self, hass, rel_env, monkeypatch,
@@ -512,7 +518,7 @@ class TestRelationshipCoverage:
         content, _, _ = await _call(
             "get_relationships", {"entity_id": "light.kitchen"},
             _token(cap_lovelace_write="allow"), hass)
-        assert "lock.front_door" in _json(content)["dangling_references"]
+        assert "lock.front_door" in _dangling(_json(content))
 
     async def test_a_card_calling_a_service_is_not_a_dead_entity(self, hass, rel_env, monkeypatch):
         """Live-found. A card's perform_action holds `button.press`, which has
@@ -536,7 +542,7 @@ class TestRelationshipCoverage:
         content, _, _ = await _call(
             "get_relationships", {"entity_id": "light.kitchen"},
             _token(cap_lovelace_write="allow"), hass)
-        assert _json(content)["dangling_references"] == []
+        assert _dangling(_json(content)) == []
 
     async def test_a_card_calling_a_script_that_is_gone_is_still_reported(
         self, hass, rel_env, monkeypatch,
@@ -566,7 +572,7 @@ class TestRelationshipCoverage:
         content, _, _ = await _call(
             "get_relationships", {"entity_id": "light.kitchen"},
             _token(cap_lovelace_write="allow"), hass)
-        assert _json(content)["dangling_references"] == ["script.deleted_last_year"]
+        assert _dangling(_json(content)) == ["script.deleted_last_year"]
 
     async def test_a_script_targeting_a_service_name_is_still_a_bad_reference(self, hass, rel_env):
         """The service exclusion is scoped to the value walk, and this is why.
@@ -580,11 +586,78 @@ class TestRelationshipCoverage:
                 {"service": "button.press", "target": {"entity_id": "button.press"}}]},
         })
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
-        assert _json(content)["dangling_references"] == ["button.press"]
+        assert _dangling(_json(content)) == ["button.press"]
+
+    async def test_a_dangling_reference_names_what_still_points_at_it(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """"script.x is dead" sends someone hunting; naming the dashboard and
+        the card path is a repair. The walk already had the holder in hand."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        _write(os.path.join(hass.config.config_dir, "automations.yaml"), [
+            {"id": "auto1", "alias": "Morning", "trigger": [
+                {"platform": "state", "entity_id": "light.kitchen"}], "action": [
+                {"service": "light.turn_on", "target": {"entity_id": "light.gone"}}]},
+        ])
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [
+                {"type": "tile", "entity": "light.kitchen"},
+                {"type": "tile", "entity": "light.gone"}]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        entry = next(d for d in _json(content)["dangling_references"]
+                     if d["entity_id"] == "light.gone")
+        holders = {h["kind"]: h for h in entry["referenced_by"]}
+        assert holders["automation"]["name"] == "Morning"
+        assert holders["dashboard"]["id"] == "home"
+        assert holders["dashboard"]["path"] == ["views", 0, "cards", 1, "entity"]
+        # The provenance flags are how the filter decides; they are not a caller's
+        # business and must not leak into the response.
+        assert "typed" not in holders["automation"] and "service" not in holders["automation"]
+
+    async def test_one_vouching_holder_is_enough(self, hass, rel_env, monkeypatch):
+        """A dead id can be referenced from several places at once, and the
+        holders disagree about how much they knew. An automation's `entity_id:`
+        key says this was meant to be an entity; a card's perform_action for the
+        same string says nothing (it is where a verb goes). The typed holder
+        settles it, so requiring every holder to vouch would lose the finding."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        hass.services.async_register("button", "press", lambda call: None)
+        _write(os.path.join(hass.config.config_dir, "automations.yaml"), [
+            {"id": "auto1", "alias": "Morning", "trigger": [
+                {"platform": "state", "entity_id": "light.kitchen"}], "action": [
+                {"service": "button.press", "target": {"entity_id": "button.gone"}}]},
+        ])
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [{
+                "type": "button", "entity": "light.kitchen",
+                "tap_action": {"action": "perform-action", "perform_action": "button.gone"},
+            }]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        assert _dangling(_json(content)) == ["button.gone"]
 
     async def test_a_live_entity_is_never_reported_dangling(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
-        assert _json(content)["dangling_references"] == []
+        assert _dangling(_json(content)) == []
 
 
 class TestDescribeEntity:

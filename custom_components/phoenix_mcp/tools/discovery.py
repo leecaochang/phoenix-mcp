@@ -185,63 +185,87 @@ def _entity_id_strings(node: Any, path: list, out: list[tuple[list, str]]) -> No
 _TEMPLATE_MARKERS = ("{{", "}}", "{%", "|")
 
 
-def _dangling_candidates(typed: set[str], walked: set[str], hass: HomeAssistant) -> set[str]:
-    """Narrow two walked sets to strings that were ever meant to be an entity id.
+_SERVICE_FIELDS = frozenset({"service", "perform_action", "action"})
+
+
+def _in_service_field(path: list) -> bool:
+    """Whether a walked value sits where a SERVICE name goes rather than an id."""
+    return bool(path) and path[-1] in _SERVICE_FIELDS
+
+
+def _dangling_candidates(
+    refs: dict[str, list[dict]], hass: HomeAssistant
+) -> dict[str, list[dict]]:
+    """Narrow referenced ids to those that were ever meant to BE an entity id.
 
     `dangling_references` is a list an operator is meant to ACT on, so a false
     positive is not harmless noise, it is what teaches them to ignore the field.
     Live first run: 26 entries of which about 20 were junk (`1.3em` from a card's
     CSS, `3.4` from a version string, `attributes.device_class` from a template,
-    `deye_p3.yaml` from a filename) with eight genuinely dead references buried
-    among them.
+    `deye_p3.yaml` from a filename, HA's `all` wildcard, and several `{{ }}`
+    script targets) with a handful of genuinely dead references buried in it.
 
-    THE FILTER STRENGTH MATCHES WHAT THE SOURCE KNOWS, which is the whole design.
-    `typed` comes from places HA itself defines the shape: mesa-core's role walk
-    over automations, an `entity_id:` key in a script, a scene's entity keys.
-    Those strings were MEANT to be entity ids, so they are trusted. `walked`
-    comes from dashboard cards and config-entry payloads, where the key is
-    whatever the author chose and the collector matches the value shape, so it
-    carries no type information at all and gets a shape heuristic on top: the
-    domain has to be one this instance actually has.
+    THE FILTER STRENGTH MATCHES WHAT THE HOLDER KNEW, which is the whole design,
+    and a value referenced from several places is kept if ANY holder vouches for
+    it. A TYPED holder came from somewhere HA defines the shape: mesa-core's role
+    walk, a script's `entity_id:` key, a scene's entity keys. Those strings were
+    MEANT to be entity ids, so they are trusted outright. An untyped holder found
+    the value by shape alone in a dashboard card or config-entry payload, where
+    the key is whatever the author chose, so it also has to name a domain this
+    instance actually has.
 
-    A DOMAIN CHECK ON `typed` WOULD BE BACKWARDS and was tried first: a reference
-    into a domain that no longer exists at all can never resolve, which makes it
-    MORE dangling, not less. Its own test caught that. So the domain rule is
-    scoped to the source that needs a proxy for intent, and never applied to the
-    sources that state it.
+    A DOMAIN CHECK ON TYPED HOLDERS WOULD BE BACKWARDS and was tried first: a
+    reference into a domain that no longer exists at all can never resolve, which
+    makes it MORE dangling, not less. Its own test caught that.
 
-    Template syntax is excluded from both. A value carrying `{{ }}` is not an id,
-    it is an id computed at runtime, and Phoenix cannot know what it resolves to.
-    HA's `all` wildcard goes with it, having no dot to split on.
+    An untyped holder in a SERVICE-CALL POSITION is excluded unless the domain is
+    `script`. A card's `perform_action: button.press` names a verb, not an entity,
+    and has the exact shape of an id in the exact place the walk reads; running a
+    script, though, IS its entity id, so a card pointing at a deleted script is
+    the most valuable find here and must survive.
 
-    A walked value that is a REGISTERED SERVICE is excluded too, and the reason
-    it is that test rather than "skip the service/perform_action fields" is
-    `script.*`: calling a script IS its service name, so a card whose
-    perform_action names a script that no longer exists is one of the most
-    valuable things here, and a field-name rule would throw those away with the
-    noise. Registration separates them exactly, because it asks whether the
-    string still names something REAL. Live: `button.press` and
-    `input_button.press` (both registered, both from a card's perform_action)
-    dropped out, while `script.jacuzzi_lights_off` and `script.area_on_or_off`
-    (unregistered, because the scripts are gone) stayed. Typed sources are
-    exempt, as ever: an `entity_id:` key saying `button.press` is a config
-    error worth reporting, not a service call.
+    THE FIRST ATTEMPT AT THAT USED SERVICE REGISTRATION and it was wrong, which
+    only the live data showed: it dropped anything `hass.services.has_service`
+    recognised, reasoning that a live script's service is registered and a dead
+    one's is not. Home Assistant can keep a script's service registered after the
+    script is gone, so two references whose entities did not exist were filtered
+    away, i.e. the rule suppressed exactly the class it was written to preserve.
+    POSITION distinguishes a verb from an id and depends on no runtime state that
+    can go stale.
+
+    Template syntax is excluded everywhere: a value carrying `{{ }}` is an id
+    computed at runtime, not one Phoenix can resolve. HA's `all` wildcard goes
+    with it, having no dot to split on.
     """
-    def _real(value: str) -> bool:
-        return "." in value and not any(m in value for m in _TEMPLATE_MARKERS)
-
-    def _is_service(value: str) -> bool:
-        domain, _, name = value.partition(".")
-        return hass.services.has_service(domain, name)
-
     domains = {state.entity_id.split(".", 1)[0] for state in hass.states.async_all()}
     domains |= {entry.entity_id.split(".", 1)[0] for entry in er.async_get(hass).entities.values()}
     domains |= set(hass.services.async_services())
-    return (
-        {v for v in typed if _real(v)}
-        | {v for v in walked
-           if _real(v) and v.split(".", 1)[0] in domains and not _is_service(v)}
-    )
+
+    def _vouches(value: str, holder: dict) -> bool:
+        if holder["typed"]:
+            return True
+        if value.split(".", 1)[0] not in domains:
+            return False
+        return value.startswith("script.") if holder["service"] else True
+
+    out: dict[str, list[dict]] = {}
+    for value, holders in refs.items():
+        if "." not in value or any(m in value for m in _TEMPLATE_MARKERS):
+            continue
+        if any(_vouches(value, holder) for holder in holders):
+            out[value] = holders
+    return out
+
+
+def _dangling_report(value: str, holders: list[dict]) -> dict:
+    """One dangling entry: the dead id and what still points at it."""
+    return {
+        "entity_id": value,
+        "referenced_by": [
+            {k: v for k, v in sorted(holder.items()) if k not in ("typed", "service")}
+            for holder in holders
+        ],
+    }
 
 
 def _consumer(kind: str, cid: str, name: Any) -> dict:
@@ -274,7 +298,7 @@ def _scan_relationships(
     scope: set[str],
     dashboards: list[tuple[str, str | None, Any]],
     entries: list[dict],
-) -> tuple[list[dict], set[str], set[str]]:
+) -> tuple[list[dict], dict[str, list[dict]]]:
     """Every consumer touching an entity in `scope`, and every entity id seen.
 
     ONE pass per source, not one pass per entity. The tool it replaces asked
@@ -282,22 +306,25 @@ def _scan_relationships(
     sweeping six devices' worth of entities took ~74 calls against a 60/min rate
     limit, 63 of them returning nothing. Scanning a SET collapses that to one.
 
-    The last two return values are every entity id referenced by any consumer,
-    in scope or not, split by how much its source knew: TYPED ids came from a
-    place HA defines the shape of (a role walk, an `entity_id:` key, a scene's
-    entity keys) and WALKED ids were matched by value shape alone in a dashboard
-    card or a config-entry payload. That split is what makes the dangling report
-    usable rather than noisy; see _dangling_candidates. It is free either way,
-    since the walk has already visited every consumer.
+    The second return value maps every entity id referenced by any consumer, in
+    scope or not, to the consumers holding it. Naming the holder is what makes a
+    dangling reference actionable: "script.x is dead" sends someone hunting,
+    while "the Fridge dashboard calls it at views[0].cards[3]" is a repair. Each
+    holder also records how much its source knew (`typed` when HA defines the
+    shape, e.g. a role walk or an `entity_id:` key; `service` when the value sat
+    where a service name goes), which is what _dangling_candidates filters on.
+    All of it is free, since the walk has already visited every consumer.
 
     Runs in an executor because it reads the automation/script/scene YAML.
     Dashboards and config entries are snapshotted by the caller in the event
     loop, since obtaining them needs loop access, and are passed in.
     """
     consumers: list[dict] = []
-    typed: set[str] = set()
-    walked: set[str] = set()
+    refs: dict[str, list[dict]] = {}
     expand = build_expand_target(hass)
+
+    def _note(entity_id: str, holder: dict) -> None:
+        refs.setdefault(entity_id, []).append(holder)
 
     auto_path = os.path.join(hass.config.config_dir, _AUTOMATION_YAML)
     for cfg in _read_automations_yaml(auto_path):
@@ -306,8 +333,9 @@ def _scan_relationships(
         by_role = entities_by_role(cfg, expand)
         entry = _consumer("automation", str(cfg.get("id", "")), cfg.get("alias"))
         for role, ents in by_role.items():
-            typed.update(ents)
             for eid in ents:
+                _note(eid, {"kind": "automation", "id": entry["id"],
+                            "name": entry["name"], "typed": True, "service": False})
                 if eid in scope:
                     _record(entry, eid, role)
         if entry["entities"]:
@@ -318,8 +346,10 @@ def _scan_relationships(
             continue
         found: set[str] = set()
         _collect_entity_id_values(cfg, found)
-        typed.update(found)
         entry = _consumer("script", script_id, cfg.get("alias"))
+        for eid in found:
+            _note(eid, {"kind": "script", "id": script_id, "name": entry["name"],
+                        "typed": True, "service": False})
         for eid in found & scope:
             _record(entry, eid, "sequence")
         if entry["entities"]:
@@ -331,8 +361,11 @@ def _scan_relationships(
         members = scene.get("entities")
         if not isinstance(members, dict):
             continue
-        typed.update(m for m in members if isinstance(m, str))
         entry = _consumer("scene", str(scene.get("id", "")), scene.get("name"))
+        for member in members:
+            if isinstance(member, str):
+                _note(member, {"kind": "scene", "id": entry["id"], "name": entry["name"],
+                               "typed": True, "service": False})
         for eid in set(members) & scope:
             _record(entry, eid, "member")
         if entry["entities"]:
@@ -341,8 +374,10 @@ def _scan_relationships(
     for url_path, title, config in dashboards:
         hits: list[tuple[list, str]] = []
         _entity_id_strings(config, [], hits)
-        walked.update(eid for _p, eid in hits)
         entry = _consumer("dashboard", url_path, title)
+        for path, eid in hits:
+            _note(eid, {"kind": "dashboard", "id": url_path, "name": title, "path": path,
+                        "typed": False, "service": _in_service_field(path)})
         entry["paths"] = []
         for path, eid in hits:
             if eid in scope:
@@ -354,15 +389,18 @@ def _scan_relationships(
     for record in entries:
         hits = []
         _entity_id_strings(record["payload"], [], hits)
-        walked.update(eid for _p, eid in hits)
         entry = _consumer("config_entry", record["entry_id"], record["title"])
+        for path, eid in hits:
+            _note(eid, {"kind": "config_entry", "id": record["entry_id"],
+                        "name": record["title"], "typed": False,
+                        "service": _in_service_field(path)})
         for _path, eid in hits:
             if eid in scope:
                 _record(entry, eid, record["domain"])
         if entry["entities"]:
             consumers.append(entry)
 
-    return [_finish(c) for c in consumers], typed, walked
+    return [_finish(c) for c in consumers], refs
 
 
 def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str) -> list[str]:
@@ -1257,7 +1295,7 @@ async def _tool_get_relationships(
         entries = _relationship_config_entries(hass)
         searched.append("config_entry")
 
-    consumers, typed, walked = await hass.async_add_executor_job(
+    consumers, refs = await hass.async_add_executor_job(
         _scan_relationships, hass, scope, dashboards, entries,
     )
     # Free, because the walk already visited every consumer: an id referenced by
@@ -1266,10 +1304,11 @@ async def _tool_get_relationships(
     # for the whole walk rather than for the scope, since a dead reference is
     # worth surfacing wherever it was found.
     registry = er.async_get(hass)
-    dangling = sorted(
-        eid for eid in _dangling_candidates(typed, walked, hass)
+    dangling = [
+        _dangling_report(eid, holders)
+        for eid, holders in sorted(_dangling_candidates(refs, hass).items())
         if hass.states.get(eid) is None and registry.async_get(eid) is None
-    )
+    ]
 
     body: dict[str, Any] = {
         "scope": {"selector": selector, "value": value,
