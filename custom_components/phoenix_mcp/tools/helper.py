@@ -516,21 +516,35 @@ async def _tool_get_config_entry_options(
             )
             return _tool_success(json.dumps(body, default=str)), "allowed", tool
         body["schema"] = schema
-        # THE FIELD A CALLER ACTUALLY SENDS BACK, and the reason it exists is a
-        # real mismatch: a helper's stored settings routinely hold keys its flow
-        # does not offer. attribute_as_sensor stores entity_id and name while its
-        # schema declares neither, so "send the settings back with your change
-        # applied" fails validation on those extras (the step's schema rejects an
-        # undeclared key), while omitting them is correct and harmless because the
-        # flow merges over what is stored and never sees them. Handing the caller
-        # the intersection removes the guess.
-        offered = {field.get("name") for field in schema if isinstance(field, dict)}
-        body["editable_settings"] = {k: v for k, v in settings.items() if k in offered}
+        # THE FIELD A CALLER ACTUALLY SENDS BACK, taken from the SCHEMA's own
+        # suggested values rather than from the stored settings.
+        #
+        # Intersecting stored keys with field names was the first attempt and it
+        # is wrong whenever a flow TRANSFORMS its input, which is common: a real
+        # time_off helper stores {"entities": [id]} while its form field is
+        # "entity" (singular, one id), so the intersection was EMPTY and the tool
+        # reported that nothing could be changed on a helper that reconfigures
+        # fine. The stored shape is the integration's business; the form's shape
+        # is the caller's.
+        #
+        # suggested_value is authoritative because the FLOW puts it there: HA's
+        # schema flows seed it from the stored options, and a hand-written flow
+        # sets it deliberately. A field carrying none has no current value to
+        # report and appears in `schema` alone, so the caller decides.
+        editable = {}
+        for field in schema:
+            if not isinstance(field, dict):
+                continue
+            described = field.get("description")
+            if isinstance(described, dict) and "suggested_value" in described:
+                editable[field.get("name")] = described["suggested_value"]
+        body["editable_settings"] = editable
         body["note"] = (
-            "Send editable_settings back with your change applied. Settings not listed "
-            "there are stored by this helper but not offered by its flow, and are left "
-            "alone; including one is rejected. Omitting an OPTIONAL field that IS offered "
-            "clears it."
+            "Send editable_settings back with your change applied; those are the form's "
+            "own fields and current values, which may be named or shaped differently from "
+            "settings above (that is what this helper stores, and it is left alone). A "
+            "field in schema but not here has no current value. Omitting an OPTIONAL field "
+            "the form offers clears it."
         )
     except Exception:  # noqa: BLE001 - a flow that will not start is not a Phoenix bug
         _LOGGER.exception("Could not open the settings flow for %s", entry.entry_id)

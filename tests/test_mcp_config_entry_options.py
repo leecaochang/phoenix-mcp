@@ -29,12 +29,25 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.phoenix_mcp.mcp_view import _EXECUTOR_REGISTRY, _call_tool
 from custom_components.phoenix_mcp.token_store import PermissionNode, PermissionTree, TokenRecord
 
-OPTIONS_SCHEMA = vol.Schema({
-    vol.Required("entity_id"): selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor")),
-    vol.Optional("hysteresis", default=0.0): selector.NumberSelector(
-        selector.NumberSelectorConfig(mode="box")),
-})
+def options_schema(current: dict | None = None) -> vol.Schema:
+    """The step schema, with suggested values seeded from the stored settings.
+
+    That seeding is what HA's SchemaCommonFlowHandler does (suggested_values =
+    self._options), and it is where the read gets each field's current value.
+    """
+    current = current or {}
+
+    def _field(key, default=vol.UNDEFINED):
+        described = {"suggested_value": current[key]} if key in current else None
+        return (vol.Required(key, description=described) if default is vol.UNDEFINED
+                else vol.Optional(key, default=default, description=described))
+
+    return vol.Schema({
+        _field("entity_id"): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor")),
+        _field("hysteresis", 0.0): selector.NumberSelector(
+            selector.NumberSelectorConfig(mode="box")),
+    })
 
 
 def _token(**caps) -> TokenRecord:
@@ -90,8 +103,9 @@ def _flow(hass, *, result=None):
     created = {}
 
     async def _init(entry_id, context=None, data=None):
+        entry = hass.config_entries.async_get_entry(entry_id)
         return {"type": FlowResultType.FORM, "flow_id": "f1", "step_id": "init",
-                "data_schema": OPTIONS_SCHEMA}
+                "data_schema": options_schema(dict(entry.options))}
 
     async def _configure(flow_id, user_input=None):
         if result is not None:
@@ -151,7 +165,7 @@ class TestRead:
         body = _json(content)
         assert "name" in body["settings"]           # stored...
         assert "name" not in body["editable_settings"]  # ...but the flow does not offer it
-        assert set(body["editable_settings"]) == {"entity_id", "hysteresis"}
+        assert body["editable_settings"] == {"entity_id": "sensor.kitchen", "hysteresis": 0.0}
 
     async def test_the_schema_flow_is_always_closed(self, hass, helper_entry, as_helper):
         """Reading the fields must not leave a half-finished dialog in the
@@ -350,10 +364,15 @@ class TestReconfigureMechanism:
 
         async def _init(handler, *, context=None, data=None):
             assert context["source"] == "reconfigure"
+            # A real time_off helper: it STORES {"entities": [id]} and its form
+            # field is "entity", singular. The names and shapes differ.
+            entry = hass.config_entries.async_get_entry("data1")
+            current = (entry.data.get("entities") or [None])[0]
             return {"type": FlowResultType.FORM, "flow_id": "rf1", "step_id": "reconfigure",
                     "data_schema": vol.Schema({
-                        vol.Required("entities"): selector.EntitySelector(
-                            selector.EntitySelectorConfig(domain="sensor", multiple=True)),
+                        vol.Required("entity", description={"suggested_value": current}):
+                            selector.EntitySelector(
+                                selector.EntitySelectorConfig(domain="sensor")),
                     })}
 
         async def _configure(flow_id, user_input=None):
@@ -361,7 +380,9 @@ class TestReconfigureMechanism:
                 return result
             applied["settings"] = user_input
             entry = hass.config_entries.async_get_entry("data1")
-            hass.config_entries.async_update_entry(entry, data=user_input)
+            # The flow transforms the form field into the stored shape.
+            hass.config_entries.async_update_entry(
+                entry, data={"entities": [user_input["entity"]]})
             # HA's async_update_reload_and_abort updates the entry and then
             # ABORTS the flow; there is no CREATE_ENTRY on this path.
             return {"type": FlowResultType.ABORT, "reason": "reconfigure_successful"}
@@ -382,7 +403,12 @@ class TestReconfigureMechanism:
         assert body["mechanism"] == "reconfigure"
         # entry.data, not entry.options: an options flow would read the wrong store.
         assert body["settings"] == {"entities": ["sensor.kitchen"]}
-        assert body["editable_settings"] == {"entities": ["sensor.kitchen"]}
+        # LIVE-FOUND. Intersecting stored keys with field names was the first
+        # attempt and returns {} here, reporting that nothing can be changed on a
+        # helper that reconfigures fine: this one stores "entities" (a list) and
+        # its form field is "entity" (one id). The form's shape is the caller's
+        # business; the stored shape is the integration's.
+        assert body["editable_settings"] == {"entity": "sensor.kitchen"}
 
     async def test_a_successful_reconfigure_is_not_read_as_a_failure(
         self, hass, data_entry, as_data_helper,
@@ -395,10 +421,10 @@ class TestReconfigureMechanism:
         with init, configure:
             content, outcome, _ = await _call(
                 "set_config_entry_options",
-                {"entry_id": "data1", "settings": {"entities": ["sensor.other"]}},
+                {"entry_id": "data1", "settings": {"entity": "sensor.other"}},
                 _token(), hass)
         assert outcome == "allowed"
-        assert applied["settings"] == {"entities": ["sensor.other"]}
+        assert applied["settings"] == {"entity": "sensor.other"}
         assert _json(content)["settings"] == {"entities": ["sensor.other"]}
 
     async def test_an_abort_for_any_other_reason_is_still_a_refusal(
@@ -411,7 +437,7 @@ class TestReconfigureMechanism:
         with init, configure:
             content, outcome, _ = await _call(
                 "set_config_entry_options",
-                {"entry_id": "data1", "settings": {"entities": ["sensor.other"]}},
+                {"entry_id": "data1", "settings": {"entity": "sensor.other"}},
                 _token(), hass)
         assert outcome == "invalid_request"
         assert "already_configured" in content["content"][0]["text"]
@@ -429,7 +455,7 @@ class TestReconfigureMechanism:
                 patch.object(hass.config_entries.flow, "async_abort") as flow_abort, \
                 patch.object(hass.config_entries.options, "async_abort") as options_abort:
             await _call("set_config_entry_options",
-                        {"entry_id": "data1", "settings": {"entities": ["sensor.other"]}},
+                        {"entry_id": "data1", "settings": {"entity": "sensor.other"}},
                         _token(), hass)
         flow_abort.assert_called_once_with("rf1")
         options_abort.assert_not_called()
@@ -440,7 +466,7 @@ class TestReconfigureMechanism:
         hass.states.async_set("lock.secret", "locked", {})
         _c, outcome, _ = await _call(
             "set_config_entry_options",
-            {"entry_id": "data1", "settings": {"entities": ["lock.secret"]}}, _token(), hass)
+            {"entry_id": "data1", "settings": {"entity": "lock.secret"}}, _token(), hass)
         assert outcome == "denied"
 
     async def test_an_undescribable_schema_does_not_claim_there_are_no_fields(
