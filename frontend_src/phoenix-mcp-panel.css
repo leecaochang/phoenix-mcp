@@ -2338,6 +2338,30 @@ hui-card { display: block; min-width: 0; }
 .agentcli-add-row select { flex: 0 1 auto; }
 .agentcli-add-form { border: 1px dashed var(--phx-border); border-radius: var(--phx-radius-sm); padding: 10px; margin-bottom: 10px; }
 .agentcli-settings-hint { font-size: 12px; color: var(--phx-text-2); }
+/* Square icon actions on a provider account. Four labelled buttons plus a status
+   line had grown into more than a card can carry, so the actions became icons and
+   the status moved onto the tooltip of the button it belongs to. Every one keeps
+   a real accessible name; the icon is decoration, never the label. */
+.agentcli-icon-row { display: flex; align-items: center; gap: 4px; flex: none; }
+.agentcli-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; cursor: pointer;
+  border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm);
+  background: var(--phx-surface); color: var(--phx-text-2);
+}
+.agentcli-icon-btn:hover:not(:disabled) { color: var(--phx-text); border-color: var(--phx-text-2); }
+.agentcli-icon-btn:disabled { opacity: 0.4; cursor: default; }
+/* Destructive, so it reads as different BEFORE it is hovered: an icon row is
+   scanned, and a delete that looks like its neighbours is a delete that gets
+   clicked by mistake. */
+.agentcli-icon-btn.is-danger { color: var(--phx-error); border-color: var(--phx-error); }
+.agentcli-icon-btn.is-danger:hover:not(:disabled) { background: var(--phx-error-bg); color: var(--phx-error); }
+.agentcli-icon-btn.is-busy { opacity: 0.6; }
+.agentcli-settings-probe-opt {
+  display: flex; align-items: flex-start; gap: 8px; font-size: 12px;
+  color: var(--phx-text-2); line-height: 1.4;
+}
+
 /* A closable account warning, and the marker it leaves behind. The close control
    is pushed to the end rather than floated so a long message wraps under itself
    instead of under the button. */

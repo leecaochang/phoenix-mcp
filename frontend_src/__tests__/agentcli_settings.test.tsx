@@ -7,6 +7,8 @@ const createAgentCliProvider = vi.fn();
 const deleteAgentCliProvider = vi.fn();
 const getAgentCliModels = vi.fn();
 const setAgentCliProviderModel = vi.fn();
+const probeAgentCliCapabilities = vi.fn();
+const refreshAgentCliProvider = vi.fn();
 
 vi.mock("../api", () => ({
   api: {
@@ -16,6 +18,8 @@ vi.mock("../api", () => ({
     deleteAgentCliProvider: (...a: unknown[]) => deleteAgentCliProvider(...a),
     getAgentCliModels: (...a: unknown[]) => getAgentCliModels(...a),
     setAgentCliProviderModel: (...a: unknown[]) => setAgentCliProviderModel(...a),
+    probeAgentCliCapabilities: (...a: unknown[]) => probeAgentCliCapabilities(...a),
+    refreshAgentCliProvider: (...a: unknown[]) => refreshAgentCliProvider(...a),
   },
 }));
 
@@ -86,7 +90,7 @@ describe("AgentCliSettings", () => {
   it("Remove asks for confirmation before deleting the instance", async () => {
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Remove"));
+    fireEvent.click(screen.getByLabelText(/^Remove /));
     await waitFor(() => expect(screen.getByText(/Remove provider/i)).toBeInTheDocument());
     expect(deleteAgentCliProvider).not.toHaveBeenCalled();
     const removeButtons = screen.getAllByText("Remove");
@@ -98,7 +102,7 @@ describe("AgentCliSettings", () => {
     deleteAgentCliProvider.mockRejectedValueOnce(new Error("server unreachable"));
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Remove"));
+    fireEvent.click(screen.getByLabelText(/^Remove /));
     await waitFor(() => expect(screen.getByText(/Remove provider/i)).toBeInTheDocument());
     const removeButtons = screen.getAllByText("Remove");
     fireEvent.click(removeButtons[removeButtons.length - 1]);
@@ -175,7 +179,7 @@ describe("AgentCliSettings default model", () => {
 
   it("changes the default model without touching the credential", async () => {
     renderCard();
-    fireEvent.click(await screen.findByText("Change model"));
+    fireEvent.click(await screen.findByLabelText("Change default model"));
     const select = await screen.findByLabelText("Select default model:");
     fireEvent.change(select, { target: { value: "deepseek-v4-pro" } });
     fireEvent.click(screen.getByText("Save"));
@@ -196,7 +200,7 @@ describe("AgentCliSettings default model", () => {
 
   it("says nothing when the configured model is still offered", async () => {
     renderCard();
-    await screen.findByText("Change model");
+    await screen.findByLabelText("Change default model");
     await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
     expect(screen.queryByText(/no longer offers/)).toBeNull();
   });
@@ -210,7 +214,7 @@ describe("AgentCliSettings default model", () => {
     });
     getAgentCliModels.mockRejectedValue(new Error("connection refused"));
     renderCard();
-    await screen.findByText("Change model");
+    await screen.findByLabelText("Change default model");
     await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
     expect(screen.queryByText(/no longer offers/)).toBeNull();
   });
@@ -221,7 +225,7 @@ describe("AgentCliSettings default model", () => {
     });
     getAgentCliModels.mockResolvedValue({ models: [] });
     renderCard();
-    await screen.findByText("Change model");
+    await screen.findByLabelText("Change default model");
     await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
     expect(screen.queryByText(/no longer offers/)).toBeNull();
   });
@@ -238,7 +242,7 @@ describe("AgentCliSettings default model", () => {
     });
     getAgentCliModels.mockResolvedValue({ models: ["still-here:8b"] });
     renderCard();
-    fireEvent.click(await screen.findByText("Change model"));
+    fireEvent.click(await screen.findByLabelText("Change default model"));
     const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
     expect(select.value).toBe("gone:8b");
     const stale = [...select.options].find((o) => o.value === "gone:8b");
@@ -256,7 +260,7 @@ describe("AgentCliSettings default model", () => {
     });
     getAgentCliModels.mockResolvedValue({ models: ["a:8b", "b:8b"] });
     renderCard();
-    fireEvent.click(await screen.findByText("Change model"));
+    fireEvent.click(await screen.findByLabelText("Change default model"));
     const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
     expect([...select.options].every((o) => !o.disabled)).toBe(true);
     fireEvent.change(select, { target: { value: "b:8b" } });
@@ -282,7 +286,7 @@ describe("AgentCliSettings tool-calling capability", () => {
   it("marks an unusable model on its own option instead of in a banner", async () => {
     withCaps("good", ["good", "notools"], { good: { tools: true }, notools: { tools: false } });
     renderCard();
-    fireEvent.click(await screen.findByText("Change model"));
+    fireEvent.click(await screen.findByLabelText("Change default model"));
     const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
     const bad = [...select.options].find((o) => o.value === "notools")!;
     expect(bad.disabled).toBe(true);
@@ -296,7 +300,7 @@ describe("AgentCliSettings tool-calling capability", () => {
     // dismissed either.
     withCaps("good", ["good", "notools"], { good: { tools: true }, notools: { tools: false } });
     renderCard();
-    await screen.findByText("Change model");
+    await screen.findByLabelText("Change default model");
     await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
     expect(screen.queryByText(/cannot call tools/)).toBeNull();
   });
@@ -311,7 +315,7 @@ describe("AgentCliSettings tool-calling capability", () => {
     // Most providers publish nothing. An undeclared model is not an unusable one.
     withCaps("mystery", ["mystery"], {});
     renderCard();
-    fireEvent.click(await screen.findByText("Change model"));
+    fireEvent.click(await screen.findByLabelText("Change default model"));
     const select = await screen.findByLabelText("Select default model:") as HTMLSelectElement;
     expect([...select.options].every((o) => !o.disabled)).toBe(true);
     expect(screen.queryByText(/cannot call tools/)).toBeNull();
@@ -346,7 +350,7 @@ describe("AgentCliSettings dismissible warnings", () => {
     await waitFor(() => expect(screen.queryByText(/no longer offers/)).toBeNull());
     unmount();
     renderCard();
-    await screen.findByText("Change model");
+    await screen.findByLabelText("Change default model");
     expect(screen.queryByText(/no longer offers/)).toBeNull();
     expect(screen.getByLabelText(/no longer offers gone:8b/)).toBeTruthy();
   });
@@ -371,9 +375,173 @@ describe("AgentCliSettings dismissible warnings", () => {
       instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "here:8b" }],
     });
     renderCard();
-    await screen.findByText("Change model");
+    await screen.findByLabelText("Change default model");
     await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
     expect(screen.queryByLabelText("Dismiss this warning")).toBeNull();
     expect(screen.queryByText(/no longer offers/)).toBeNull();
+  });
+});
+
+// The probe is the only control on this card that spends money, which is why it
+// has its own button and its own confirmation.
+describe("AgentCliSettings capability probe", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["deepseek-v4-flash"] });
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "deepseek-v4-flash", probed: { effort_levels: ["low", "high", "max"] },
+      calls: 7, checked_at: "2026-08-04T00:00:00Z", effort_checkable: true,
+    });
+  });
+
+  it("asks before spending anything, and says so", async () => {
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    // The confirmation has to name the cost: it is the one thing that separates
+    // this button from the free refresh beside it.
+    expect(await screen.findByText(/uses your own API credit/)).toBeTruthy();
+    expect(probeAgentCliCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("cancelling spends nothing", async () => {
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    fireEvent.click(await screen.findByText("Cancel"));
+    await waitFor(() => expect(screen.queryByText(/uses your own API credit/)).toBeNull());
+    expect(probeAgentCliCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("reports the levels it established and how many calls it took", async () => {
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    fireEvent.click(await screen.findByText("Check now"));
+    await waitFor(() => expect(probeAgentCliCapabilities).toHaveBeenCalledWith("i1"));
+    expect(await screen.findByText(/Thinking levels accepted: Low, High, Max/)).toBeTruthy();
+    expect(screen.getByText(/7 requests/)).toBeTruthy();
+  });
+
+  it("says plainly when nothing could be established", async () => {
+    // Not a failure: a provider that ignores unknown parameters cannot be asked
+    // this way, and reporting that as an error would send someone debugging.
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "m", probed: {}, calls: 2, checked_at: "2026-08-04T00:00:00Z", effort_checkable: true,
+    });
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    fireEvent.click(await screen.findByText("Check now"));
+    expect(await screen.findByText(/does not validate the options/)).toBeTruthy();
+  });
+
+  it("cannot be run on an account with no model chosen", async () => {
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{ id: "i1", kind: "ollama", name: "Ollama", model: "" }],
+    });
+    renderCard();
+    expect((await screen.findByLabelText("Check options") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says there was nothing to check, not that the provider ignored us", async () => {
+    // Live-found on a backend whose thinking control is a boolean flag: the probe
+    // correctly skipped the effort stage, and the panel reported that as "this
+    // provider does not validate the options", blaming it for ignoring a question
+    // nobody had asked.
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "gemma", probed: {}, calls: 1, checked_at: "2026-08-04T00:00:00Z",
+      effort_checkable: false,
+    });
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    fireEvent.click(await screen.findByText("Check now"));
+    expect(await screen.findByText(/no levels to check/)).toBeTruthy();
+    expect(screen.queryByText(/does not validate the options/)).toBeNull();
+  });
+});
+
+// Four labelled buttons plus a status line outgrew the card, so the actions
+// became icons. An icon carries no name, which makes the accessible name the
+// only name there is.
+describe("AgentCliSettings account actions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    getAgentCliProviders.mockResolvedValue({
+      instances: [{
+        id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash",
+        capabilities_checked_at: "2026-08-04T00:00:00Z",
+      }],
+    });
+    getAgentCliModels.mockResolvedValue({ models: ["deepseek-v4-flash"] });
+  });
+
+  it("every action has an accessible name, and the icon is never the label", async () => {
+    renderCard();
+    expect(await screen.findByLabelText("Change default model")).toBeTruthy();
+    expect(screen.getByLabelText("Refresh models")).toBeTruthy();
+    expect(screen.getByLabelText(/^Check options/)).toBeTruthy();
+    // Naming the account matters here: with four identical squares, "Remove"
+    // alone does not say what is about to be removed.
+    expect(screen.getByLabelText("Remove DeepSeek")).toBeTruthy();
+  });
+
+  it("the last-checked time rides on the button it belongs to", async () => {
+    // It used to be its own line, which is what made the card too busy.
+    renderCard();
+    const probe = await screen.findByLabelText(/^Check options \(last checked/);
+    expect(probe.getAttribute("title")).toBe(probe.getAttribute("aria-label"));
+    expect(screen.queryByText(/Capabilities last checked/)).toBeNull();
+  });
+
+  it("a running action renames itself rather than only spinning", async () => {
+    let release: (v: unknown) => void = () => {};
+    refreshAgentCliProvider.mockReturnValue(new Promise((r) => { release = r; }));
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Refresh models"));
+    // An icon that merely spins announces nothing to a screen reader.
+    expect(await screen.findByLabelText("Refreshing...")).toBeTruthy();
+    release({ models: [], capabilities: {}, declared: false, checked_at: "x" });
+  });
+
+  it("checks the new model's options as part of adding an account", async () => {
+    // The point of doing it here is that it matters BEFORE the first
+    // conversation, not after one behaves oddly.
+    createAgentCliProvider.mockResolvedValue({ instance: { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" } });
+    probeAgentCliCapabilities.mockResolvedValue({
+      model: "claude-opus-4-8", probed: {}, calls: 2, checked_at: "x", effort_checkable: true,
+    });
+    renderCard();
+    fireEvent.click(await screen.findByText("Add new provider…"));
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
+    fireEvent.click(screen.getByText("Validate"));
+    fireEvent.click(await screen.findByText("Done"));
+    await waitFor(() => expect(probeAgentCliCapabilities).toHaveBeenCalledWith("new1"));
+  });
+
+  it("adding without the check spends nothing", async () => {
+    createAgentCliProvider.mockResolvedValue({ instance: { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" } });
+    renderCard();
+    fireEvent.click(await screen.findByText("Add new provider…"));
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
+    fireEvent.click(screen.getByText("Validate"));
+    fireEvent.click(await screen.findByLabelText(/Check which options this model accepts/));
+    fireEvent.click(screen.getByText("Done"));
+    await waitFor(() => expect(createAgentCliProvider).toHaveBeenCalled());
+    expect(probeAgentCliCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("a failed check does not fail the account", async () => {
+    // The account is already stored and working; the card can retry.
+    createAgentCliProvider.mockResolvedValue({ instance: { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" } });
+    probeAgentCliCapabilities.mockRejectedValue(new Error("rate limited"));
+    renderCard();
+    fireEvent.click(await screen.findByText("Add new provider…"));
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
+    fireEvent.click(screen.getByText("Validate"));
+    fireEvent.click(await screen.findByText("Done"));
+    await waitFor(() => expect(createAgentCliProvider).toHaveBeenCalled());
+    expect(screen.queryByText("rate limited")).toBeNull();
   });
 });

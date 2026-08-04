@@ -196,6 +196,10 @@ export interface DeclaredModelCaps {
   tools?: boolean;
   thinking?: boolean;
   temperature?: boolean;
+  /** Effort levels the API accepted when probed. Present only when the field was
+   *  proved to be validated first, so an empty or absent value means "unknown",
+   *  never "none". */
+  effort_levels?: string[];
 }
 
 export interface AgentCliInstance {

@@ -208,6 +208,7 @@ POST    /api/phoenix-mcp/admin/mesa/suggestions/restore    Restore a dismissed s
 POST    /api/phoenix-mcp/admin/agentcli/providers                      Add a provider account (validated before it is stored)
 PATCH   /api/phoenix-mcp/admin/agentcli/providers/{instance_id}         Change that account's default model
 POST    /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/refresh Re-read that account's models and declared capabilities
+POST    /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/probe   Ask the API which options the selected model accepts (uses API credit)
 DELETE  /api/phoenix-mcp/admin/agentcli/providers/{instance_id}         Remove a provider account
 GET     /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/models  List that account's available models
 POST    /api/phoenix-mcp/admin/agentcli/probe                           Validate credentials and list models, without storing anything

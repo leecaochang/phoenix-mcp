@@ -6,7 +6,7 @@ import {
   getSessionDraft, setSessionDraft,
   getSessionUsage, setSessionUsage, type SessionUsage,
 } from "../utils/agentcli_state";
-import { approvalStatusLabel } from "../utils";
+import { approvalStatusLabel, effortLevelLabel } from "../utils";
 import { clearReasonDraft, getReasonDraft } from "../utils/approval_reason_draft";
 import { subscribeApprovalEvents } from "../utils/approval_events";
 import PHOENIX_ICON from "../../custom_components/phoenix_mcp/brand/icon.png";
@@ -120,14 +120,8 @@ export interface ModelCaps {
   note?: string;             // shown when thinking is intrinsic and not selectable
 }
 
-const LEVEL_LABEL: Record<string, string> = {
-  off: "agentchat.levelOff", none: "agentchat.levelOff", on: "agentchat.levelOn",
-  minimal: "agentchat.levelMinimal", low: "agentchat.levelLow",
-  medium: "agentchat.levelMedium", high: "agentchat.levelHigh",
-  xhigh: "agentchat.levelXHigh", max: "agentchat.levelMax",
-};
 function thinkOpts(values: string[]): ThinkOption[] {
-  return values.map((v) => ({ value: v, label: LEVEL_LABEL[v] ? t(LEVEL_LABEL[v]) : v }));
+  return values.map((v) => ({ value: v, label: effortLevelLabel(v) }));
 }
 
 /** Narrow the shipped table by what the provider DECLARED about this model.
@@ -145,6 +139,25 @@ function applyDeclared(caps: ModelCaps, declared?: DeclaredModelCaps): ModelCaps
   const out = { ...caps };
   if (declared.thinking === false) out.thinking = [];
   if (declared.temperature === false) out.temperature = false;
+  // Probed effort levels REPLACE the table's guess rather than narrowing it, and
+  // this is the one place discovery may add something. It is sound only because
+  // the probe proved the field was validated before trusting any level: an
+  // unvalidated field records nothing at all, so a list here means the API
+  // accepted exactly these and refused the rest. "off" is kept if the table had
+  // it, since that is Phoenix not sending the field rather than a level.
+  // style must be "effort": a boolean control (Ollama's `think` flag) has no
+  // level vocabulary, so replacing its on/off pair with effort levels would
+  // build a dropdown whose values the backend does not know how to send.
+  if (declared.effort_levels?.length && out.style === "effort" && out.thinking.length) {
+    const keepOff = out.thinking.some((o) => o.value === "off");
+    out.thinking = [
+      ...(keepOff ? thinkOpts(["off"]) : []),
+      ...thinkOpts(declared.effort_levels),
+    ];
+    if (!declared.effort_levels.includes(out.defaultLevel)) {
+      out.defaultLevel = declared.effort_levels[declared.effort_levels.length - 1];
+    }
+  }
   return out;
 }
 

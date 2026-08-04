@@ -2437,3 +2437,126 @@ class TestDeclaredCapabilities:
         row = store.list_instances()[0]
         assert row["capabilities"] == {}
         assert row["capabilities_checked_at"] is None
+
+
+# --- capability PROBE: asking the API instead of guessing ---
+
+
+class _ProbeProvider:
+    """Stands in for a provider, answering a scripted status per request body."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.sent: list[dict] = []
+
+    async def probe_option(self, session, extra: dict):
+        self.sent.append(extra)
+        return self.answer(extra)
+
+
+def _effort_of(extra: dict):
+    """The effort level in a probe fragment, whichever backend shape it uses."""
+    if "reasoning_effort" in extra:
+        return extra["reasoning_effort"]
+    return (extra.get("output_config") or {}).get("effort")
+
+
+class TestCapabilityProbe:
+    """The two-stage technique, and it is the ORDER that makes it sound.
+
+    Stage one sends a deliberately invalid effort and asks whether the field is
+    VALIDATED. Only then does stage two's 200 mean anything, because a field
+    known to be validated accepts a value only if it is in the vocabulary.
+    Without stage one, a server that ignores unknown parameters answers 200 to
+    every level and reads as "supports all five".
+    """
+
+    async def _probe(self, hass, kind, answer, model="m"):
+        from unittest.mock import MagicMock, patch
+        cfg = agentcli.ProviderConfig(kind=kind, model=model, base_url="https://x", api_key="k")
+        prov = _ProbeProvider(answer)
+        with patch.object(agentcli, "build_provider", return_value=prov):
+            caps, calls = await agentcli.async_probe_capabilities(MagicMock(), cfg)
+        return caps, calls, prov
+
+    @pytest.mark.asyncio
+    async def test_finds_the_levels_a_validated_field_accepts(self, hass):
+        from custom_components.phoenix_mcp.const import AGENTCLI_PROBE_SENTINEL
+        accepted = {"low", "high", "max"}
+
+        def answer(extra):
+            level = _effort_of(extra)
+            if level is None:
+                return 200                      # the temperature probe
+            return 200 if level in accepted else 400
+
+        caps, _calls, prov = await self._probe(hass, "deepseek", answer)
+        assert caps["effort_levels"] == ["low", "high", "max"]
+        # The sentinel went first: the validation question has to be answered
+        # before any level result can be read.
+        assert _effort_of(prov.sent[0]) == AGENTCLI_PROBE_SENTINEL
+        # DeepSeek only reads the effort when thinking is on, so a probe that
+        # omitted the toggle would test nothing and pass every level.
+        assert prov.sent[0]["thinking"] == {"type": "enabled"}
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_ignores_unknown_parameters_teaches_nothing(self, hass):
+        """The failure this whole design exists to avoid: everything answers 200,
+        which would read as "supports all five levels"."""
+        caps, calls, prov = await self._probe(hass, "deepseek", lambda extra: 200)
+        assert "effort_levels" not in caps
+        # One sentinel call, then it gave up on levels entirely.
+        assert calls == 2  # sentinel + temperature
+        assert len([s for s in prov.sent if _effort_of(s)]) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_provider_records_nothing(self, hass):
+        caps, _calls, _p = await self._probe(hass, "deepseek", lambda extra: None)
+        assert caps == {}
+
+    @pytest.mark.asyncio
+    async def test_every_level_refused_records_nothing(self, hass):
+        """Cannot be true of a working model, so something else answered the
+        calls; recording it would strip the control entirely."""
+        caps, _calls, _p = await self._probe(hass, "deepseek", lambda extra: 400)
+        assert "effort_levels" not in caps
+
+    @pytest.mark.asyncio
+    async def test_a_refused_temperature_is_recorded_a_accepted_one_is_not(self, hass):
+        def refuses_temp(extra):
+            if "temperature" in extra:
+                return 400
+            return 200 if _effort_of(extra) != "phoenix-probe-invalid" else 400
+        caps, _c, _p = await self._probe(hass, "chatgpt", refuses_temp)
+        assert caps["temperature"] is False
+
+        def accepts_temp(extra):
+            return 200 if "temperature" in extra else 400
+        caps, _c, _p = await self._probe(hass, "chatgpt", accepts_temp)
+        # An accepted temperature may still be ignored, so 200 records nothing.
+        assert "temperature" not in caps
+
+    @pytest.mark.asyncio
+    async def test_a_backend_with_no_effort_control_is_not_probed_for_one(self, hass):
+        """Ollama takes a boolean think flag and OpenRouter passes through
+        whatever the underlying model takes, so there is no vocabulary here that
+        belongs to the account."""
+        caps, calls, prov = await self._probe(hass, "ollama", lambda extra: 400)
+        assert "effort_levels" not in caps
+        assert calls == 1                       # temperature only
+        assert all(_effort_of(s) is None for s in prov.sent)
+
+    @pytest.mark.asyncio
+    async def test_claude_uses_its_own_nested_effort_field(self, hass):
+        caps, _c, prov = await self._probe(
+            hass, "claude", lambda extra: 400 if _effort_of(extra) == "phoenix-probe-invalid" else 200)
+        assert caps["effort_levels"] == list(
+            __import__("custom_components.phoenix_mcp.const", fromlist=["x"]).AGENTCLI_EFFORT_LEVEL_ORDER)
+        assert "output_config" in prov.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_the_run_is_bounded(self, hass):
+        from custom_components.phoenix_mcp.const import AGENTCLI_PROBE_MAX_CALLS
+        _caps, calls, _p = await self._probe(
+            hass, "deepseek", lambda extra: 400 if _effort_of(extra) == "phoenix-probe-invalid" else 200)
+        assert calls <= AGENTCLI_PROBE_MAX_CALLS

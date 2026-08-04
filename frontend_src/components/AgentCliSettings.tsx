@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
-import { formatDateTime } from "../utils";
+import { effortLevelLabel, formatDateTime } from "../utils";
 import type { AgentCliInstance, AgentCliProviderKind } from "../types";
 import { t } from "../i18n";
 import { tRich } from "../i18n/rich";
@@ -79,6 +79,45 @@ function WarningBadge({ text, onShow }: { text: string; onShow: () => void }) {
   );
 }
 
+/** A square icon action. Icon-only, so the accessible name and the tooltip are
+ *  the SAME localized sentence: a screen reader and a hovering mouse must not be
+ *  told different things, and neither may be told a slug. */
+function IconButton({ label, busyLabel, danger, disabled, busy, onClick, children }: {
+  label: string; busyLabel?: string; danger?: boolean; disabled?: boolean; busy?: boolean;
+  onClick: () => void; children: React.ReactNode;
+}) {
+  // While running, the NAME changes rather than only the styling. A text button
+  // said "Refreshing..."; an icon that merely spins tells a screen reader
+  // nothing, so the running state has to live somewhere a name can carry it.
+  const name = busy && busyLabel ? busyLabel : label;
+  return (
+    <button type="button" onClick={onClick} disabled={disabled}
+            className={`agentcli-icon-btn${danger ? " is-danger" : ""}${busy ? " is-busy" : ""}`}
+            aria-label={name} title={name} aria-busy={busy || undefined}>
+      {children}
+    </button>
+  );
+}
+
+const ICON_PROPS = {
+  width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+  strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const,
+  "aria-hidden": true, style: { display: "block" },
+};
+
+const EditIcon = () => (
+  <svg {...ICON_PROPS}><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z" /><path d="M14.5 6.5l3 3" /></svg>
+);
+const RefreshIcon = () => (
+  <svg {...ICON_PROPS}><path d="M20 11a8 8 0 1 0-.6 4" /><path d="M20 4v7h-7" /></svg>
+);
+const ProbeIcon = () => (
+  <svg {...ICON_PROPS}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.6-3.6" /><path d="M8.5 11l2 2 4-4" /></svg>
+);
+const TrashIcon = () => (
+  <svg {...ICON_PROPS}><path d="M4 7h16" /><path d="M9 7V5h6v2" /><path d="M6 7l1 13h10l1-13" /></svg>
+);
+
 function notifyChanged() {
   window.dispatchEvent(new CustomEvent("phx-agentcli-providers-changed"));
 }
@@ -100,9 +139,11 @@ interface FormState {
   validating: boolean;
   validated: boolean;
   error: string | null;
+  /** Check the model's real options right after the account is stored. */
+  probe: boolean;
 }
 
-const EMPTY_FORM: FormState = { credential: "", model: "", models: [], validating: false, validated: false, error: null };
+const EMPTY_FORM: FormState = { credential: "", model: "", models: [], validating: false, validated: false, error: null, probe: true };
 
 export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations, onMaxIterationsChange, globalVisible, onGlobalChange, saving }: Props) {
   const [instances, setInstances] = useState<AgentCliInstance[] | null>(null);
@@ -223,6 +264,40 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   const cannotCallTools = (inst: AgentCliInstance, model: string) =>
     inst.capabilities?.[model]?.tools === false;
 
+  // Capability probe. Its own button and its own confirmation, because unlike
+  // everything else on this card it spends the operator's credit: a handful of
+  // one-token completions against the selected model.
+  const [probing, setProbing] = useState<string | null>(null);
+  const [confirmProbe, setConfirmProbe] = useState<AgentCliInstance | null>(null);
+
+  const probeCaps = async (inst: AgentCliInstance) => {
+    setProbing(inst.id);
+    setConfirmProbe(null);
+    setRefreshResult((r) => ({ ...r, [inst.id]: "" }));
+    try {
+      const r = await api.probeAgentCliCapabilities(inst.id);
+      await load();
+      // Three outcomes, not two. "Nothing to ask" and "asked and learned
+      // nothing" are different facts, and reporting the first as the second
+      // blames a provider for ignoring a question nobody put to it.
+      const found = r.probed.effort_levels?.length
+        ? t("settings.agentcliProbedLevels", {
+            levels: r.probed.effort_levels.map(effortLevelLabel).join(t("common.listSeparator")),
+          })
+        : r.effort_checkable
+          ? t("settings.agentcliProbedNothing")
+          : t("settings.agentcliProbedNoLevels");
+      setRefreshResult((res) => ({ ...res, [inst.id]: t("settings.agentcliProbed", { calls: r.calls, found }) }));
+    } catch (err: unknown) {
+      setRefreshResult((res) => ({
+        ...res,
+        [inst.id]: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed"),
+      }));
+    } finally {
+      setProbing(null);
+    }
+  };
+
   const saveModel = async (id: string) => {
     setBusy(true);
     setModelError(null);
@@ -274,10 +349,15 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
     const value = form.credential.trim();
     setBusy(true);
     try {
-      await api.createAgentCliProvider(adding, {
+      const created = await api.createAgentCliProvider(adding, {
         ...(meta(adding)?.keyless ? { base_url: value } : { api_key: value }),
         ...(form.model ? { model: form.model } : {}),
       });
+      // Best-effort: a failed check must not fail the account, which is already
+      // stored and working. The operator can run it again from the card.
+      if (form.probe && form.model && created.instance?.id) {
+        try { await api.probeAgentCliCapabilities(created.instance.id); } catch { /* card can retry */ }
+      }
       await load();
       notifyChanged();
       setAdding(null);
@@ -394,6 +474,13 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
               </select>
             </label>
           )}
+          {form.validated && (
+            <label className="agentcli-settings-probe-opt">
+              <input type="checkbox" checked={form.probe}
+                     onChange={(e) => setForm((f) => ({ ...f, probe: e.target.checked }))} />
+              <span>{t("settings.agentcliProbeOnAdd")}</span>
+            </label>
+          )}
           <div className="agentcli-settings-form-actions">
             {form.validated ? (
               <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void done()}>{t("settings.agentcliDone")}</button>
@@ -459,24 +546,38 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
                                   onShow={() => setDismissedFlag(inst, "notools", false)} />
                   )}
                 </span>
-                <button className="btn btn-sm" disabled={busy}
-                        onClick={() => { setEditing(inst.id); setModelDraft(inst.model); setModelError(null); }}>
-                  {t("settings.agentcliChangeModel")}
-                </button>
-                <button className="btn btn-sm" disabled={busy || refreshing !== null}
-                        onClick={() => void refresh(inst)}>
-                  {refreshing === inst.id ? t("settings.agentcliRefreshing") : t("settings.agentcliRefresh")}
-                </button>
-                <button className="btn btn-sm" disabled={busy} onClick={() => setConfirmRemove(inst)}>{t("settings.remove")}</button>
+                <div className="agentcli-icon-row">
+                  <IconButton label={t("settings.agentcliChangeModel")} disabled={busy}
+                              onClick={() => { setEditing(inst.id); setModelDraft(inst.model); setModelError(null); }}>
+                    <EditIcon />
+                  </IconButton>
+                  <IconButton label={t("settings.agentcliRefresh")} busy={refreshing === inst.id}
+                              busyLabel={t("settings.agentcliRefreshing")}
+                              disabled={busy || refreshing !== null} onClick={() => void refresh(inst)}>
+                    <RefreshIcon />
+                  </IconButton>
+                  {/* The last-checked time rides on this button's own tooltip
+                      rather than a separate line: it is a property of the check,
+                      and a card of four controls plus a status line was reported
+                      as too much to read. */}
+                  <IconButton busy={probing === inst.id}
+                              busyLabel={t("settings.agentcliProbing")}
+                              label={inst.capabilities_checked_at
+                                ? t("settings.agentcliProbeCapsChecked", { when: formatDateTime(inst.capabilities_checked_at) })
+                                : t("settings.agentcliProbeCaps")}
+                              disabled={busy || probing !== null || !inst.model}
+                              onClick={() => setConfirmProbe(inst)}>
+                    <ProbeIcon />
+                  </IconButton>
+                  <IconButton label={t("settings.agentcliRemoveAccount", { name: inst.name })} danger
+                              disabled={busy} onClick={() => setConfirmRemove(inst)}>
+                    <TrashIcon />
+                  </IconButton>
+                </div>
               </div>
             )}
             {refreshResult[inst.id] && (
               <div className="agentcli-settings-hint" role="status">{refreshResult[inst.id]}</div>
-            )}
-            {inst.capabilities_checked_at && (
-              <div className="agentcli-settings-hint">
-                {t("settings.agentcliCapsChecked", { when: formatDateTime(inst.capabilities_checked_at) })}
-              </div>
             )}
             {inst.model && cannotCallTools(inst, inst.model) && !isDismissed(inst, "notools") && (
               <DismissibleWarning
@@ -493,6 +594,20 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
           <div className="agentcli-settings-hint">{t("settings.agentcliNoAccounts")}</div>
         )}
       </div>
+
+      {confirmProbe && (
+        <Modal titleId="agentcli-probe-title" onClose={() => setConfirmProbe(null)}>
+          <h3 className="modal-title" id="agentcli-probe-title">{t("settings.agentcliProbeTitle")}</h3>
+          <p>{tRich("settings.agentcliProbeBody", { strong: (c) => <strong>{c}</strong> },
+                    { model: confirmProbe.model, name: confirmProbe.name })}</p>
+          <div className="modal-actions">
+            <button className="btn btn-primary btn-sm" disabled={busy}
+                    onClick={() => void probeCaps(confirmProbe)}>{t("settings.agentcliProbeRun")}</button>
+            <button className="btn btn-text" disabled={busy}
+                    onClick={() => setConfirmProbe(null)}>{t("settings.cancel")}</button>
+          </div>
+        </Modal>
+      )}
 
       {confirmRemove && (
         <Modal titleId="agentcli-remove-title" onClose={() => { setConfirmRemove(null); setRemoveError(null); }}>

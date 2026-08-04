@@ -178,6 +178,20 @@ AGENTCLI_CAPABILITY_CONCURRENCY = 6
 
 AGENTCLI_DEFAULT_EFFORT = "high"
 AGENTCLI_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
+# The same levels in a fixed order, which the capability probe walks. A frozenset
+# iterates arbitrarily, and a probe that reports its findings in a different order
+# each run reads as a changing answer when nothing changed.
+AGENTCLI_EFFORT_LEVEL_ORDER = ("low", "medium", "high", "xhigh", "max")
+
+# The value the probe sends when it is asking "is this field read at all". It has
+# to be something no provider could ever accept as a real level, and recognisable
+# in a provider's own logs as a deliberate probe rather than a malformed client.
+AGENTCLI_PROBE_SENTINEL = "phoenix-probe-invalid"
+
+# Hard cap on completion requests one probe run may make. The matrix is bounded by
+# construction (one validation check plus five levels plus temperature), so this
+# is a backstop against a future knob turning a button into an unbounded spend.
+AGENTCLI_PROBE_MAX_CALLS = 10
 # Per-turn cap on provider<->tool round trips before the loop pauses. In the
 # interactive chat this is a "continue?" checkpoint (the operator can grant
 # another N rounds), not a hard stop; the headless voice/AI-task loops stop

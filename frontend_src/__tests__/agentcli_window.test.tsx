@@ -1245,3 +1245,36 @@ describe("modelCaps with declared capabilities", () => {
     expect(declared.temperature).toBe(shipped.temperature);
   });
 });
+
+// Probed levels are the ONE case where discovery may add rather than only remove,
+// and it is sound only because the probe proved the field was validated first.
+describe("modelCaps with probed effort levels", () => {
+  const vals3 = (c: { thinking: { value: string }[] }) => c.thinking.map((o) => o.value);
+
+  it("replaces the guessed level set with what the API accepted", () => {
+    const c = modelCaps("deepseek", "deepseek-v4-flash", true, { effort_levels: ["low", "max"] });
+    expect(vals3(c)).toEqual(["off", "low", "max"]);
+  });
+
+  it("keeps off, which is Phoenix not sending the field rather than a level", () => {
+    const c = modelCaps("deepseek", "deepseek-v4-flash", true, { effort_levels: ["high"] });
+    expect(vals3(c)[0]).toEqual("off");
+  });
+
+  it("moves the default when the probe refused it", () => {
+    const c = modelCaps("deepseek", "deepseek-v4-flash", true, { effort_levels: ["low"] });
+    expect(c.defaultLevel).toBe("low");
+  });
+
+  it("an empty list changes nothing, because it means unknown and not none", () => {
+    const shipped = modelCaps("deepseek", "deepseek-v4-flash", true);
+    const probed = modelCaps("deepseek", "deepseek-v4-flash", true, { effort_levels: [] });
+    expect(vals3(probed)).toEqual(vals3(shipped));
+  });
+
+  it("does not invent a control on a model that has none", () => {
+    const c = modelCaps("ollama", "llama3", false, { effort_levels: ["low", "high"] });
+    const shipped = modelCaps("ollama", "llama3", false);
+    expect(vals3(c)).toEqual(vals3(shipped));
+  });
+});

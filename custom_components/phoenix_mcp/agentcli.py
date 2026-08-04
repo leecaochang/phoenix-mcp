@@ -54,6 +54,9 @@ from .const import (
     AGENTCLI_CLAUDE_DEFAULT_MODEL,
     AGENTCLI_CLIENT_IP,
     AGENTCLI_CAPABILITY_CONCURRENCY,
+    AGENTCLI_EFFORT_LEVEL_ORDER,
+    AGENTCLI_PROBE_MAX_CALLS,
+    AGENTCLI_PROBE_SENTINEL,
     AGENTCLI_DEEPSEEK_BASE_URL,
     AGENTCLI_DEEPSEEK_DEFAULT_MODEL,
     AGENTCLI_GEMINI_BASE_URL,
@@ -631,6 +634,21 @@ class ClaudeProvider:
             "content-type": "application/json",
         }
 
+    async def probe_option(self, session: ClientSession, extra: dict) -> int | None:
+        """HTTP status for the smallest possible completion carrying `extra`.
+
+        None when the provider could not be reached at all, which is not an
+        answer about the option and must not be recorded as one.
+        """
+        body = {"model": self.cfg.model, "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}], **extra}
+        try:
+            async with session.post(f"{self.cfg.base_url}/v1/messages", headers=self._headers(),
+                                    json=body, timeout=_PROBE_TIMEOUT, allow_redirects=False) as resp:
+                return resp.status
+        except (ClientError, asyncio.TimeoutError):
+            return None
+
     async def list_model_capabilities(
         self, session: ClientSession, models: list[str],
     ) -> dict[str, dict]:
@@ -820,6 +838,92 @@ def _filter_openrouter_models(data: list[dict]) -> list[str]:
     tool_ids = sorted(m["id"] for m in data
                       if m.get("id") and "tools" in (m.get("supported_parameters") or []))
     return tool_ids or sorted(m["id"] for m in data if m.get("id"))
+
+
+def _effort_probe_body(kind: str, level: str) -> dict | None:
+    """The request fragment that carries an effort level for this backend.
+
+    None for a backend with no effort control at all, which is then not probed:
+    Ollama takes a boolean `think`, MiniMax an adaptive object, and NVIDIA and
+    OpenRouter pass whatever the underlying model takes, which varies per model
+    and is not this account's property to record.
+
+    DeepSeek's fragment carries the thinking toggle too, because it only reads
+    the effort when thinking is enabled: probing the level alone would test
+    nothing and answer 200 for every value.
+    """
+    if kind == "claude":
+        return {"output_config": {"effort": level}}
+    if kind == "deepseek":
+        return {"thinking": {"type": "enabled"}, "reasoning_effort": level}
+    if kind in ("chatgpt", "grok", "gemini", "kimi", "meta"):
+        return {"reasoning_effort": level}
+    return None
+
+
+async def async_probe_capabilities(
+    session: ClientSession, cfg: ProviderConfig,
+) -> tuple[dict, int]:
+    """What this model's API actually accepts, established by asking it.
+
+    Returns (capabilities, calls_made). Every value is omitted rather than
+    guessed when the answer could not be established, so a partial or failed
+    probe narrows nothing.
+
+    TWO STAGES, and the order is the whole method. Stage one sends a
+    deliberately INVALID effort and asks whether the field is VALIDATED: a 400
+    proves the server parses it. Stage two then walks the real levels, and only
+    now is a 200 meaningful, because a field known to be validated accepts a
+    value only if that value is in its vocabulary.
+
+    Without stage one, stage two is worthless. An OpenAI-compatible server that
+    ignores an unknown parameter answers 200 to every level, which reads as
+    "supports all five" and is the exact shape of a wrong answer this whole
+    item exists to remove. A 400 is informative; a 200 on its own never is.
+
+    That asymmetry was established the hard way: whether DeepSeek honoured the
+    effort at all could not be told from its replies, because reasoning output
+    appears or does not at any level, run to run.
+    """
+    provider = build_provider(cfg)
+    caps: dict = {}
+    calls = 0
+
+    fragment = _effort_probe_body(cfg.kind, AGENTCLI_PROBE_SENTINEL)
+    if fragment is not None:
+        status = await provider.probe_option(session, fragment)
+        calls += 1
+        # Only a 400 is evidence. Unreachable (None) says nothing, and a 200
+        # means the field is ignored or leniently defaulted, which are
+        # indistinguishable and equally useless.
+        if status == 400:
+            levels = []
+            for level in AGENTCLI_EFFORT_LEVEL_ORDER:
+                if calls >= AGENTCLI_PROBE_MAX_CALLS:
+                    break
+                body = _effort_probe_body(cfg.kind, level)
+                if body is None:
+                    continue
+                if await provider.probe_option(session, body) == 200:
+                    levels.append(level)
+                calls += 1
+            # An empty result means every level was refused, which cannot be
+            # true of a working model and means something else answered the
+            # calls. Recording it would strip the control entirely.
+            if levels:
+                caps["effort_levels"] = levels
+
+    if calls < AGENTCLI_PROBE_MAX_CALLS:
+        # Temperature is the mirror-image question: not "which values", but
+        # "does this model refuse the field", which is what reasoning models do.
+        # So here the 400 is the finding and a 200 records nothing, since an
+        # accepted temperature may still be ignored.
+        status = await provider.probe_option(session, {"temperature": 0.7})
+        calls += 1
+        if status == 400:
+            caps["temperature"] = False
+
+    return caps, calls
 
 
 def _openrouter_capabilities(data: list[dict]) -> dict[str, dict]:
@@ -1038,6 +1142,21 @@ class OpenAICompatProvider:
             return models or ([self.cfg.model] if self.cfg.model else [])
         except (ClientError, asyncio.TimeoutError):
             return [self.cfg.model] if self.cfg.model else []
+
+    async def probe_option(self, session: ClientSession, extra: dict) -> int | None:
+        """HTTP status for the smallest possible completion carrying `extra`.
+
+        None when the provider could not be reached at all, which is not an
+        answer about the option and must not be recorded as one.
+        """
+        body = {"model": self.cfg.model, "max_tokens": 1, "stream": False,
+                "messages": [{"role": "user", "content": "hi"}], **extra}
+        try:
+            async with session.post(self._chat_url(), headers=self._headers(), json=body,
+                                    timeout=_PROBE_TIMEOUT, allow_redirects=False) as resp:
+                return resp.status
+        except (ClientError, asyncio.TimeoutError):
+            return None
 
     async def list_model_capabilities(
         self, session: ClientSession, models: list[str],
@@ -2767,6 +2886,63 @@ class PhoenixAgentCliRefreshView(PhoenixView):
         }, request_id=rid)
 
 
+class PhoenixAgentCliProbeCapsView(PhoenixView):
+    """POST /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/probe.
+
+    Ask the provider what its SELECTED model actually accepts, by sending a
+    handful of one-token completions and reading the status codes.
+
+    A SEPARATE endpoint from /refresh, and the separation is the consent
+    boundary rather than tidiness: /refresh reads catalogues and costs nothing,
+    while this spends the operator's own credit on real completion requests.
+    Anything that bills someone gets its own button and its own confirmation.
+
+    Only the selected model is probed. Probing a catalogue would multiply the
+    spend by models nobody has chosen, and the only model whose knobs are about
+    to be used is this one.
+    """
+
+    url = "/api/phoenix-mcp/admin/agentcli/providers/{instance_id}/probe"
+    name = "api:phoenix-mcp:admin:agentcli:probecaps"
+    requires_auth = True
+
+    @require_admin
+    async def post(self, request: web.Request, instance_id: str) -> web.Response:
+        rid = request.get("phoenix_mcp_rid", "")
+        store = await _get_secret_store(self.hass)
+        cfg = store.resolve(instance_id)
+        if cfg is None:
+            return _err("invalid_request", "Provider account is not configured.", 400, rid)
+        if not cfg.model:
+            return _err("invalid_request", "Choose a model for this account first.", 400, rid)
+        session = async_get_clientsession(self.hass)
+        probed, calls = await async_probe_capabilities(session, cfg)
+
+        # Merged over what the provider DECLARED rather than replacing it: the two
+        # answer different questions (declared says what exists, probed says what
+        # this endpoint accepts) and a probe that established nothing must leave
+        # the declared answer standing.
+        stored = store.get(instance_id) or {}
+        existing = dict(stored.get("capabilities") or {})
+        merged = {**(existing.get(cfg.model) or {}), **probed}
+        existing[cfg.model] = merged
+        checked_at = utcnow().isoformat()
+        if not await store.set_capabilities(instance_id, existing, checked_at):
+            return _err("not_found", "Provider account not found.", 404, rid)
+        return _ok({
+            "model": cfg.model,
+            "probed": probed,
+            "calls": calls,
+            "checked_at": checked_at,
+            # Whether this backend has an effort control to ask about AT ALL.
+            # Without it the panel cannot tell "asked, and the provider ignores
+            # unknown options" from "there was nothing here to ask", and it
+            # reported the second as the first on a backend whose thinking
+            # control is a boolean flag.
+            "effort_checkable": _effort_probe_body(cfg.kind, AGENTCLI_PROBE_SENTINEL) is not None,
+        }, request_id=rid)
+
+
 class PhoenixAgentCliProbeView(PhoenixView):
     """POST /api/phoenix-mcp/admin/agentcli/probe.
 
@@ -2809,6 +2985,7 @@ ALL_AGENTCLI_ADMIN_VIEWS: list[type[PhoenixView]] = [
     PhoenixAgentCliProviderView,
     PhoenixAgentCliModelsView,
     PhoenixAgentCliRefreshView,
+    PhoenixAgentCliProbeCapsView,
     PhoenixAgentCliProbeView,
 ]
 ALL_AGENTCLI_CHAT_VIEWS: list[type[PhoenixView]] = [

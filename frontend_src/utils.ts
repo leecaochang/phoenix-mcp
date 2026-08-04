@@ -54,6 +54,21 @@ export function approvalStatusLabel(status: string): string {
   return key ? t(key) : status;
 }
 
+// Effort/thinking level slugs as the operator's language renders them. The chat
+// dropdown and the settings card both name these, and a slug interpolated into a
+// translated sentence stays English in every locale, so there is one map.
+const EFFORT_LEVEL_KEYS: Record<string, string> = {
+  off: "agentchat.levelOff", none: "agentchat.levelOff", on: "agentchat.levelOn",
+  minimal: "agentchat.levelMinimal", low: "agentchat.levelLow",
+  medium: "agentchat.levelMedium", high: "agentchat.levelHigh",
+  xhigh: "agentchat.levelXHigh", max: "agentchat.levelMax",
+};
+
+export function effortLevelLabel(level: string): string {
+  const key = EFFORT_LEVEL_KEYS[level];
+  return key ? t(key) : level;
+}
+
 export function formatDate(iso: string | null): string {
   if (!iso) return t("common.never");
   return localeDate(iso);
