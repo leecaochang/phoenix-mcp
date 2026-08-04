@@ -413,6 +413,107 @@ class TestRelationshipCoverage:
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         assert "lock.front_door" in _json(content)["dangling_references"]
 
+    async def test_a_dead_reference_in_a_domain_that_is_gone_is_still_reported(self, hass, rel_env):
+        """The first filter tried was a domain-existence check on everything,
+        and this is what it got wrong: a reference into a domain the instance no
+        longer has at all can never resolve, which makes it MORE dangling.
+        `lock` has no entities and no services here, and lock.front_door must
+        still be reported."""
+        _write(os.path.join(hass.config.config_dir, "automations.yaml"), [
+            {"id": "a", "alias": "Dead", "trigger": [
+                {"platform": "state", "entity_id": "light.kitchen"}], "action": [
+                {"service": "lock.lock", "target": {"entity_id": "lock.front_door"}}]},
+        ])
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        assert "lock.front_door" in _json(content)["dangling_references"]
+
+    @pytest.mark.parametrize("value", [
+        "{{ trigger.entity_id }}", "input_boolean.{{ fan | lower }}_state", "all",
+    ])
+    async def test_a_runtime_computed_target_is_not_a_dead_reference(self, hass, rel_env, value):
+        """Live-found: scripts targeting a templated entity_id, and HA's `all`
+        wildcard, filled most of the first real dangling list."""
+        _write(hass.config.path("scripts.yaml"), {
+            "greet": {"alias": "Greet", "sequence": [
+                {"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}},
+                {"service": "light.turn_off", "target": {"entity_id": value}}]},
+        })
+        content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
+        assert _json(content)["dangling_references"] == []
+
+    @pytest.mark.parametrize("junk", ["1.3em", "3.4", "attributes.device_class", "deye_p3.yaml"])
+    async def test_a_dashboard_string_that_merely_looks_like_an_id_is_not_reported(
+        self, hass, rel_env, monkeypatch, junk,
+    ):
+        """A card's CSS, a version string, a template fragment and a filename all
+        match the entity-id shape. The value walk has no type information, so it
+        gets the domain check the typed sources deliberately do not."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [
+                {"type": "tile", "entity": "light.kitchen", "height": junk}]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        assert _json(content)["dangling_references"] == []
+
+    async def test_a_dashboard_reference_to_a_removed_entity_is_still_reported(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """The domain check must not cost the case it exists to serve: a
+        dashboard pointing at an entity that no longer exists is exactly the
+        ghost that makes a layout unwritable."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [
+                {"type": "tile", "entity": "light.kitchen"},
+                {"type": "tile", "entity": "light.removed_last_year"}]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        assert _json(content)["dangling_references"] == ["light.removed_last_year"]
+
+    async def test_a_domain_with_services_but_no_entities_still_counts(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """The domain set unions services precisely for this: an integration is
+        loaded but its last entity has been removed, so a dashboard still
+        pointing at one is a real dead reference and the domain must not read as
+        made-up. Without the services union the check falls back on entities
+        alone and this reference disappears."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        hass.services.async_register("lock", "lock", lambda call: None)
+
+        async def _list(hass_, cmd, payload):
+            return [{"url_path": "home", "title": "Home"}]
+
+        async def _config(hass_, url_path):
+            return {"views": [{"cards": [
+                {"type": "tile", "entity": "light.kitchen"},
+                {"type": "tile", "entity": "lock.front_door"}]}]}
+
+        monkeypatch.setattr(disc, "async_ws_command", _list)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _config)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"},
+            _token(cap_lovelace_write="allow"), hass)
+        assert "lock.front_door" in _json(content)["dangling_references"]
+
     async def test_a_live_entity_is_never_reported_dangling(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         assert _json(content)["dangling_references"] == []

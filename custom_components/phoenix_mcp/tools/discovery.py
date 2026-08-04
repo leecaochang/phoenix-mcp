@@ -182,6 +182,50 @@ def _entity_id_strings(node: Any, path: list, out: list[tuple[list, str]]) -> No
         out.append((path, node))
 
 
+_TEMPLATE_MARKERS = ("{{", "}}", "{%", "|")
+
+
+def _dangling_candidates(typed: set[str], walked: set[str], hass: HomeAssistant) -> set[str]:
+    """Narrow two walked sets to strings that were ever meant to be an entity id.
+
+    `dangling_references` is a list an operator is meant to ACT on, so a false
+    positive is not harmless noise, it is what teaches them to ignore the field.
+    Live first run: 26 entries of which about 20 were junk (`1.3em` from a card's
+    CSS, `3.4` from a version string, `attributes.device_class` from a template,
+    `deye_p3.yaml` from a filename) with eight genuinely dead references buried
+    among them.
+
+    THE FILTER STRENGTH MATCHES WHAT THE SOURCE KNOWS, which is the whole design.
+    `typed` comes from places HA itself defines the shape: mesa-core's role walk
+    over automations, an `entity_id:` key in a script, a scene's entity keys.
+    Those strings were MEANT to be entity ids, so they are trusted. `walked`
+    comes from dashboard cards and config-entry payloads, where the key is
+    whatever the author chose and the collector matches the value shape, so it
+    carries no type information at all and gets a shape heuristic on top: the
+    domain has to be one this instance actually has.
+
+    A DOMAIN CHECK ON `typed` WOULD BE BACKWARDS and was tried first: a reference
+    into a domain that no longer exists at all can never resolve, which makes it
+    MORE dangling, not less. Its own test caught that. So the domain rule is
+    scoped to the source that needs a proxy for intent, and never applied to the
+    sources that state it.
+
+    Template syntax is excluded from both. A value carrying `{{ }}` is not an id,
+    it is an id computed at runtime, and Phoenix cannot know what it resolves to.
+    HA's `all` wildcard goes with it, having no dot to split on.
+    """
+    def _real(value: str) -> bool:
+        return "." in value and not any(m in value for m in _TEMPLATE_MARKERS)
+
+    domains = {state.entity_id.split(".", 1)[0] for state in hass.states.async_all()}
+    domains |= {entry.entity_id.split(".", 1)[0] for entry in er.async_get(hass).entities.values()}
+    domains |= set(hass.services.async_services())
+    return (
+        {v for v in typed if _real(v)}
+        | {v for v in walked if _real(v) and v.split(".", 1)[0] in domains}
+    )
+
+
 def _consumer(kind: str, cid: str, name: Any) -> dict:
     return {"kind": kind, "id": cid, "name": name if isinstance(name, str) else None,
             "entities": {}, "roles": set()}
@@ -212,7 +256,7 @@ def _scan_relationships(
     scope: set[str],
     dashboards: list[tuple[str, str | None, Any]],
     entries: list[dict],
-) -> tuple[list[dict], set[str]]:
+) -> tuple[list[dict], set[str], set[str]]:
     """Every consumer touching an entity in `scope`, and every entity id seen.
 
     ONE pass per source, not one pass per entity. The tool it replaces asked
@@ -220,17 +264,21 @@ def _scan_relationships(
     sweeping six devices' worth of entities took ~74 calls against a 60/min rate
     limit, 63 of them returning nothing. Scanning a SET collapses that to one.
 
-    The second return value is every entity id referenced by any consumer,
-    in scope or not, which is what makes the dangling-reference report free: the
-    walk has already visited every consumer, so the caller only has to ask the
-    registry which of those ids no longer exist.
+    The last two return values are every entity id referenced by any consumer,
+    in scope or not, split by how much its source knew: TYPED ids came from a
+    place HA defines the shape of (a role walk, an `entity_id:` key, a scene's
+    entity keys) and WALKED ids were matched by value shape alone in a dashboard
+    card or a config-entry payload. That split is what makes the dangling report
+    usable rather than noisy; see _dangling_candidates. It is free either way,
+    since the walk has already visited every consumer.
 
     Runs in an executor because it reads the automation/script/scene YAML.
     Dashboards and config entries are snapshotted by the caller in the event
     loop, since obtaining them needs loop access, and are passed in.
     """
     consumers: list[dict] = []
-    seen: set[str] = set()
+    typed: set[str] = set()
+    walked: set[str] = set()
     expand = build_expand_target(hass)
 
     auto_path = os.path.join(hass.config.config_dir, _AUTOMATION_YAML)
@@ -240,7 +288,7 @@ def _scan_relationships(
         by_role = entities_by_role(cfg, expand)
         entry = _consumer("automation", str(cfg.get("id", "")), cfg.get("alias"))
         for role, ents in by_role.items():
-            seen.update(ents)
+            typed.update(ents)
             for eid in ents:
                 if eid in scope:
                     _record(entry, eid, role)
@@ -252,7 +300,7 @@ def _scan_relationships(
             continue
         found: set[str] = set()
         _collect_entity_id_values(cfg, found)
-        seen.update(found)
+        typed.update(found)
         entry = _consumer("script", script_id, cfg.get("alias"))
         for eid in found & scope:
             _record(entry, eid, "sequence")
@@ -265,7 +313,7 @@ def _scan_relationships(
         members = scene.get("entities")
         if not isinstance(members, dict):
             continue
-        seen.update(m for m in members if isinstance(m, str))
+        typed.update(m for m in members if isinstance(m, str))
         entry = _consumer("scene", str(scene.get("id", "")), scene.get("name"))
         for eid in set(members) & scope:
             _record(entry, eid, "member")
@@ -275,7 +323,7 @@ def _scan_relationships(
     for url_path, title, config in dashboards:
         hits: list[tuple[list, str]] = []
         _entity_id_strings(config, [], hits)
-        seen.update(eid for _p, eid in hits)
+        walked.update(eid for _p, eid in hits)
         entry = _consumer("dashboard", url_path, title)
         entry["paths"] = []
         for path, eid in hits:
@@ -288,7 +336,7 @@ def _scan_relationships(
     for record in entries:
         hits = []
         _entity_id_strings(record["payload"], [], hits)
-        seen.update(eid for _p, eid in hits)
+        walked.update(eid for _p, eid in hits)
         entry = _consumer("config_entry", record["entry_id"], record["title"])
         for _path, eid in hits:
             if eid in scope:
@@ -296,7 +344,7 @@ def _scan_relationships(
         if entry["entities"]:
             consumers.append(entry)
 
-    return [_finish(c) for c in consumers], seen
+    return [_finish(c) for c in consumers], typed, walked
 
 
 def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str) -> list[str]:
@@ -1191,7 +1239,7 @@ async def _tool_get_relationships(
         entries = _relationship_config_entries(hass)
         searched.append("config_entry")
 
-    consumers, seen = await hass.async_add_executor_job(
+    consumers, typed, walked = await hass.async_add_executor_job(
         _scan_relationships, hass, scope, dashboards, entries,
     )
     # Free, because the walk already visited every consumer: an id referenced by
@@ -1201,7 +1249,7 @@ async def _tool_get_relationships(
     # worth surfacing wherever it was found.
     registry = er.async_get(hass)
     dangling = sorted(
-        eid for eid in seen
+        eid for eid in _dangling_candidates(typed, walked, hass)
         if hass.states.get(eid) is None and registry.async_get(eid) is None
     )
 
