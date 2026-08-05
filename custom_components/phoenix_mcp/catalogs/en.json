@@ -1306,7 +1306,10 @@
         "cancelled": "Cancelled.",
         "unauthorized": "This token is no longer authorized.",
         "output_limit": "The provider produced too much output this turn; stopped.",
-        "internal": "Internal error."
+        "internal": "Internal error.",
+        "bad_tool_call": "The model produced an invalid tool call.",
+        "tool_call_truncated": "The model hit its output length limit in the middle of a tool call, so the action was not run. The requested change was too large to emit in one call; try asking for a smaller change.",
+        "tool_call_cut": "The connection to the model ended in the middle of a tool call, so the action was not run. Nothing was applied and the request itself was not at fault; send it again."
       }
     },
     "diff": {

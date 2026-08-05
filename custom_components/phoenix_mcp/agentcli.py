@@ -1420,6 +1420,14 @@ class OpenAICompatProvider:
         # tool calls accumulated by index: {index: {"id","name","args"}}
         calls: dict[int, dict] = {}
         finish = "stop"
+        # Whether the stream ever reported WHY it ended. Every provider sends a
+        # finish_reason on its final chunk, so the default above standing
+        # untouched means the response stopped arriving rather than finishing:
+        # the one signal that tells a truncated tool call apart from a malformed
+        # one. Deliberately not keyed on the "[DONE]" sentinel, which is an
+        # OpenAI convention some compatible backends never send, and which would
+        # therefore relabel their genuinely malformed calls as dropped ones.
+        saw_finish = False
         # Some local reasoning models (e.g. r1 via Ollama) emit their chain of
         # thought inline as <think>...</think> inside content rather than in a
         # separate reasoning field. Split it out so it is treated as thinking
@@ -1477,6 +1485,7 @@ class OpenAICompatProvider:
                     slot["args"] += fn["arguments"]
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
+                saw_finish = True
         # Flush any held-back tail from the think splitter.
         for kind, seg in think.flush():
             if kind == "text":
@@ -1500,7 +1509,7 @@ class OpenAICompatProvider:
                 # sensitive values); name/size/finish is what diagnosis needs.
                 _LOGGER.debug(
                     "agentCLI unparseable tool-call args: tool=%s args_len=%d finish_reason=%s",
-                    slot["name"], len(args_str), finish,
+                    slot["name"], len(args_str), finish if saw_finish else "<none>",
                 )
             assistant_tool_calls.append({
                 "id": slot["id"], "type": "function",
@@ -1518,21 +1527,42 @@ class OpenAICompatProvider:
         if bad:
             # The model emitted a tool call whose arguments never parse as JSON.
             # Do not dispatch garbage; end the turn with a clear error rather
-            # than hanging. Two distinct causes get distinct messages: the stream
-            # ending on the output-token limit means the call was TRUNCATED
+            # than hanging. THREE causes, and each sends the operator somewhere
+            # different, so each gets its own code (the panel localizes on the
+            # code, not the message, so one code cannot carry three sentences).
+            #
+            # A stream that stopped on the output-token limit was TRUNCATED
             # (live-observed: a whole-dashboard write blowing the provider's
-            # default cap), which is not the model's syntax at fault; anything
-            # else is genuinely malformed output (a known Ollama failure mode).
+            # default cap), so the fix is a smaller change. A stream that never
+            # reported a finish_reason at all did not finish: the connection
+            # dropped mid-call, the fix is to send it again, and NOTHING about
+            # what the model wrote was wrong. That one is reported last-resort
+            # as malformed output otherwise, which is the reading that costs the
+            # most time: it sends the operator to inspect a config that was
+            # fine. Anything else genuinely is malformed output (a known Ollama
+            # failure mode).
             if finish == "length":
+                code = "tool_call_truncated"
+                retryable = False
                 message = (
                     "The model hit its output length limit in the middle of a tool "
                     "call, so the action was not run. The requested change was too "
                     "large to emit in one call; try asking for a smaller change."
                 )
+            elif not saw_finish:
+                code = "tool_call_cut"
+                retryable = True
+                message = (
+                    "The connection to the model ended in the middle of a tool "
+                    "call, so the action was not run. Nothing was applied and the "
+                    "request itself was not at fault; send it again."
+                )
             else:
+                code = "bad_tool_call"
+                retryable = False
                 message = "The model produced an invalid tool call."
-            yield _norm(EV_ERROR, status=0, code="bad_tool_call",
-                        message=message, retryable=False)
+            yield _norm(EV_ERROR, status=0, code=code,
+                        message=message, retryable=retryable)
             yield _norm(EV_DONE, stop_reason="error", assistant_msg=assistant_msg)
             return
         for tool_call in parsed_tools:

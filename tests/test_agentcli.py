@@ -780,9 +780,11 @@ async def test_ollama_malformed_tool_args_is_bad_tool_call():
         session, system_prompt="s", messages=[], tools=[], options={}))
     err = next(e for e in events if e["type"] == agentcli.EV_ERROR)
     assert err["code"] == "bad_tool_call"
-    # A genuinely malformed call (stream did NOT end on the token limit) keeps
-    # the plain invalid-tool-call message, no truncation talk.
+    # A genuinely malformed call (the stream DID report why it ended, and not on
+    # the token limit) keeps the plain invalid-tool-call message. Resending it
+    # would only produce the same syntax again, so it is not retryable.
     assert err["message"] == "The model produced an invalid tool call."
+    assert err["retryable"] is False
     # No tool_use is emitted for the unparseable call.
     assert not any(e["type"] == agentcli.EV_TOOL for e in events)
     done = next(e for e in events if e["type"] == agentcli.EV_DONE)
@@ -806,9 +808,59 @@ async def test_truncated_tool_args_at_output_limit_reports_truncation():
     events = await _collect(provider.stream_turn(
         session, system_prompt="s", messages=[], tools=[], options={}))
     err = next(e for e in events if e["type"] == agentcli.EV_ERROR)
-    assert err["code"] == "bad_tool_call"
+    assert err["code"] == "tool_call_truncated"
     assert "output length limit" in err["message"]
+    # Not retryable: the same request would hit the same cap again.
+    assert err["retryable"] is False
     assert not any(e["type"] == agentcli.EV_TOOL for e in events)
+
+
+@pytest.mark.asyncio
+async def test_tool_args_cut_off_mid_stream_reports_a_dropped_connection():
+    # The response simply stops arriving: partial arguments, and no chunk ever
+    # carries a finish_reason. Every provider reports one when it finishes, so
+    # its absence is the signal that the connection dropped rather than the
+    # model emitting bad syntax. Reported as its own case because the other
+    # readings both send the operator somewhere useless: "invalid tool call"
+    # sends them to inspect a request that was fine, and the truncation message
+    # sends them to make it smaller when size was never the problem.
+    body = _sse(
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"edit_automation","arguments":"{\\"config\\": {\\"trig"}}]},"finish_reason":null}]}',
+    )
+    cfg = ProviderConfig(kind="deepseek", model="deepseek-v4-flash", base_url="https://d", api_key="k")
+    provider = OpenAICompatProvider(cfg)
+    session = _FakeSession(_FakeResp(200, body))
+    events = await _collect(provider.stream_turn(
+        session, system_prompt="s", messages=[], tools=[], options={}))
+    err = next(e for e in events if e["type"] == agentcli.EV_ERROR)
+    assert err["code"] == "tool_call_cut"
+    assert "connection to the model ended" in err["message"]
+    # The one retryable member of the family: nothing about the request was
+    # wrong, so sending it again is the fix rather than a doomed repeat.
+    assert err["retryable"] is True
+    assert not any(e["type"] == agentcli.EV_TOOL for e in events)
+    done = next(e for e in events if e["type"] == agentcli.EV_DONE)
+    assert done["stop_reason"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_clean_stream_with_bad_json_is_not_reported_as_a_dropped_connection():
+    # The boundary the cut case must not swallow: a stream that ended cleanly on
+    # a finish_reason but whose arguments are malformed is the model's syntax,
+    # even though no "[DONE]" sentinel arrived. Keying the cut case on that
+    # sentinel instead of on finish_reason would relabel this as a dropped
+    # connection for every backend that does not send one.
+    body = _sse(
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"get_state","arguments":"{not json"}}]},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+    )
+    cfg = ProviderConfig(kind="ollama", model="llama", base_url="http://h:11434", api_key=None)
+    provider = OpenAICompatProvider(cfg)
+    session = _FakeSession(_FakeResp(200, body))
+    events = await _collect(provider.stream_turn(
+        session, system_prompt="s", messages=[], tools=[], options={}))
+    err = next(e for e in events if e["type"] == agentcli.EV_ERROR)
+    assert err["code"] == "bad_tool_call"
 
 
 @pytest.mark.asyncio

@@ -1273,7 +1273,10 @@
         "internal": "内部错误。",
         "max_tokens_stop": "模型因达到输出长度上限而停止。可以让它继续，或调高模型的输出 Token 上限（Ollama 请调整 num_predict/context 设置）。",
         "output_limit": "服务商本轮生成的内容过多，已停止。",
-        "unauthorized": "此令牌已不再获得授权。"
+        "unauthorized": "此令牌已不再获得授权。",
+        "bad_tool_call": "模型生成了无效的工具调用。",
+        "tool_call_truncated": "模型在工具调用中途达到输出长度上限，因此该操作未执行。所请求的改动过大，无法在一次调用中输出；请尝试改为更小的改动。",
+        "tool_call_cut": "与模型的连接在工具调用中途中断，因此该操作未执行。没有任何改动被应用，问题也不在请求本身；请重新发送。"
       },
       "options": "选项",
       "pausedAfter": "已在 {count} 步后暂停。是否继续处理？",
