@@ -29,7 +29,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
 from .ws_dispatch import WsDispatchError, async_ws_command
@@ -1112,11 +1112,16 @@ async def _tool_get_logs(
     if effective_cap(token, "cap_log_read") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "get_logs"
 
-    raw_level = str(args.get("level") or "WARNING").strip().upper()
-    if raw_level not in ("INFO", "WARNING", "ERROR"):
-        raw_level = "WARNING"
+    # A wrong-SHAPED level degrades to absent (str_arg), but a wrong VALUE is
+    # refused rather than coerced: silently answering a WARNING query for a
+    # caller that asked for INFO is what made the dropped level invisible in the
+    # first place. Safe to surface because the cap check above already ran, so a
+    # denied token never reaches a message about its own argument (rule 29(a)).
+    raw_level = str_arg(args.get("level"), "WARNING").strip().upper() or "WARNING"
+    if raw_level not in LOG_LEVELS:
+        return _tool_error(LOG_LEVEL_ERROR_MESSAGE), "invalid_request", "get_logs"
 
-    integration = str(args.get("integration") or "").strip() or None
+    integration = str_arg(args.get("integration")).strip() or None
 
     # Default matches _DEFAULT_LOG_LIMIT in proxy_view.py. Both are 50 intentionally;
     # they are not shared via a constant to avoid coupling the two view modules.

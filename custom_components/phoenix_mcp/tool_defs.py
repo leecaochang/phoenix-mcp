@@ -618,8 +618,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "properties": {
                 "level": {
                     "type": "string",
-                    "enum": ["INFO", "WARNING", "ERROR"],
-                    "description": "Minimum log level. INFO returns INFO+WARNING+ERROR; WARNING returns WARNING+ERROR; ERROR returns ERROR only. Defaults to WARNING.",
+                    "enum": ["WARNING", "ERROR"],
+                    "description": "Minimum log level. WARNING returns WARNING+ERROR; ERROR returns ERROR only. Defaults to WARNING. Home Assistant's system log holds WARNING and above only, so INFO and DEBUG entries never enter it and cannot be read through this tool; asking for one is an error rather than a WARNING result.",
                     "default": "WARNING",
                 },
                 "integration": {

@@ -132,7 +132,8 @@
             <div class="tool-head"><span class="tool-name">get_logs</span><span class="badge badge-cap">Log read</span></div>
             <p class="tool-desc">Recent HA system log entries. Phoenix MCP's own entries are excluded and token values, JWTs, and URL credentials are scrubbed from messages and tracebacks. The scrubber is pattern-based and cannot guarantee removal of arbitrary third-party secrets or PII an integration writes into a log line, so treat Log read as an elevated-trust grant.</p>
             <p class="tool-desc">The response reports <code>total</code> (entries matching the level and integration filters) next to <code>count</code> (entries in this page) and a <code>truncated</code> flag. Same on <code>/api/phoenix-mcp/logs</code>.</p>
-            <dl><dt>params</dt><dd><code>limit</code> (default 50, max 100), <code>level</code> (<code>INFO</code> / <code>WARNING</code> / <code>ERROR</code>), <code>integration</code> (only entries logged by one integration, e.g. <code>zha</code>)</dd></dl>
+            <p class="tool-desc">Home Assistant's system log holds <code>WARNING</code> and above, so <code>INFO</code> and <code>DEBUG</code> entries never enter it. Asking for one is an error rather than a <code>WARNING</code> result, so a quiet answer is never mistaken for a quiet instance. Those lines go to <code>home-assistant.log</code> on the server instead: <code>INFO</code> is there by default, <code>DEBUG</code> needs a <code>logger:</code> setting first.</p>
+            <dl><dt>params</dt><dd><code>limit</code> (default 50, max 100), <code>level</code> (<code>WARNING</code> / <code>ERROR</code>), <code>integration</code> (only entries logged by one integration, e.g. <code>zha</code>)</dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_logbook human readable event history logbook">

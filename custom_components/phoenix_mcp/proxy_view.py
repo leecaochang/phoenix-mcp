@@ -30,6 +30,8 @@ from .const import (
     DUAL_GATE_SERVICES,
     ESPHOME_DOMAIN,
     HIGH_RISK_DOMAINS,
+    LOG_LEVEL_ERROR_MESSAGE,
+    LOG_LEVELS,
     MAX_HISTORY_RANGE_DAYS,
     MAX_LOG_ENTRIES,
     NO_TARGET_SERVICES,
@@ -1099,8 +1101,8 @@ class PhoenixLogsView(PhoenixView):
             return _error("forbidden", "Forbidden.", 403, request_id)
 
         raw_level = request.query.get("level", "WARNING").strip().upper()
-        if raw_level not in ("INFO", "WARNING", "ERROR"):
-            return _error("invalid_request", "level must be INFO, WARNING, or ERROR.", 400, request_id)
+        if raw_level not in LOG_LEVELS:
+            return _error("invalid_request", LOG_LEVEL_ERROR_MESSAGE, 400, request_id)
 
         integration = request.query.get("integration", "").strip() or None
 

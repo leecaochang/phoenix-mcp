@@ -1237,6 +1237,35 @@ async def test_rest_logs_400_when_system_log_not_loaded(hass):
     assert "system_log" in body["message"]
 
 
+@pytest.mark.asyncio
+async def test_rest_logs_refuses_info_like_the_mcp_tool(hass):
+    """Both surfaces answer an uncollected level the same way.
+
+    A caller must not have to know which surface it used to learn that INFO is
+    never recorded, which is the same reasoning behind the shared truncation
+    fields and the no-target service-call parity guard.
+    """
+    from custom_components.phoenix_mcp.const import LOG_LEVEL_ERROR_MESSAGE
+    from custom_components.phoenix_mcp.proxy_view import PhoenixLogsView
+
+    token, raw = _make_token()
+    token.cap_log_read = "allow"
+    data = _make_data(token)
+    hass.data[DOMAIN] = data
+    hass.data["system_log"] = MagicMock(records={})
+
+    view = PhoenixLogsView()
+    view.hass = hass
+    resp = await view.get(_make_request(
+        headers={"Authorization": f"Bearer {raw}"}, query={"level": "INFO"},
+    ))
+
+    assert resp.status == 400
+    body = json.loads(resp.text)
+    assert body["error"] == "invalid_request"
+    assert body["message"] == LOG_LEVEL_ERROR_MESSAGE
+
+
 # ---------------------------------------------------------------------------
 # Gate invariant: pending WITHOUT an approval record must fail CLOSED.
 #

@@ -927,6 +927,23 @@ MAX_HISTORY_RANGE_DAYS = 7
 # Maximum number of log entries returned by the logs endpoint/tool.
 MAX_LOG_ENTRIES = 100
 
+# Levels get_logs and GET /logs accept as the `level` argument. INFO is absent
+# and must stay absent: Home Assistant attaches its system_log handler with
+# setLevel(logging.WARNING) (components/system_log/__init__.py), so an INFO
+# record never enters the store this reads and there is no config option to
+# lower it. Offering INFO was a promise the store cannot keep, and the failure
+# was silent in the direction that matters: an agent asking for INFO to chase
+# something got warnings and errors back with nothing saying INFO is never
+# collected, so a quiet result read as "nothing was logged" rather than "that
+# level is not available here". Distinct from helpers._LOG_LEVEL_RANK, which
+# ranks the level of a RECORD; this is the narrower set a CALLER may ask for.
+LOG_LEVELS = ("WARNING", "ERROR")
+LOG_LEVEL_ERROR_MESSAGE = (
+    "level must be WARNING or ERROR. Home Assistant's system log holds WARNING "
+    "and above only, so INFO and DEBUG entries never enter it and cannot be read "
+    "through this tool. They are written to home-assistant.log on the server."
+)
+
 # Cap on a tools/call request's "name" field before it is used for dispatch or
 # logged as the audit method/resource. Every real tool name is well under this;
 # it exists only to bound a malformed client (a local model emitting garbled

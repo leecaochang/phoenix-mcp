@@ -1583,6 +1583,70 @@ async def test_get_logs_returns_entries_when_system_log_present():
     assert json.loads(res["result"]["content"][0]["text"])["count"] == 1
 
 
+# --- get_logs: INFO is refused, never silently answered as WARNING ---
+
+@pytest.mark.asyncio
+async def test_get_logs_refuses_info_rather_than_answering_as_warning():
+    """HA attaches system_log at WARNING, so INFO records never enter the store.
+
+    Coercing INFO to WARNING is what made the missing level invisible: the caller
+    got warnings back with nothing saying INFO is not collected, so a quiet
+    result read as "nothing was logged" instead of "that level is unavailable".
+    """
+    token, _ = _make_token(cap_log_read="allow")
+    data = _make_data(token)
+    hass = _make_hass(data)
+    hass.data = {DOMAIN: data, "system_log": MagicMock(records={})}
+    res, _m, _r, outcome = await _dispatch_mcp(
+        "tools/call", 3, {"name": "get_logs", "arguments": {"level": "INFO"}},
+        token, hass, data, "127.0.0.1", base_url="http://h",
+    )
+    assert outcome == "invalid_request"
+    assert res["result"].get("isError") is True
+    assert "INFO" in res["result"]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_get_logs_denied_token_never_learns_about_its_own_level():
+    """Rule 29(a): the cap check runs first, so a denied token gets the uniform
+    refusal and never a message describing the argument it sent."""
+    token, _ = _make_token(cap_log_read="deny")
+    data = _make_data(token)
+    hass = _make_hass(data)
+    hass.data = {DOMAIN: data, "system_log": MagicMock(records={})}
+    res, _m, _r, outcome = await _dispatch_mcp(
+        "tools/call", 3, {"name": "get_logs", "arguments": {"level": "INFO"}},
+        token, hass, data, "127.0.0.1", base_url="http://h",
+    )
+    assert outcome == "denied"
+    assert "INFO" not in res["result"]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_get_logs_wrong_shaped_level_degrades_to_the_default():
+    """A wrong SHAPE is absent (str_arg), not a value to refuse: a message about
+    "True" describes an argument nobody typed."""
+    token, _ = _make_token(cap_log_read="allow")
+    data = _make_data(token)
+    hass = _make_hass(data)
+    hass.data = {DOMAIN: data, "system_log": MagicMock(records={})}
+    res, _m, _r, outcome = await _dispatch_mcp(
+        "tools/call", 3, {"name": "get_logs", "arguments": {"level": ["INFO"]}},
+        token, hass, data, "127.0.0.1", base_url="http://h",
+    )
+    assert outcome == "allowed"
+
+
+def test_get_logs_schema_offers_only_the_collected_levels():
+    """The published enum is the contract; offering a level HA never records is a
+    promise the store cannot keep."""
+    from custom_components.phoenix_mcp.const import LOG_LEVELS
+    from custom_components.phoenix_mcp.tool_defs import _SYSTEM_TOOL_DEFS
+
+    definition = next(d for d in _SYSTEM_TOOL_DEFS if d["name"] == "get_logs")
+    assert definition["inputSchema"]["properties"]["level"]["enum"] == list(LOG_LEVELS)
+
+
 # --- get_logbook: an unexpected shape is not an empty logbook ---
 
 @pytest.mark.asyncio

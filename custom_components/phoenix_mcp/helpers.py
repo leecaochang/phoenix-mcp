@@ -733,6 +733,11 @@ def render_template_for_token(template_str: str, token: TokenRecord, hass: HomeA
     return rendered.strip()
 
 
+# Ranks the level of a RECORD, which is why DEBUG and INFO stay here even though
+# Home Assistant's system_log handler is attached at WARNING and stores neither:
+# this map classifies whatever HA hands us, and dropping an entry would silently
+# narrow what an operator can read if that ever changes. The narrower set a
+# CALLER may ask for is const.LOG_LEVELS, and the two are deliberately different.
 _LOG_LEVEL_RANK: dict[str, int] = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 3}
 _PHOENIX_TOKEN_SCRUB_RE = re.compile(r"phx_[0-9a-f]{64}", re.IGNORECASE)
 # Home Assistant long-lived access tokens (and other JWTs) are three base64url

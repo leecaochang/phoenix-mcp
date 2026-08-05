@@ -8,11 +8,18 @@ directly so an edit to one without the other fails loudly.
 
 from __future__ import annotations
 
+import ast
+import pathlib
+
+import homeassistant.components.system_log
+
 from custom_components.phoenix_mcp.const import (
+    LOG_LEVELS,
     PHYSICAL_GATE_DOMAINS,
     PHYSICAL_GATE_SERVICES,
     YAML_PROTECTED_SUBTREES,
 )
+from custom_components.phoenix_mcp.helpers import _LOG_LEVEL_RANK
 
 
 def test_physical_gate_domains_cover_every_service_domain():
@@ -38,6 +45,50 @@ def test_physical_gate_domains_has_no_orphans():
         f"domains in PHYSICAL_GATE_DOMAINS with no gated service: "
         f"{sorted(PHYSICAL_GATE_DOMAINS - service_domains)}"
     )
+
+
+def _system_log_handler_level() -> str:
+    """The level Home Assistant attaches its system_log handler at, read from HA.
+
+    Read off the SOURCE rather than asserted from memory: this is the fact that
+    decides which levels Phoenix may offer, and if HA ever lowers it the answer
+    changes. Running async_setup to inspect the live handler would drag the whole
+    component in for one constant, so the call is located by AST instead, the way
+    the native-intent parity guard reads HassBroadcast's description.
+    """
+    source = pathlib.Path(homeassistant.components.system_log.__file__).read_text()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "setLevel"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Attribute)
+        ):
+            return node.args[0].attr
+    raise AssertionError(
+        "no handler.setLevel(logging.X) call found in HA's system_log; the "
+        "assumption behind const.LOG_LEVELS can no longer be verified"
+    )
+
+
+def test_log_levels_match_what_home_assistant_actually_collects():
+    # get_logs reads hass.data["system_log"].records, and HA attaches that handler
+    # at WARNING, so an INFO record never enters the store. Offering a level the
+    # store never holds is a promise it cannot keep, and the old silent coercion
+    # to WARNING made the gap invisible: a caller asking for INFO got warnings back
+    # and read the quiet result as "nothing was logged". If HA ever lowers this,
+    # the fix is to WIDEN LOG_LEVELS, not to change the assertion.
+    assert _system_log_handler_level() == "WARNING"
+    assert LOG_LEVELS == ("WARNING", "ERROR")
+
+
+def test_log_levels_are_a_subset_of_the_record_ranks():
+    # The two sets are deliberately different sizes (_LOG_LEVEL_RANK classifies a
+    # RECORD's level, LOG_LEVELS is what a CALLER may ask for), but every offered
+    # level must rank or collect_log_entries would fall back to its WARNING
+    # default and silently answer a different question than the caller asked.
+    assert set(LOG_LEVELS) <= set(_LOG_LEVEL_RANK)
 
 
 def test_yaml_protected_subtrees_shape():
