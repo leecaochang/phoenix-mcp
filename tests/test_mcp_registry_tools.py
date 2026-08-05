@@ -616,3 +616,212 @@ def test_fuzzy_search_matches_empty_when_nothing_close():
 
     rows = [{"entity_id": "light.kitchen", "friendly_name": "Kitchen Light"}]
     assert _fuzzy_search_matches(rows, "xyzzyqwertz") == []
+
+
+class TestEntityAliases:
+    """set_entity's add_aliases / remove_aliases.
+
+    Aliases are how Home Assistant matches an entity by voice, and it builds
+    that matching from the registry's alias list ALONE. The list is ordered and
+    carries a COMPUTED_NAME sentinel meaning "my own current name", so the two
+    states that must stay unreachable are an empty list (the entity drops out of
+    voice control entirely) and a list with the sentinel removed (it stops
+    tracking renames). Add/remove makes both unreachable rather than guarded,
+    which is why there is no absolute set-the-aliases argument.
+    """
+
+    def _aliases(self, hass, entity_id):
+        return list(er.async_get(hass).async_get(entity_id).aliases)
+
+    async def _set(self, hass, entity_id, token=None, **args):
+        return await _call(
+            "set_entity", {"entity_id": entity_id, **args},
+            token or _token(cap_registry_write="allow"), hass,
+        )
+
+    async def test_ha_seeds_the_sentinel_on_a_real_entity(self, hass, reg_env):
+        """The premise the whole design rests on, pinned against real HA.
+
+        async_get_or_create seeds [COMPUTED_NAME]; if that ever stops being
+        true, add/remove alone no longer guarantees own-name matching.
+        """
+        assert self._aliases(hass, reg_env["light_kitchen"]) == [er.COMPUTED_NAME]
+
+    async def test_add_appends_and_keeps_the_sentinel(self, hass, reg_env):
+        eid = reg_env["light_kitchen"]
+        content, outcome, _ = await self._set(hass, eid, add_aliases=["lounge lamp"])
+        assert outcome == "allowed"
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME, "lounge lamp"]
+        body = json.loads(content["content"][0]["text"])
+        assert body["aliases_added"] == ["lounge lamp"]
+        # The reported names are RESOLVED, so the entity's own name is visible
+        # rather than the sentinel that stands for it.
+        assert "lounge lamp" in body["aliases"]
+        assert er.COMPUTED_NAME not in body["aliases"]
+
+    async def test_remove_takes_only_the_named_alias(self, hass, reg_env):
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["lounge lamp", "big light"])
+        _, outcome, _ = await self._set(hass, eid, remove_aliases=["big light"])
+        assert outcome == "allowed"
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME, "lounge lamp"]
+
+    async def test_removing_every_alias_leaves_the_entity_voice_addressable(self, hass, reg_env):
+        """The property that makes an absolute write unnecessary."""
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["lounge lamp"])
+        _, outcome, _ = await self._set(hass, eid, remove_aliases=["lounge lamp"])
+        assert outcome == "allowed"
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME]
+        assert er.async_get_entity_aliases(hass, er.async_get(hass).async_get(eid))
+
+    async def test_add_and_remove_in_one_call(self, hass, reg_env):
+        """Renaming an alias is one approval, one diff, one version record."""
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["old name"])
+        _, outcome, _ = await self._set(
+            hass, eid, add_aliases=["new name"], remove_aliases=["old name"])
+        assert outcome == "allowed"
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME, "new name"]
+
+    async def test_adding_an_existing_alias_is_a_reported_no_op(self, hass, reg_env):
+        """Case-insensitive, because that is how hassil matches spoken text."""
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["Lounge Lamp"])
+        content, outcome, _ = await self._set(hass, eid, add_aliases=["lounge lamp"])
+        assert outcome == "allowed"
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME, "Lounge Lamp"]
+        assert json.loads(content["content"][0]["text"])["aliases_added"] == []
+
+    async def test_removing_an_absent_alias_is_a_reported_no_op(self, hass, reg_env):
+        eid = reg_env["light_kitchen"]
+        content, outcome, _ = await self._set(hass, eid, remove_aliases=["never set"])
+        assert outcome == "allowed"
+        assert json.loads(content["content"][0]["text"])["aliases_removed"] == []
+
+    async def test_emptying_a_sentinel_less_list_is_refused(self, hass, reg_env):
+        """An entity with no sentinel CAN be emptied, so that case is refused."""
+        eid = reg_env["light_kitchen"]
+        er.async_get(hass).async_update_entity(eid, aliases=["only one"])
+        content, outcome, _ = await self._set(hass, eid, remove_aliases=["only one"])
+        assert outcome == "invalid_request"
+        assert "no names at all" in content["content"][0]["text"]
+        assert self._aliases(hass, eid) == ["only one"]
+
+    @pytest.mark.parametrize("field", ["add_aliases", "remove_aliases"])
+    @pytest.mark.parametrize("value,fragment", [
+        (5, "string or a list of strings"),
+        ({"a": 1}, "string or a list of strings"),
+        (["ok", 7], "not one"),
+        (["x" * 300], "longer than"),
+    ])
+    async def test_a_wrong_shaped_value_is_refused_not_degraded(
+        self, hass, reg_env, field, value, fragment
+    ):
+        eid = reg_env["light_kitchen"]
+        before = self._aliases(hass, eid)
+        content, outcome, _ = await self._set(hass, eid, **{field: value})
+        assert outcome == "invalid_request"
+        assert fragment in content["content"][0]["text"]
+        assert self._aliases(hass, eid) == before
+
+    async def test_a_bare_string_is_accepted_as_one_alias(self, hass, reg_env):
+        eid = reg_env["light_kitchen"]
+        _, outcome, _ = await self._set(hass, eid, add_aliases="lounge lamp")
+        assert outcome == "allowed"
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME, "lounge lamp"]
+
+    async def test_the_count_cap_is_enforced(self, hass, reg_env):
+        from custom_components.phoenix_mcp.const import MAX_ENTITY_ALIASES
+
+        eid = reg_env["light_kitchen"]
+        content, outcome, _ = await self._set(
+            hass, eid, add_aliases=[f"alias {n}" for n in range(MAX_ENTITY_ALIASES + 1)])
+        assert outcome == "invalid_request"
+        assert "at most" in content["content"][0]["text"]
+
+    async def test_a_caller_supplied_absolute_list_is_ignored(self, hass, reg_env):
+        """The exemption in test_tool_arg_schema.py depends on this.
+
+        `aliases` is read by the executor for the restore path only. If a caller
+        could reach it, the whole-set write this design refuses would be back.
+        """
+        eid = reg_env["light_kitchen"]
+        content, outcome, _ = await self._set(hass, eid, aliases=[])
+        assert outcome == "invalid_request"
+        assert "at least one of" in content["content"][0]["text"]
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME]
+
+    async def test_write_scope_is_required(self, hass, reg_env):
+        """A read-only entity cannot have its spoken names edited."""
+        _, outcome, _ = await self._set(
+            hass, "zone.home", add_aliases=["home base"])
+        assert outcome == "denied"
+
+    async def test_the_version_snapshot_uses_ha_own_wire_form(self, hass, reg_env):
+        """null for the sentinel, matching aliases_v2, so a restore round-trips.
+
+        Resolving it to the entity's current name instead would freeze that
+        name: a later rename would silently stop matching by voice.
+        """
+        from custom_components.phoenix_mcp.mcp_view import _entity_meta_snapshot
+
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["lounge lamp"])
+        snap = _entity_meta_snapshot(er.async_get(hass).async_get(eid))
+        assert snap["aliases"] == [None, "lounge lamp"]
+        assert json.dumps(snap)  # must survive the version store
+
+    async def test_a_restore_reapplies_the_list_absolutely(self, hass, reg_env):
+        """The one path allowed the whole-set write the tool itself refuses.
+
+        Reproducing the admin's chosen snapshot is the operation, exactly as a
+        YAML restore is exempt from the removal guard.
+        """
+        from custom_components.phoenix_mcp.mcp_view import _execute_set_entity
+        from custom_components.phoenix_mcp.tool_common import _restore_ctx
+
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["current"])
+        marker = _restore_ctx.set({"user_id": "admin"})
+        try:
+            _, outcome, _ = await _execute_set_entity(
+                {"entity_id": eid, "aliases": [None, "snapshot alias"]},
+                _token(cap_registry_write="allow"), hass, MagicMock(),
+            )
+        finally:
+            _restore_ctx.reset(marker)
+        assert outcome == "allowed"
+        # Sentinel and order both come back, not just the strings.
+        assert self._aliases(hass, eid) == [er.COMPUTED_NAME, "snapshot alias"]
+
+    async def test_describe_entity_reports_the_resolved_names(self, hass, reg_env):
+        """The read half: what Assist actually matches, no sentinel in the API."""
+        eid = reg_env["light_kitchen"]
+        await self._set(hass, eid, add_aliases=["lounge lamp"])
+        content, outcome, _ = await _call(
+            "describe_entity", {"entity_id": eid},
+            _token(cap_registry_write="allow"), hass)
+        assert outcome == "allowed"
+        aliases = json.loads(content["content"][0]["text"])["aliases"]
+        assert "lounge lamp" in aliases
+        # The sentinel, resolved. Asserted against HA's own computation rather
+        # than a literal: the full name composes the device name, so hardcoding
+        # it pins the fixture's shape instead of the behaviour.
+        entry = er.async_get(hass).async_get(eid)
+        assert er.async_get_full_entity_name(hass, entry) in aliases
+
+    async def test_the_approval_diff_shows_resolved_names_on_both_sides(self, hass, reg_env):
+        """An operator approves a change to what voice matches, not to a list
+        containing a sentinel they have never heard of."""
+        from custom_components.phoenix_mcp.mcp_view import _build_diff_set_entity
+
+        eid = reg_env["light_kitchen"]
+        token = _token(cap_registry_write="allow")
+        diff = await _build_diff_set_entity(
+            {"entity_id": eid, "add_aliases": ["lounge lamp"]}, token, hass)
+        preview = diff["preview"]["aliases"]
+        own_name = er.async_get_full_entity_name(
+            hass, er.async_get(hass).async_get(eid))
+        assert preview["before"] == [own_name]
+        assert preview["after"] == [own_name, "lounge lamp"]

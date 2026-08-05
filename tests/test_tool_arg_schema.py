@@ -22,10 +22,13 @@ what a module reads against the union of what its tools declare is coarser but
 answers the question that matters: is this argument published ANYWHERE. That is
 exactly the check the shipped defect would have failed.
 
-Undeclared ALIASES are the one legitimate case and are exempted by name with a
-reason. An alias is a spelling a model might guess, accepted quietly so a near
-miss still works; it is the opposite of the defect above, where the tool names
-an argument it does not publish.
+Two kinds of read are legitimately unpublished and are exempted by name with a
+reason. An ALIAS is a spelling a model might guess, accepted quietly so a near
+miss still works. An INTERNAL argument is one only Phoenix passes to an executor
+(a restore replaying a snapshot), deliberately withheld because publishing it
+would hand callers a capability the tool refuses on purpose. Both are the
+opposite of the defect above, where the tool names an argument it does not
+publish.
 """
 
 from __future__ import annotations
@@ -44,7 +47,17 @@ from custom_components.phoenix_mcp.tool_defs import (
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "phoenix_mcp"
 
 # (module filename, argument) -> why it is read but not published.
-ALIAS_EXEMPTIONS = {
+UNPUBLISHED_ARGS = {
+    ("mcp_view.py", "aliases"): (
+        "INTERNAL, not an alias. set_entity edits aliases by add/remove and has "
+        "no absolute set-the-list form on purpose: Home Assistant builds its "
+        "voice matching entirely from that list, so a whole-set write could drop "
+        "the sentinel that means 'my own name' or empty the list and remove the "
+        "entity from voice control. async_restore_version needs the absolute "
+        "form to replay a snapshot, so the executor accepts it ONLY when "
+        "_restore_ctx is set. test_mcp_registry_tools.py pins that a caller "
+        "sending it outside a restore is ignored."
+    ),
     ("discovery.py", "name"): (
         "search_entities accepts `name` as an alias for its published `query`, "
         "so a model that guesses the other spelling still searches instead of "
@@ -147,13 +160,13 @@ def test_every_argument_read_is_published_by_some_tool(module):
     declared: set[str] = set()
     for tool in _tools_by_module()[module]:
         declared |= set(defs.get(tool, {}).get("inputSchema", {}).get("properties", {}))
-    exempt = {arg for (name, arg) in ALIAS_EXEMPTIONS if name == module.name}
+    exempt = {arg for (name, arg) in UNPUBLISHED_ARGS if name == module.name}
     undeclared = sorted(_args_read(module) - declared - exempt)
     assert not undeclared, (
         f"{module.name} reads tool arguments that no tool in it publishes: "
         f"{undeclared}. A caller cannot send an argument its schema does not "
         f"declare, so either add it to the tool's inputSchema in tool_defs.py, "
-        f"or add it to ALIAS_EXEMPTIONS with the reason it stays unpublished."
+        f"or add it to UNPUBLISHED_ARGS with the reason it stays unpublished."
     )
 
 
@@ -176,8 +189,8 @@ def test_the_walk_actually_finds_arguments():
 def test_exemptions_are_all_still_real():
     """An exemption for an argument nobody reads any more is dead weight that
     would quietly excuse a future argument of the same name."""
-    for (name, arg), reason in ALIAS_EXEMPTIONS.items():
+    for (name, arg), reason in UNPUBLISHED_ARGS.items():
         module = next((m for m in MODULES_WITH_TOOLS if m.name == name), None)
-        assert module is not None, f"ALIAS_EXEMPTIONS names a module that has no tools: {name}"
+        assert module is not None, f"UNPUBLISHED_ARGS names a module that has no tools: {name}"
         assert arg in _args_read(module), f"{name} no longer reads {arg!r}; drop the exemption"
         assert len(reason) > 40, f"{name}/{arg} needs a written reason, not a placeholder"

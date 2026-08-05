@@ -56,7 +56,8 @@ grain of the model gives the smoothest results and avoids dead ends.
   registry enumeration. Only areas and devices with at least one accessible
   entity are returned.
 - `describe_entity`: one entity's state, the services that act on it, its MESA
-  profile and `control_mode`, and what references it.
+  profile and `control_mode`, what references it, and the spoken names Assist
+  matches it by (`aliases`).
 - `describe_area`: a registry, state, and MESA rollup for one area.
 - `find_available_actions`: the services you may actually invoke on an entity or
   area, already filtered by your capabilities and MESA's control mode.
@@ -444,6 +445,18 @@ mode: single
 - If the response says the catalog has not been harvested, the installed cards
   are UNKNOWN, not absent. Prefer built-in card types and tell the user to open
   the Phoenix MCP panel once so the catalog builds.
+
+### Voice names for an entity
+
+- When a voice command does not reach an entity, the usual cause is the name.
+  `describe_entity` reports the names Assist matches it by; `set_entity` with
+  `add_aliases` adds another, e.g. `["lounge lamp"]`.
+- Add and remove names rather than expecting to replace the list; there is no
+  argument that sets it wholesale, because an entity must never be left unable
+  to answer to its own name. `remove_aliases` takes only the names you list.
+- Adding a name that is already there, or removing one that is not, is accepted
+  and changes nothing. The result reports what actually changed, so check it
+  rather than assuming your edit applied.
 
 ### Raw YAML configuration
 

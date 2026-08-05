@@ -29,7 +29,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
 from .ws_dispatch import WsDispatchError, async_ws_command
@@ -1241,8 +1241,112 @@ async def _tool_get_logbook(
 
 
 def _entity_meta_snapshot(entry: Any) -> dict:
-    """The registry metadata fields set_entity can change (for version capture)."""
-    return {"name": entry.name, "icon": entry.icon, "area_id": entry.area_id}
+    """The registry metadata fields set_entity can change (for version capture).
+
+    `aliases` is stored in Home Assistant's OWN wire form, an ordered list whose
+    `None` member is the COMPUTED_NAME sentinel (see `_alias_wire`). Raw rather
+    than resolved, because this payload is what a restore replays and the
+    sentinel has to survive it: resolving it to the entity's current name would
+    freeze that name, so a later rename would silently stop matching by voice.
+    """
+    return {
+        "name": entry.name,
+        "icon": entry.icon,
+        "area_id": entry.area_id,
+        "aliases": _alias_wire(entry.aliases),
+    }
+
+
+def _alias_wire(aliases: Any) -> list[str | None]:
+    """An entity's alias list as JSON, mirroring HA's own `aliases_v2` encoding.
+
+    HA serializes the COMPUTED_NAME sentinel as null and Phoenix does the same,
+    so a version snapshot round-trips exactly and nothing has to invent a
+    representation HA would not recognise.
+    """
+    return [None if alias is er.COMPUTED_NAME else alias for alias in (aliases or ())]
+
+
+def _alias_unwire(aliases: Any) -> list:
+    """The inverse of _alias_wire, for the restore path."""
+    return [er.COMPUTED_NAME if alias is None else alias for alias in (aliases or ())]
+
+
+def _alias_edit(value: Any, field: str) -> list[str] | str:
+    """Normalize an add_aliases / remove_aliases argument, or refuse it.
+
+    Wrong shapes are REFUSED rather than degraded to absent. These arguments
+    change what Home Assistant will answer to by voice, so a value that quietly
+    coerced to an empty list would report a change nobody made; and a list with
+    a non-string member is refused rather than having that member dropped,
+    because a dropped member is an alias the caller meant to act on.
+    """
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        bad = next((v for v in value if not isinstance(v, str)), None)
+        if bad is not None:
+            return f"{field} must be a list of strings; {bad!r} is not one."
+        candidates = list(value)
+    else:
+        return f"{field} must be a string or a list of strings."
+    cleaned: list[str] = []
+    for candidate in candidates:
+        alias = candidate.strip()
+        if not alias:
+            continue
+        if len(alias) > MAX_ENTITY_ALIAS_LENGTH:
+            return f"alias {alias[:40]!r}... is longer than {MAX_ENTITY_ALIAS_LENGTH} characters."
+        if not any(alias.casefold() == seen.casefold() for seen in cleaned):
+            cleaned.append(alias)
+    return cleaned
+
+
+def _apply_alias_edits(
+    current: list, add: list[str], remove: list[str]
+) -> tuple[list, list[str], list[str]] | str:
+    """The new alias list, plus what actually changed, or a refusal message.
+
+    ADD APPENDS and REMOVE FILTERS STRINGS, which is the whole reason this tool
+    has no absolute set-the-aliases form. Home Assistant seeds every entity with
+    a COMPUTED_NAME sentinel meaning "match my own current name", and builds the
+    voice matching trie from this list alone, so an absolute write that dropped
+    the sentinel would stop the entity answering to its own name, and an empty
+    list would remove it from voice control entirely. Neither is reachable here:
+    the sentinel is not a string, so nothing a caller names can match it, and
+    order is preserved because Home Assistant preserves it deliberately.
+
+    Matching is case-insensitive on both sides, since that is how the value is
+    ultimately used: hassil matches spoken text without regard to case, so two
+    aliases differing only in case are the same alias.
+    """
+    folded_remove = {alias.casefold() for alias in remove}
+    kept = [
+        alias for alias in current
+        if not (isinstance(alias, str) and alias.casefold() in folded_remove)
+    ]
+    removed = [
+        alias for alias in current
+        if isinstance(alias, str) and alias.casefold() in folded_remove
+    ]
+    present = {alias.casefold() for alias in kept if isinstance(alias, str)}
+    added: list[str] = []
+    for alias in add:
+        if alias.casefold() in present:
+            continue
+        present.add(alias.casefold())
+        added.append(alias)
+    result = [*kept, *added]
+    if not result:
+        return (
+            "That would leave the entity with no names at all, so Home Assistant "
+            "would stop responding to it by voice. Keep at least one alias, or "
+            "delete the entity if that is what you meant."
+        )
+    strings = sum(1 for alias in result if isinstance(alias, str))
+    if strings > MAX_ENTITY_ALIASES:
+        return f"an entity may have at most {MAX_ENTITY_ALIASES} aliases; this would leave {strings}."
+    return result, added, removed
 
 
 def _registry_write_perm_error(perm: Any, entity_id: str) -> tuple[dict, str, str] | None:
@@ -1280,6 +1384,33 @@ async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssis
     before = _entity_meta_snapshot(entry) if entry else {}
     fields = [f for f in ("name", "icon", "area_id") if f in args]
     preview = {f: {"before": before.get(f), "after": args.get(f)} for f in fields}
+    # Aliases preview as the RESOLVED spoken names on both sides, which is what
+    # the operator is actually approving a change to; the sentinel is an
+    # implementation detail and naming it here would ask them to review a
+    # concept the tool does not expose. Best-effort like every diff builder.
+    if entry is not None and ("add_aliases" in args or "remove_aliases" in args):
+        fields.append("aliases")
+        add = _alias_edit(args.get("add_aliases", []), "add_aliases")
+        remove = _alias_edit(args.get("remove_aliases", []), "remove_aliases")
+        applied = (
+            _apply_alias_edits(list(entry.aliases or ()), add, remove)
+            if not isinstance(add, str) and not isinstance(remove, str)
+            else "unavailable"
+        )
+        after_names = None
+        if not isinstance(applied, str):
+            # Resolve the same way async_get_entity_aliases does, rather than
+            # building a throwaway registry entry to hand it: one less HA
+            # internal to construct, and the .strip() matches its own.
+            full = er.async_get_full_entity_name(hass, entry)
+            after_names = [
+                full if alias is er.COMPUTED_NAME else alias.strip()
+                for alias in applied[0]
+            ]
+        preview["aliases"] = {
+            "before": er.async_get_entity_aliases(hass, entry),
+            "after": after_names,
+        }
     return {
         "kind": "system_action",
         **_summary("set_entity", fields=", ".join(fields) or "nothing", entity_id=entity_id),
@@ -1339,7 +1470,8 @@ async def _execute_set_entity(
     if err is not None:
         return err
     reg = er.async_get(hass)
-    if reg.async_get(entity_id) is None:
+    entry = reg.async_get(entity_id)
+    if entry is None:
         return _tool_error("Entity has no registry entry to edit."), "invalid_request", entity_id
 
     updates: dict = {}
@@ -1352,8 +1484,36 @@ async def _execute_set_entity(
         if area_id and ar.async_get(hass).async_get_area(area_id) is None:
             return _tool_error("Unknown area_id."), "invalid_request", entity_id
         updates["area_id"] = area_id or None
+    alias_add: list[str] = []
+    alias_remove: list[str] = []
+    for field, sink in (("add_aliases", alias_add), ("remove_aliases", alias_remove)):
+        if field not in args:
+            continue
+        parsed = _alias_edit(args[field], field)
+        if isinstance(parsed, str):
+            return _tool_error(parsed), "invalid_request", entity_id
+        sink.extend(parsed)
+    added: list[str] = []
+    removed: list[str] = []
+    if alias_add or alias_remove:
+        applied = _apply_alias_edits(list(entry.aliases or ()), alias_add, alias_remove)
+        if isinstance(applied, str):
+            return _tool_error(applied), "invalid_request", entity_id
+        new_aliases, added, removed = applied
+        updates["aliases"] = new_aliases
+    # A restore re-applies the snapshot's alias list ABSOLUTELY, which the tool
+    # itself deliberately cannot do. Reproducing the admin's chosen snapshot is
+    # the whole operation, exactly as rule 31 exempts a YAML restore from its
+    # removal guard, and the raw wire form carries the sentinel and the order
+    # back unchanged. _restore_ctx is read here in the event loop, not passed by
+    # the caller, so no agent-reachable path can set it.
+    if "aliases" in args and _restore_ctx.get() is not None:
+        updates["aliases"] = _alias_unwire(args["aliases"])
     if not updates:
-        return _tool_error("Provide at least one of name, icon, area_id."), "invalid_request", entity_id
+        return (
+            _tool_error("Provide at least one of name, icon, area_id, add_aliases, remove_aliases."),
+            "invalid_request", entity_id,
+        )
 
     before = _entity_meta_snapshot(reg.async_get(entity_id))
     try:
@@ -1366,7 +1526,17 @@ async def _execute_set_entity(
         data, token, resource_type="entity", resource_id=entity_id,
         action="edit", before=before, after=after, alias=after.get("name") or entity_id,
     )
-    return _tool_success(json.dumps({"entity_id": entity_id, "updated": after}, default=str)), "allowed", entity_id
+    body: dict = {"entity_id": entity_id, "updated": after}
+    if alias_add or alias_remove:
+        # What CHANGED, not what was asked for: an alias already present or one
+        # that was not there is a no-op, and a caller that cannot see that reads
+        # a typo as a successful edit.
+        body["aliases_added"] = added
+        body["aliases_removed"] = removed
+        updated = reg.async_get(entity_id)
+        if updated is not None:
+            body["aliases"] = er.async_get_entity_aliases(hass, updated)
+    return _tool_success(json.dumps(body, default=str)), "allowed", entity_id
 
 
 async def _tool_delete_entity(
@@ -1951,7 +2121,7 @@ async def async_restore_version(
             # Re-apply the registry metadata (name/icon/area). Restoring a deleted
             # entry's snapshot lands here too and fails cleanly in set_entity if the
             # entity no longer exists (a deleted registry entry cannot be recreated).
-            fields = {k: target[k] for k in ("name", "icon", "area_id") if k in target}
+            fields = {k: target[k] for k in ("name", "icon", "area_id", "aliases") if k in target}
             if not fields:
                 return _tool_error("This version has no entity metadata to restore."), "invalid_request", "async_restore_version"
             return await _execute_set_entity({"entity_id": resource_id, **fields}, token, hass, data)

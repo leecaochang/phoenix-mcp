@@ -963,6 +963,15 @@ LOG_LEVEL_ERROR_MESSAGE = (
 # made unreadable by an unbounded client-supplied string.
 MAX_TOOL_NAME_LENGTH = 200
 
+# Bounds on the alias set set_entity may write to an entity registry entry.
+# Home Assistant does not bound them itself and the registry is persisted to
+# .storage, so an agent sending a large list would bloat a file every restart
+# reads. A real entity carries a handful of spoken names; these only ever clip
+# something pathological. The length matches what a person would plausibly say
+# to a voice assistant rather than any HA limit.
+MAX_ENTITY_ALIASES = 32
+MAX_ENTITY_ALIAS_LENGTH = 255
+
 # Hard cap for the search_entities free-text query. Ranking tokenizes on
 # whitespace and the fuzzy fallback runs difflib against every accessible
 # entity, so an unbounded query could stall the event loop; a real query is far

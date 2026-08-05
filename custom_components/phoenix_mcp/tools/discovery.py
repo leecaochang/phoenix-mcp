@@ -1422,6 +1422,16 @@ async def _tool_describe_entity(
     if entry is not None and entry.entity_category is not None:
         body["entity_category"] = entry.entity_category.value
 
+    # The spoken names Home Assistant matches this entity by, RESOLVED: the
+    # entity's own name appears as the name itself rather than as the sentinel
+    # that stands for it in the registry, because this is the list a caller
+    # compares against a failing voice command. set_entity's add_aliases /
+    # remove_aliases edit the same list. An empty list is emitted as such and is
+    # worth reading literally: an entity with no names is not addressable by
+    # voice at all.
+    if entry is not None:
+        body["aliases"] = er.async_get_entity_aliases(hass, entry)
+
     settings = data.store.get_settings()
     if data.mesa is not None and settings.mesa_mode != MESA_MODE_OFF:
         control_mode = entity_control_mode(data.mesa, token, entity_id)
