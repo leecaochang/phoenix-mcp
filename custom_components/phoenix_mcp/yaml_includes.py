@@ -17,6 +17,10 @@ automation/script/scene authoring executors a safe alternative:
   checks against the config directory.
 - A locator that walks the include graph to the physical leaf file containing
   a given entry id, using compose-level start/end marks for the exact line span.
+- A reverse mount scan (scan_mount_points) answering which top-level
+  configuration.yaml keys can reach a given file, which is how the raw-YAML
+  write tools decide whether a file may be written at all: an include target
+  inherits the trust of the key it is LOADED at, not of its own filename.
 - Splice-based edit/delete that rewrites ONLY the located entry's lines,
   preserving every untouched byte (comments, formatting, other entries), plus
   flavor-aware create routing. Before any write, the spliced text is re-parsed
@@ -387,6 +391,164 @@ def _iter_dir_files(directory: str) -> list[str]:
                 continue
             found.append(os.path.join(root_dir, basename))
     return found
+
+
+@dataclass(frozen=True)
+class MountScan:
+    """Which configuration.yaml top-level keys can reach a given file.
+
+    The write side of the raw-YAML tools is bounded by WHERE a file's content
+    lands in the configuration tree, not by the file's own shape: an ordinary
+    looking include target mounted at `http:` puts trusted_proxies at its top
+    level, and a packages file carries whole integration configs. So a caller
+    deciding whether a file may be written asks this, and refuses on anything
+    it cannot prove.
+
+    `keys` are label-stripped (`automation manual` reports as `automation`),
+    because the trust question is about the integration a key configures and
+    HA merges the labeled variants into the same one.
+
+    `opaque` is the half that makes fail-closed possible. A branch whose files
+    cannot be read might route the target somewhere this scan never saw, so a
+    caller must treat an opaque protected key exactly as it treats a reached
+    one. Empty `keys` with `readable` True is a real negative (nothing routes
+    this file); `readable` False means configuration.yaml itself is missing or
+    unparseable and NOTHING here is known.
+    """
+
+    keys: frozenset[str]
+    opaque: frozenset[str]
+    readable: bool
+
+
+def _load_lenient_file(path: str) -> Any:
+    """Parse a file for the mount scan, tolerating unknown third-party tags.
+
+    Deliberately the LENIENT loader, unlike the authoring paths: a vendor tag
+    anywhere in an included file would otherwise make its branch opaque and
+    refuse writes to unrelated files, which is the same reasoning that put the
+    lenient loader behind get_yaml_config.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return load_tagged_lenient(f.read())
+
+
+def _collect_directives(
+    containing_file: str, node: Any, config_dir: str
+) -> list[tuple[str, str]]:
+    """Every (flavor, realpath) an include directive anywhere under `node` names.
+
+    Walks the whole value rather than its top level, since a directive can sit
+    at any depth (`http: {trusted_proxies: !include proxies.yaml}`). A target
+    resolving outside the configuration directory is dropped: it cannot name a
+    file the caller is allowed to write, which is jailed to config_dir already.
+    """
+    found: list[tuple[str, str]] = []
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, TaggedValue):
+            if current.tag in INCLUDE_TAGS:
+                resolved = _resolve_include_path(containing_file, current.value, config_dir)
+                if resolved is not None:
+                    found.append((current.tag, resolved))
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return found
+
+
+def _is_within(directory: str, candidate: str) -> bool:
+    """True when candidate sits inside directory (both already realpaths)."""
+    return candidate.startswith(directory + os.sep)
+
+
+def _reaches_target(
+    directives: list[tuple[str, str]],
+    target: str,
+    config_dir: str,
+    depth: int,
+    seen: set[str],
+) -> tuple[bool, bool]:
+    """Walk an include branch. Returns (target is reachable, branch is opaque).
+
+    A directory include matches by CONTAINMENT rather than by enumerating the
+    files HA would load, which is the fail-closed direction twice over: it
+    covers a file the caller is about to create inside that directory, and it
+    covers a name HA's own `*.yaml` filter would skip. Traversal still walks
+    only the files HA actually loads, since a file HA never reads cannot route
+    anything.
+    """
+    if depth > MAX_INCLUDE_DEPTH:
+        return False, True
+    reachable = False
+    opaque = False
+    for flavor, path in directives:
+        if flavor == "!include":
+            if path == target:
+                reachable = True
+            leaves = [path]
+        else:
+            if _is_within(path, target):
+                reachable = True
+            leaves = _iter_dir_files(path)
+        for leaf in leaves:
+            real = os.path.realpath(leaf)
+            if real in seen or not os.path.isfile(real):
+                continue
+            seen.add(real)
+            try:
+                document = _load_lenient_file(real)
+            except (OSError, YamlParseError):
+                opaque = True
+                continue
+            nested = _collect_directives(real, document, config_dir)
+            if not nested:
+                continue
+            sub_reachable, sub_opaque = _reaches_target(
+                nested, target, config_dir, depth + 1, seen)
+            reachable = reachable or sub_reachable
+            opaque = opaque or sub_opaque
+    return reachable, opaque
+
+
+def scan_mount_points(config_dir: str, target: str) -> MountScan:
+    """Which top-level configuration.yaml keys route to `target`.
+
+    Every key is walked independently, with its own `seen` set, so one file
+    shared between two keys is reported under BOTH. That is the case the whole
+    scan exists for: a file mounted at an ordinary domain key AND reachable
+    from a protected one is not safe to write, and a first-match answer would
+    report only whichever key happened to come first in the document.
+    """
+    config_path = os.path.join(config_dir, CONFIGURATION_YAML)
+    if not os.path.isfile(config_path):
+        return MountScan(frozenset(), frozenset(), readable=False)
+    try:
+        root = _load_lenient_file(config_path)
+    except (OSError, YamlParseError):
+        return MountScan(frozenset(), frozenset(), readable=False)
+    if not isinstance(root, dict):
+        return MountScan(frozenset(), frozenset(), readable=False)
+
+    resolved_target = os.path.realpath(target)
+    reached: set[str] = set()
+    opaque: set[str] = set()
+    for key, value in root.items():
+        if not isinstance(key, str):
+            continue
+        directives = _collect_directives(config_path, value, config_dir)
+        if not directives:
+            continue
+        is_reachable, is_opaque = _reaches_target(
+            directives, resolved_target, config_dir, 1, set())
+        top_key = key.split(" ", 1)[0]
+        if is_reachable:
+            reached.add(top_key)
+        if is_opaque:
+            opaque.add(top_key)
+    return MountScan(frozenset(reached), frozenset(opaque), readable=True)
 
 
 @dataclass(frozen=True)

@@ -1146,10 +1146,15 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "zigbee_remove.device": "Remove Zigbee device {label} from the network",
     # System.
     "restart_ha": "Restart Home Assistant",
-    "set_yaml_config": "Replace configuration.yaml",
-    "set_yaml_config.removing": "Replace configuration.yaml, removing the top-level {keys}",
-    "patch_yaml_config.set": "Set {path} in configuration.yaml",
-    "patch_yaml_config.remove": "Remove {path} from configuration.yaml",
+    # {file} rather than a literal configuration.yaml: these tools write any
+    # include target now, so a summary naming the wrong file is a false line in
+    # the History an admin reads. {path} is already the addressed KEY here.
+    "set_yaml_config": "Replace {file}",
+    "set_yaml_config.removing": "Replace {file}, removing the top-level {keys}",
+    "set_yaml_config.removing_entry": "Replace {file}, removing 1 entry",
+    "set_yaml_config.removing_entries": "Replace {file}, removing {count} entries",
+    "patch_yaml_config.set": "Set {path} in {file}",
+    "patch_yaml_config.remove": "Remove {path} from {file}",
     "config_entry.options": "Change {keys} on helper '{label}'",
     "write_file": "Write file '{path}'",
     "integration.enable": "Enable integration {label}",

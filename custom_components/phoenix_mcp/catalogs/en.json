@@ -225,7 +225,7 @@
       },
       "cap_yaml_edit": {
         "label": "Edit raw YAML",
-        "description": "Read and edit configuration.yaml directly. Approval is strongly recommended. Inline secrets are exposed, so store secrets in secrets.yaml with !secret."
+        "description": "Read and edit configuration.yaml and the YAML files it loads directly. Approval is strongly recommended. Inline secrets are exposed, so store secrets in secrets.yaml with !secret."
       },
       "noBuilder": "Device Builder add-on not detected",
       "noEsphome": "ESPHome not detected",
@@ -1371,8 +1371,8 @@
       "patch_dashboard.append": "Append to {path} on dashboard '{label}'",
       "patch_dashboard.remove": "Remove {path} from dashboard '{label}'",
       "patch_dashboard.set": "Set {path} on dashboard '{label}'",
-      "patch_yaml_config.remove": "Remove {path} from configuration.yaml",
-      "patch_yaml_config.set": "Set {path} in configuration.yaml",
+      "patch_yaml_config.remove": "Remove {path} from {file}",
+      "patch_yaml_config.set": "Set {path} in {file}",
       "rename_esphome_device": "Rename ESPHome device {device} to {new_name}. This compiles and flashes the device.",
       "rename_esphome_device.services": "Rename ESPHome device {device} to {new_name}, renaming {count} action service(s). This compiles and flashes the device.",
       "restart_ha": "Restart Home Assistant",
@@ -1380,8 +1380,10 @@
       "set_entity": "Update registry metadata ({fields}) for {entity_id}",
       "set_esphome_yaml": "Edit ESPHome device configuration {rel}. This does not flash the device.",
       "set_esphome_yaml.device": "Edit ESPHome device configuration {rel} ({device}, {count} entities). This does not flash the device.",
-      "set_yaml_config": "Replace configuration.yaml",
-      "set_yaml_config.removing": "Replace configuration.yaml, removing the top-level {keys}",
+      "set_yaml_config": "Replace {file}",
+      "set_yaml_config.removing": "Replace {file}, removing the top-level {keys}",
+      "set_yaml_config.removing_entries": "Replace {file}, removing {count} entries",
+      "set_yaml_config.removing_entry": "Replace {file}, removing 1 entry",
       "write_file": "Write file '{path}'",
       "zigbee_permit": "Open the Zigbee network for joining",
       "zigbee_permit.close": "Close the Zigbee join window",

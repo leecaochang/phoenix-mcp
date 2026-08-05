@@ -445,8 +445,16 @@ mode: single
   are UNKNOWN, not absent. Prefer built-in card types and tell the user to open
   the Phoenix MCP panel once so the catalog builds.
 
-### Raw configuration.yaml
+### Raw YAML configuration
 
+- These tools reach `configuration.yaml` and any YAML file it loads through an
+  `!include`, such as `templates.yaml` or `sensors.yaml`. Pass `file` with the
+  path relative to the configuration directory; omit it for `configuration.yaml`.
+  A file is writable only where Home Assistant loads it at an ordinary
+  integration key: a packages file, and anything loaded under `homeassistant:`,
+  `http:`, `frontend:` or `lovelace:`, is refused wherever it lives. If you are
+  unsure which file holds a setting, read `configuration.yaml` and look at its
+  `!include` lines.
 - To change ONE setting, use `patch_yaml_config`: pass the dotted `key`
   (`recorder`, `recorder.include`) and the YAML for that key's new value as
   `content`. Everything you do not address is left exactly as written, comments
@@ -454,6 +462,11 @@ mode: single
   `get_yaml_config` with the same `key` returns the shape `content` takes, so
   you can read a key, edit it, and send it straight back. `op: "remove"` deletes
   the key.
+- An `!include` target is usually a top-level LIST, which a dotted `key` cannot
+  address. Use `path` instead of `key`: a list mixing mapping keys and 0-based
+  indexes, such as `[0, "binary_sensor", 0, "state"]` to change one template's
+  `state`. Pass `key` or `path`, never both. An index one past the last entry
+  appends a new one.
 - Address the NARROWEST key you are actually changing. Your `content` is written
   verbatim, but a value you read back arrives in standard YAML style rather than
   the file's own layout, and comments inside it are not part of what a read
@@ -462,7 +475,10 @@ mode: single
   touches only those lines.
 - Only use `set_yaml_config` when you are genuinely rewriting the file. It
   replaces all of it, so anything you do not resend is destroyed, and a
-  reviewer has to read every line to see your change.
+  reviewer has to read every line to see your change. A write that drops a
+  top-level key is refused unless `remove_keys` names it; on a list-shaped file
+  a write that drops entries is refused unless `remove_entries` gives the exact
+  count. Both mean the same thing: state a removal, do not let one ride along.
 - Nothing is created along the way. To add `recorder.include.entities` when
   `recorder.include` does not exist yet, set `recorder.include` with the whole
   subtree.

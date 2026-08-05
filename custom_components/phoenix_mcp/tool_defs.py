@@ -1867,10 +1867,15 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "set_yaml_config",
         "description": (
-            "Replace the entire contents of configuration.yaml (a full-file replace). Use this only for "
-            "raw configuration.yaml settings; to author automations, scripts, scenes, helpers, or "
-            "dashboards use their dedicated tools instead. Preserve any existing content you are not "
-            "changing, including !include and !secret lines. May require admin approval. High blast "
+            "Replace the entire contents of a YAML configuration file (a full-file replace). With no "
+            "file argument this writes configuration.yaml; pass file to write an !include target such "
+            "as templates.yaml or sensors.yaml, using the same path get_yaml_config reads. A file is "
+            "writable only when configuration.yaml actually loads it and does not load it under "
+            "homeassistant:, http:, frontend: or lovelace:, so a packages file and anything holding "
+            "security settings are refused wherever they live. To author automations, scripts, scenes, "
+            "helpers, or dashboards use their dedicated tools instead. Preserve any existing content "
+            "you are not changing, including !include and !secret lines. May require admin approval. "
+            "High blast "
             "radius: a broken file prevents Home Assistant from starting. Run check_config and restart "
             "HA afterwards to apply. Pass expected_hash (the content_hash from a prior get_yaml_config) "
             "to make the write conditional: if the file changed since you read it, the write is refused "
@@ -1885,9 +1890,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "The full new configuration.yaml contents."},
+                "file": {"type": "string", "description": "Optional. Path relative to the configuration directory, e.g. 'templates.yaml' or 'packages/kitchen.yaml'. Defaults to configuration.yaml. Must be a .yaml or .yml file that configuration.yaml loads."},
+                "content": {"type": "string", "description": "The full new contents of that file."},
                 "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_yaml_config; the write is refused if the file changed since then."},
                 "remove_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional. Top-level keys this write intentionally removes, e.g. ['recorder']. A write that drops a top-level key not named here is refused, so an accidental deletion cannot ride along with an unrelated edit."},
+                "remove_entries": {"type": "integer", "description": "Optional. For a file whose top level is a list (templates.yaml, sensors.yaml): the exact number of entries this write intentionally removes. A write that drops entries without this is refused, so an accidental deletion cannot ride along with an unrelated edit. Prefer patch_yaml_config to change one entry without resending the others."},
             },
             "required": ["content"],
         },
@@ -1895,11 +1902,19 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "patch_yaml_config",
         "description": (
-            "Change ONE key inside configuration.yaml without resending the file. Prefer this "
-            "over set_yaml_config for any edit that touches a single setting: everything you do "
+            "Change ONE key or list entry inside a YAML configuration file without resending the "
+            "file. Prefer this over set_yaml_config for any edit that touches a single setting: "
+            "everything you do "
             "not address stays exactly as written, comments and ordering included, and the "
-            "approval an administrator sees is that one key rather than the whole file. key is a "
-            "dotted path of mapping keys, e.g. 'recorder' or 'recorder.include'; content is the "
+            "approval an administrator sees is that one key rather than the whole file. With no "
+            "file argument this edits configuration.yaml; pass file to edit an !include target "
+            "such as templates.yaml, subject to the same rules set_yaml_config applies to it. "
+            "Address with EITHER key or path, never both. key is a "
+            "dotted path of mapping keys, e.g. 'recorder' or 'recorder.include'; path is a list "
+            "mixing mapping keys and list indexes, e.g. [0, 'binary_sensor', 0, 'state'], and is "
+            "the only way to reach an entry in a file whose top level is a list (templates.yaml "
+            "and sensors.yaml usually are). Indexes count from 0; one past the last entry appends. "
+            "content is the "
             "YAML for that key's new VALUE, the shape get_yaml_config returns when you pass the "
             "same key. Address the NARROWEST key you are changing: your content is written "
             "verbatim, but a value read back arrives in standard YAML style rather than the "
@@ -1918,7 +1933,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "key": {"type": "string", "description": "Dotted path to the mapping key to change, e.g. 'recorder' or 'homeassistant.customize'. A key containing a literal dot cannot be addressed; edit its parent instead."},
+                "file": {"type": "string", "description": "Optional. Path relative to the configuration directory, e.g. 'templates.yaml'. Defaults to configuration.yaml. Must be a .yaml or .yml file that configuration.yaml loads."},
+                "key": {"type": "string", "description": "Dotted path to the mapping key to change, e.g. 'recorder' or 'homeassistant.customize'. A key containing a literal dot cannot be addressed; use path instead. Mapping keys only: for a list entry use path."},
+                "path": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Alternative to key: the address as a list mixing mapping keys and 0-based list indexes, e.g. [0, 'binary_sensor', 0, 'state']. Required for a file whose top level is a list. Pass either key or path, not both."},
                 "content": {"type": "string", "description": "The YAML text for that key's new value, e.g. 'purge_keep_days: 10' or '- sensor.a\\n- sensor.b'. Required for op 'set'. Indentation is adjusted to the key's depth, so paste it at the left margin."},
                 "op": {
                     "type": "string",
@@ -1927,7 +1944,6 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 },
                 "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_yaml_config; the write is refused if configuration.yaml changed since then."},
             },
-            "required": ["key"],
         },
     },
     {

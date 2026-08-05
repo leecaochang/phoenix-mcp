@@ -1,4 +1,4 @@
-"""Config-file tools: the scoped filesystem jail and the raw configuration.yaml edit.
+"""Config-file tools: the scoped filesystem jail and the raw YAML edit.
 
 Two surfaces that both write files, kept together because they share the same
 shape of risk and the same defence: resolve to a realpath, prove it is inside a
@@ -10,7 +10,14 @@ realpaths and requires the result to sit under an allowed directory, so a
 symlink or a traversal cannot escape it, and it cannot reach configuration.yaml
 at all.
 
-`cap_yaml_edit` covers configuration.yaml itself, and carries the
+`cap_yaml_edit` covers configuration.yaml and the YAML files it loads through
+an !include. Which files those are is not taken on trust: `_yaml_mount_refusal`
+asks yaml_includes.scan_mount_points where a file lands in the configuration
+tree and refuses anything reached from homeassistant:/http:/frontend:/lovelace:,
+anything it cannot rule that out for, and anything nothing loads. That gate
+exists because the content-shaped refusal below cannot see the case: an include
+target's top level IS the value of the key it is loaded at, so `http.yaml` holds
+trusted_proxies as an ordinary top-level key. It carries the
 trust-boundary refusal: `_yaml_protected_check` hard-refuses any write that
 adds, removes or modifies a path in const.YAML_PROTECTED_SUBTREES. The floor is
 not "these keys are powerful" (command_line and shell_command stay writable,
@@ -63,11 +70,11 @@ _LOGGER = logging.getLogger(__name__)
 
 
 _CONFIG_YAML = "configuration.yaml"
-_CONFIG_YAML_LOCK_KEY = f"{DOMAIN}_config_yaml_lock"
+_YAML_LOCKS_KEY = f"{DOMAIN}_yaml_file_locks"
 
 
-def _get_config_yaml_lock(hass: HomeAssistant) -> asyncio.Lock:
-    """Serialize whole-file configuration.yaml writes (set_yaml_config).
+def _get_yaml_file_lock(hass: HomeAssistant, rel: str) -> asyncio.Lock:
+    """Serialize whole-file YAML writes (set_yaml_config, patch_yaml_config).
 
     That write is a full-file replace, so two concurrent callers would lose one
     edit outright, and the protected-subtree re-check reads the prior content a
@@ -75,14 +82,23 @@ def _get_config_yaml_lock(hass: HomeAssistant) -> asyncio.Lock:
     is a real one. expected_hash narrows it but is optional by design, so it
     cannot serve as the floor.
 
-    Only set_yaml_config needs this: the automation/script/scene executors never
-    touch configuration.yaml. yaml_includes fails closed with LocateError
-    ("ambiguous") when a domain is inline there, so those paths only ever splice
-    !include leaf files under their own domain locks.
+    PER FILE rather than one global lock, keyed by the config-relative path:
+    these tools now write any include target, and a single lock would serialize
+    an edit to templates.yaml behind an unrelated edit to sensors.yaml for no
+    safety gain. The keys are bounded by the write jail, which only admits
+    .yaml/.yml paths inside the configuration directory.
+
+    The automation/script/scene executors never take these locks: yaml_includes
+    fails closed with LocateError ("ambiguous") when a domain is inline in
+    configuration.yaml, so those paths only ever splice !include leaf files
+    under their own domain locks. That leaves one real overlap, an entry-level
+    edit and a whole-file write racing on the SAME leaf, which expected_hash is
+    the guard for; taking a domain lock here would deadlock against it.
     """
-    if _CONFIG_YAML_LOCK_KEY not in hass.data:
-        hass.data[_CONFIG_YAML_LOCK_KEY] = asyncio.Lock()
-    return hass.data[_CONFIG_YAML_LOCK_KEY]
+    locks: dict[str, asyncio.Lock] = hass.data.setdefault(_YAML_LOCKS_KEY, {})
+    if rel not in locks:
+        locks[rel] = asyncio.Lock()
+    return locks[rel]
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +521,33 @@ def _removed_top_level_keys(
     return [key for key in old_doc if key not in new_doc and key not in allowed]
 
 
+def _removed_list_entries(old_text: str | None, new_text: str) -> int:
+    """How many top-level entries a write to a LIST-shaped file drops.
+
+    The mapping-key guard above cannot see this: templates.yaml and sensors.yaml
+    are top-level lists, so there are no keys to compare and it abstains, which
+    left a read-modify-write that returned 3 of 12 template blocks accepted.
+
+    A count rather than a set difference, because list entries have no stable
+    identity: an EDIT changes an entry, so any hash or equality comparison reads
+    it as one removal plus one addition and gives the same net answer with more
+    machinery. The narrow gap that leaves (drop one, add another, in the same
+    write) is a deliberate accepted limit, and the reason patch_yaml_config's
+    index addressing is the real answer for a single-entry edit: it resends
+    nothing, so it cannot lose anything.
+
+    Abstains on absent or unparseable prior content, matching the mapping form.
+    """
+    try:
+        old_doc = yaml_includes.load_tagged_lenient(old_text) if old_text else None
+        new_doc = yaml_includes.load_tagged_lenient(new_text)
+    except yaml_includes.YamlParseError:
+        return 0
+    if not isinstance(old_doc, list) or not isinstance(new_doc, list):
+        return 0
+    return max(0, len(old_doc) - len(new_doc))
+
+
 def _yaml_removal_check(
     old_text: str | None, new_text: str, args: dict, tool_name: str
 ) -> tuple[dict, str, str] | None:
@@ -517,6 +560,19 @@ def _yaml_removal_check(
     A wrong-shaped remove_keys degrades to no declarations via str_list_arg,
     which refuses rather than waves the write through.
     """
+    dropped = _removed_list_entries(old_text, new_text)
+    if dropped and dropped != _declared_entry_removals(args):
+        return (
+            _tool_error(
+                f"Refused: this write removes {dropped} top-level entries that were not "
+                f"declared. If you meant to remove them, pass remove_entries: {dropped}. "
+                "If you did not, this write was about to drop configuration you never "
+                "intended to touch: re-read the file with get_yaml_config and preserve "
+                "every entry you are not changing, or change the one entry in place with "
+                "patch_yaml_config, which resends nothing else."
+            ),
+            "invalid_request", tool_name,
+        )
     declared = str_list_arg(args.get("remove_keys"))
     removed = _removed_top_level_keys(old_text, new_text, declared)
     if removed:
@@ -534,9 +590,84 @@ def _yaml_removal_check(
     return None
 
 
-async def _read_config_yaml_text(hass: HomeAssistant) -> str | None:
-    """Current configuration.yaml text, or None when absent or unreadable."""
-    path = hass.config.path(_CONFIG_YAML)
+_YAML_WRITE_REFUSED = (
+    "Only .yaml and .yml files inside the Home Assistant configuration directory can "
+    "be written; secrets.yaml and hidden directories are excluded."
+)
+
+
+def _yaml_mount_refusal(
+    config_dir: str, path: str, rel: str, tool_name: str
+) -> tuple[dict, str, str] | None:
+    """Refuse a write whose place in the configuration tree is unsafe or unknown.
+
+    The trust-boundary floor (rule 30) is defined on configuration.yaml's own
+    top-level keys, and an include target inherits none of that shape: a file
+    loaded at `http:` puts trusted_proxies at ITS top level, and a packages file
+    carries whole integration configs including `frontend:` and `lovelace:`. So
+    the floor here is not the file's content but where the content LANDS, and
+    this refuses anything it cannot prove lands somewhere harmless.
+
+    Four refusals, and each sends the reader somewhere different: the file is
+    loaded under a protected key; a protected key's own branch could not be read
+    so that cannot be ruled out; configuration.yaml itself is unreadable so
+    nothing at all is known; or nothing loads the file, which is both a likely
+    typo and the case where a write would be inert anyway.
+
+    configuration.yaml is never routed here. It is the root of the scan rather
+    than a node in it, and rule 30 already governs it directly.
+
+    Safe to run in an executor job: filesystem reads only, no hass.
+    """
+    scan = yaml_includes.scan_mount_points(config_dir, path)
+    protected = frozenset(YAML_PROTECTED_SUBTREES)
+    if not scan.readable:
+        return (
+            _tool_error(
+                f"Refused: {_CONFIG_YAML} is missing or does not parse, so Phoenix MCP "
+                f"cannot tell where {rel} is loaded into the configuration. Writing a "
+                "file whose place in the configuration is unknown is refused. Fix "
+                f"{_CONFIG_YAML} first."
+            ),
+            "invalid_request", tool_name,
+        )
+    loaded_under = sorted(scan.keys & protected)
+    if loaded_under:
+        return (
+            _tool_error(
+                f"Refused: {_CONFIG_YAML} loads {rel} under "
+                f"{', '.join(loaded_under)}, which holds keys that define Home "
+                "Assistant's own authentication, proxy trust, and dashboard "
+                "code-loading. Those cannot be written through this tool wherever "
+                "they live; an administrator edits them by hand."
+            ),
+            "invalid_request", tool_name,
+        )
+    unproven = sorted(scan.opaque & protected)
+    if unproven:
+        return (
+            _tool_error(
+                f"Refused: the {', '.join(unproven)} configuration includes a file "
+                f"that could not be read, so Phoenix MCP cannot rule out that {rel} "
+                "is loaded there. Protected configuration keys cannot be written "
+                "through this tool, so a write it cannot place is refused."
+            ),
+            "invalid_request", tool_name,
+        )
+    if not scan.keys:
+        return (
+            _tool_error(
+                f"Refused: {_CONFIG_YAML} does not load {rel}, so writing it would "
+                "change nothing. Check the path, or read configuration.yaml with "
+                "get_yaml_config to see which files it includes."
+            ),
+            "invalid_request", tool_name,
+        )
+    return None
+
+
+async def _read_yaml_text(hass: HomeAssistant, path: str) -> str | None:
+    """Current text of a YAML file, or None when absent or unreadable."""
     if not await hass.async_add_executor_job(os.path.isfile, path):
         return None
     try:
@@ -545,17 +676,37 @@ async def _read_config_yaml_text(hass: HomeAssistant) -> str | None:
         return None
 
 
+def _yaml_write_target(hass: HomeAssistant, args: dict) -> tuple[str, str] | None:
+    """The (realpath, config-relative path) a YAML write targets, or None if refused.
+
+    The jail is the read side's, so the two tools agree on what a path even is;
+    what they do NOT share is the mount gate, which the caller runs separately
+    because it does filesystem work and belongs in an executor job.
+    """
+    return _resolve_yaml_read_path(hass, args.get("file"))
+
+
 async def _tool_set_yaml_config(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
     request_id: str = "", client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
-    """MCP tool: replace configuration.yaml (Confirm-gated)."""
+    """MCP tool: replace a YAML configuration file whole (Confirm-gated)."""
     if effective_cap(token, "cap_yaml_edit") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_yaml_config"
     pre = _yaml_write_precheck(args, "set_yaml_config")
     if pre is not None:
         return pre
-    current = await _read_config_yaml_text(hass)
+    target = _yaml_write_target(hass, args)
+    if target is None:
+        return _tool_error(_YAML_WRITE_REFUSED), "invalid_request", "set_yaml_config"
+    path, rel = target
+    if rel != _CONFIG_YAML:
+        mount = await hass.async_add_executor_job(
+            _yaml_mount_refusal, hass.config.config_dir, path, rel, "set_yaml_config",
+        )
+        if mount is not None:
+            return mount
+    current = await _read_yaml_text(hass, path)
     protected = await hass.async_add_executor_job(
         _yaml_protected_check, current, args["content"], "set_yaml_config",
     )
@@ -567,7 +718,7 @@ async def _tool_set_yaml_config(
     if removal is not None:
         return removal
     conflict = await _text_file_cas_conflict(
-        args.get("expected_hash"), hass.config.path(_CONFIG_YAML), hass, "set_yaml_config",
+        args.get("expected_hash"), path, hass, "set_yaml_config",
     )
     if conflict is not None:
         return conflict
@@ -589,11 +740,26 @@ async def _execute_set_yaml_config(
         return _tool_error("content must be a string."), "invalid_request", "set_yaml_config"
     if len(content.encode("utf-8")) > MAX_FILE_BYTES:
         return _tool_error("Content exceeds the maximum file size."), "invalid_request", "set_yaml_config"
-    path = hass.config.path(_CONFIG_YAML)
+    target = _yaml_write_target(hass, args)
+    if target is None:
+        return _tool_error(_YAML_WRITE_REFUSED), "invalid_request", "set_yaml_config"
+    path, rel = target
     # Read, protected-subtree re-check, CAS and write are one critical section:
     # the write is a whole-file replace, so an interleaved second writer would
     # both lose an edit and invalidate the prior content the check above ran on.
-    async with _get_config_yaml_lock(hass):
+    async with _get_yaml_file_lock(hass, rel):
+        # The mount is re-checked inside the lock for the same reason the two
+        # content guards below are: configuration.yaml can be re-routed while an
+        # approval waits, and a file that was an ordinary include target when the
+        # gate ran may be loaded under a protected key by the time it applies.
+        # A RESTORE is not exempt: reproducing a snapshot is only safe while the
+        # file still lands where it did when the snapshot was taken.
+        if rel != _CONFIG_YAML:
+            mount = await hass.async_add_executor_job(
+                _yaml_mount_refusal, hass.config.config_dir, path, rel, "set_yaml_config",
+            )
+            if mount is not None:
+                return mount
         existed = await hass.async_add_executor_job(os.path.isfile, path)
         before_content: str | None = None
         if existed:
@@ -632,19 +798,19 @@ async def _execute_set_yaml_config(
         try:
             await hass.async_add_executor_job(_write_utf8_file_atomic, path, content)
         except OSError:
-            _LOGGER.exception("set_yaml_config failed")
-            return _tool_error("Failed to write configuration.yaml."), "invalid_request", "set_yaml_config"
+            _LOGGER.exception("set_yaml_config failed for %s", rel)
+            return _tool_error(f"Failed to write {rel}."), "invalid_request", "set_yaml_config"
         # Inside the lock so the history cannot record two writes out of order.
         await _record_version(
-            data, token, resource_type="yaml_config", resource_id=_CONFIG_YAML,
+            data, token, resource_type="yaml_config", resource_id=rel,
             action="edit" if existed else "create",
             before=_version_content_payload(before_content),
             after=_version_content_payload(content),
-            alias=_CONFIG_YAML,
+            alias=rel,
         )
     return (
         _tool_success(json.dumps({
-            "path": _CONFIG_YAML,
+            "path": rel,
             "bytes_written": len(content.encode("utf-8")),
             "note": "Run check_config and restart Home Assistant to apply.",
         })),
@@ -655,6 +821,18 @@ async def _execute_set_yaml_config(
 # ---------------------------------------------------------------------------
 # Key-addressed configuration.yaml edit (cap_yaml_edit)
 # ---------------------------------------------------------------------------
+
+
+def _declared_entry_removals(args: dict) -> int:
+    """The entry count this write declares it removes. Never raises.
+
+    A wrong-shaped value reads as 0, i.e. it refuses rather than waves the
+    write through, matching str_list_arg's degrade-to-absent on remove_keys.
+    """
+    declared = args.get("remove_entries")
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 0:
+        return 0
+    return declared
 
 
 def _yaml_patch_op(args: dict) -> str:
@@ -672,20 +850,27 @@ def _patch_declared_removals(args: dict, op: str) -> list[str]:
     Nothing else a patch can do drops a top-level key, so the guard still runs on
     every patch and any removal it reports there is a splice bug rather than a
     resend that forgot a key.
+
+    A LIST INDEX declares nothing, and needs to declare nothing: the removal
+    guard is defined on top-level mapping keys, so removing an entry from a
+    list-shaped file never reaches it. What protects that case is _verify, which
+    proves every entry the patch did not address survived the splice.
     """
     if op != "remove":
         return []
     try:
-        path = yaml_patch.split_key(args.get("key"))
+        path = yaml_patch.normalize_path(args.get("key"), args.get("path"))
     except yaml_patch.PatchError:
         return []
-    return path[:1] if len(path) == 1 else []
+    if len(path) != 1 or not isinstance(path[0], str):
+        return []
+    return [path[0]]
 
 
 def _prepare_yaml_patch(
     current: str | None, args: dict, tool_name: str
 ) -> yaml_patch.PatchResult | tuple[dict, str, str]:
-    """Build the patched configuration.yaml, or an error tuple refusing it.
+    """Build the patched file text, or an error tuple refusing it.
 
     Runs pre-gate (rule 29) AND again at apply time against what is on disk, for
     the same reason the two whole-file checks below it do: the addressed key can
@@ -714,7 +899,8 @@ def _prepare_yaml_patch(
             "invalid_request", tool_name,
         )
     try:
-        result = yaml_patch.apply_patch(current or "", args.get("key"), op, args.get("content"), value)
+        result = yaml_patch.apply_patch(
+            current or "", args.get("key"), op, args.get("content"), value, args.get("path"))
     except yaml_patch.PatchError as err:
         return _tool_error(str(err)), "invalid_request", tool_name
     protected = _yaml_protected_check(current, result.text, tool_name)
@@ -745,12 +931,22 @@ async def _tool_patch_yaml_config(
     tool = "patch_yaml_config"
     if effective_cap(token, "cap_yaml_edit") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
-    current = await _read_config_yaml_text(hass)
+    target = _yaml_write_target(hass, args)
+    if target is None:
+        return _tool_error(_YAML_WRITE_REFUSED), "invalid_request", tool
+    path, rel = target
+    if rel != _CONFIG_YAML:
+        mount = await hass.async_add_executor_job(
+            _yaml_mount_refusal, hass.config.config_dir, path, rel, tool,
+        )
+        if mount is not None:
+            return mount
+    current = await _read_yaml_text(hass, path)
     prepared = await hass.async_add_executor_job(_prepare_yaml_patch, current, args, tool)
     if isinstance(prepared, tuple):
         return prepared
     conflict = await _text_file_cas_conflict(
-        args.get("expected_hash"), hass.config.path(_CONFIG_YAML), hass, tool,
+        args.get("expected_hash"), path, hass, tool,
     )
     if conflict is not None:
         return conflict
@@ -768,14 +964,28 @@ async def _execute_patch_yaml_config(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
     tool = "patch_yaml_config"
-    path = hass.config.path(_CONFIG_YAML)
-    key = str_arg(args.get("key"))
+    target = _yaml_write_target(hass, args)
+    if target is None:
+        return _tool_error(_YAML_WRITE_REFUSED), "invalid_request", tool
+    path, rel = target
     op = _yaml_patch_op(args)
+    try:
+        addressed = yaml_patch.describe_path(
+            yaml_patch.normalize_path(args.get("key"), args.get("path")))
+    except yaml_patch.PatchError as err:
+        return _tool_error(str(err)), "invalid_request", tool
     # Read, patch, CAS and write are one critical section, sharing the whole-file
     # writer's lock: the patch is computed from the text read a few statements
     # earlier, so an interleaved second writer would both lose an edit and leave
     # this splice aimed at line numbers that no longer mean anything.
-    async with _get_config_yaml_lock(hass):
+    async with _get_yaml_file_lock(hass, rel):
+        # Same approval-window reasoning as set_yaml_config's re-check.
+        if rel != _CONFIG_YAML:
+            mount = await hass.async_add_executor_job(
+                _yaml_mount_refusal, hass.config.config_dir, path, rel, tool,
+            )
+            if mount is not None:
+                return mount
         existed = await hass.async_add_executor_job(os.path.isfile, path)
         before_content: str | None = None
         if existed:
@@ -797,23 +1007,23 @@ async def _execute_patch_yaml_config(
         try:
             await hass.async_add_executor_job(_write_utf8_file_atomic, path, content)
         except OSError:
-            _LOGGER.exception("patch_yaml_config failed")
-            return _tool_error("Failed to write configuration.yaml."), "invalid_request", tool
+            _LOGGER.exception("patch_yaml_config failed for %s", rel)
+            return _tool_error(f"Failed to write {rel}."), "invalid_request", tool
         # Inside the lock so the history cannot record two writes out of order.
         # The snapshot is the WHOLE file on both sides, so a restore reproduces
         # configuration.yaml exactly as any other yaml_config version does.
         await _record_version(
-            data, token, resource_type="yaml_config", resource_id=_CONFIG_YAML,
+            data, token, resource_type="yaml_config", resource_id=rel,
             action="edit" if existed else "create",
             before=_version_content_payload(before_content),
             after=_version_content_payload(content),
-            alias=_CONFIG_YAML,
-            summary=_version_summary(f"patch.{op}", subject=key),
+            alias=rel,
+            summary=_version_summary(f"patch.{op}", subject=addressed),
         )
     return (
         _tool_success(json.dumps({
-            "path": _CONFIG_YAML,
-            "key": key,
+            "path": rel,
+            "key": addressed,
             "op": op,
             "bytes_written": len(content.encode("utf-8")),
             # Structural like patch_dashboard's card ops rather than a blind
@@ -859,7 +1069,11 @@ async def _build_diff_write_file(args: dict, token: TokenRecord, hass: HomeAssis
 async def _build_diff_set_yaml_config(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     raw_content = args.get("content")
     content: str = raw_content if isinstance(raw_content, str) else ""
-    path = hass.config.path(_CONFIG_YAML)
+    # Best-effort like every diff builder: an unresolvable path still produces a
+    # readable diff, and the tool path has already refused it by the time an
+    # approval could exist.
+    target = _yaml_write_target(hass, args)
+    path, rel = target if target is not None else (hass.config.path(_CONFIG_YAML), _CONFIG_YAML)
     raw = await hass.async_add_executor_job(_read_capped_if_file, path)
     before = _truncate(raw) if raw is not None else None
     # Computed from the content, never from the caller's own remove_keys: the
@@ -868,16 +1082,30 @@ async def _build_diff_set_yaml_config(args: dict, token: TokenRecord, hass: Home
     removing = await hass.async_add_executor_job(
         _removed_top_level_keys, raw, content, [],
     )
+    dropped = await hass.async_add_executor_job(_removed_list_entries, raw, content)
+    if removing:
+        summary = _summary(
+            "set_yaml_config.removing", file=rel, keys=", ".join(sorted(removing)))
+    elif dropped == 1:
+        summary = _summary("set_yaml_config.removing_entry", file=rel)
+    elif dropped:
+        summary = _summary("set_yaml_config.removing_entries", file=rel, count=str(dropped))
+    else:
+        summary = _summary("set_yaml_config", file=rel)
     return {
         "kind": "yaml_diff",
-        **(
-            _summary("set_yaml_config.removing", keys=", ".join(sorted(removing)))
-            if removing else _summary("set_yaml_config")
-        ),
-        "target": {"type": "file", "id": _CONFIG_YAML, "label": _CONFIG_YAML},
+        **summary,
+        "target": {"type": "file", "id": rel, "label": rel},
         "before": _redact_secrets_in_text(before),
         "after": _redact_secrets_in_text(_truncate(str(content))),
-        "preview": {"warning": "Replaces the entire configuration.yaml; a broken file blocks HA startup."},
+        "preview": {
+            "path": rel,
+            "warning": (
+                f"Replaces the entire {_CONFIG_YAML}; a broken file blocks HA startup."
+                if rel == _CONFIG_YAML
+                else f"Replaces the entire {rel}, which {_CONFIG_YAML} loads."
+            ),
+        },
     }
 
 
@@ -889,9 +1117,15 @@ async def _build_diff_patch_yaml_config(args: dict, token: TokenRecord, hass: Ho
     comments an operator wrote next to the setting are on the side they are
     reading when they decide.
     """
-    key = str_arg(args.get("key"))
     op = _yaml_patch_op(args)
-    current = await _read_config_yaml_text(hass)
+    try:
+        key = yaml_patch.describe_path(
+            yaml_patch.normalize_path(args.get("key"), args.get("path")))
+    except yaml_patch.PatchError:
+        key = ""
+    target = _yaml_write_target(hass, args)
+    path, rel = target if target is not None else (hass.config.path(_CONFIG_YAML), _CONFIG_YAML)
+    current = await _read_yaml_text(hass, path)
     prepared = await hass.async_add_executor_job(
         _prepare_yaml_patch, current, args, "patch_yaml_config",
     )
@@ -901,12 +1135,12 @@ async def _build_diff_patch_yaml_config(args: dict, token: TokenRecord, hass: Ho
         "kind": "yaml_diff",
         # `path`, not `key`: diff_summary_fields takes the template key as its
         # own first parameter, so a template param of that name collides with it.
-        **_summary(f"patch_yaml_config.{op}", path=key or "(no key)"),
-        "target": {"type": "file", "id": _CONFIG_YAML, "label": _CONFIG_YAML},
+        **_summary(f"patch_yaml_config.{op}", path=key or "(no key)", file=rel),
+        "target": {"type": "file", "id": rel, "label": rel},
         "before": _redact_secrets_in_text(_truncate(before) if before is not None else None),
         "after": _redact_secrets_in_text(_truncate(after) if after is not None else None),
         "preview": {
-            "file": _CONFIG_YAML, "key": key, "op": op,
-            "warning": "Changes one key; the rest of configuration.yaml is untouched.",
+            "file": rel, "key": key, "op": op,
+            "warning": f"Changes one key; the rest of {rel} is untouched.",
         },
     }

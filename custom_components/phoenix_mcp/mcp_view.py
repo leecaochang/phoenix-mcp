@@ -1929,7 +1929,12 @@ async def async_restore_version(
                     return await _execute_edit_blueprint(bp_args, token, hass, data)
                 return await _execute_create_blueprint(bp_args, token, hass, data)
             if resource_type == "yaml_config":
-                return await _execute_set_yaml_config({"content": restorable}, token, hass, data)
+                # resource_id is the config-relative path. Records written before
+                # set_yaml_config took a file argument all carry
+                # "configuration.yaml", which resolves the same way, so old
+                # versions restore unchanged.
+                return await _execute_set_yaml_config(
+                    {"file": resource_id, "content": restorable}, token, hass, data)
             if resource_type == "esphome_yaml":
                 # Snapshots hold the RAW file, so a restore reproduces it exactly.
                 # It routes through the executor, whose splice is a no-op on raw

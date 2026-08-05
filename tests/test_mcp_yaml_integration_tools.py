@@ -15,6 +15,7 @@ from custom_components.phoenix_mcp.helpers import content_hash
 from custom_components.phoenix_mcp.mcp_view import (
     _EXECUTOR_REGISTRY,
     _call_tool,
+    _execute_patch_yaml_config,
     _execute_set_yaml_config,
 )
 from custom_components.phoenix_mcp.token_store import PermissionTree, TokenRecord
@@ -750,13 +751,13 @@ class TestConfigYamlSerialization:
     async def test_executor_holds_the_config_yaml_lock(self, hass):
         import asyncio
 
-        from custom_components.phoenix_mcp.tools.config_files import _get_config_yaml_lock
+        from custom_components.phoenix_mcp.tools.config_files import _get_yaml_file_lock
 
         path = hass.config.path("configuration.yaml")
         with open(path, "w", encoding="utf-8") as f:
             f.write("default_config:\n")
 
-        lock = _get_config_yaml_lock(hass)
+        lock = _get_yaml_file_lock(hass, "configuration.yaml")
         await lock.acquire()
         task = asyncio.create_task(
             _execute_set_yaml_config(
@@ -800,7 +801,7 @@ class TestConfigYamlSerialization:
         real_write = config_files._write_utf8_file_atomic
 
         def _checking_write(target, content):
-            seen.append(config_files._get_config_yaml_lock(hass).locked())
+            seen.append(config_files._get_yaml_file_lock(hass, "configuration.yaml").locked())
             return real_write(target, content)
 
         monkeypatch.setattr(config_files, "_write_utf8_file_atomic", _checking_write)
@@ -819,3 +820,390 @@ class TestConfigYamlSerialization:
         # a blend of the two.
         with open(path, encoding="utf-8") as f:
             assert f.read() in ("a: 1\n", "a: 2\n")
+
+
+class TestSetYamlConfigTargetsIncludeFiles:
+    """set_yaml_config writes any file configuration.yaml loads at a safe key.
+
+    The write jail used to be configuration.yaml alone while the READ jail took
+    a file argument, so an agent that read templates.yaml had no way to write it
+    back, and a `file` argument sent to this tool was silently dropped and the
+    content validated against configuration.yaml instead.
+    """
+
+    USER_CONFIG = (
+        "automation: !include automations.yaml\n"
+        "script: !include scripts.yaml\n"
+        "scene: !include scenes.yaml\n"
+        "sensor: !include sensors.yaml\n"
+        "template: !include templates.yaml\n"
+    )
+
+    def _seed(self, tmp_path, config=None):
+        (tmp_path / "configuration.yaml").write_text(
+            self.USER_CONFIG if config is None else config, encoding="utf-8")
+
+    async def test_writes_an_included_file(self, hass, tmp_path):
+        self._seed(tmp_path)
+        (tmp_path / "templates.yaml").write_text("- binary_sensor: []\n", encoding="utf-8")
+        new = "- binary_sensor:\n    - name: Dark\n      state: 'on'\n"
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": "templates.yaml", "content": new}, _token(), hass)
+        assert outcome == "allowed"
+        assert _json(content)["path"] == "templates.yaml"
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == new
+        # The file it was NOT aimed at is untouched.
+        assert (tmp_path / "configuration.yaml").read_text(encoding="utf-8") == self.USER_CONFIG
+
+    @pytest.mark.parametrize("rel", [
+        "automations.yaml", "scripts.yaml", "scenes.yaml", "sensors.yaml", "templates.yaml",
+    ])
+    async def test_every_include_target_is_writable(self, hass, tmp_path, rel):
+        self._seed(tmp_path)
+        (tmp_path / rel).write_text("[]\n", encoding="utf-8")
+        _, outcome, _ = await _call(
+            "set_yaml_config", {"file": rel, "content": "[]\n"}, _token(), hass)
+        assert outcome == "allowed"
+
+    async def test_default_still_writes_configuration_yaml(self, hass, tmp_path):
+        self._seed(tmp_path, "default_config:\n")
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"content": "default_config:\nfrontend:\n"}, _token(), hass)
+        assert outcome == "allowed"
+        assert _json(content)["path"] == "configuration.yaml"
+
+    async def test_refuses_a_file_nothing_loads(self, hass, tmp_path):
+        self._seed(tmp_path)
+        (tmp_path / "notes.yaml").write_text("a: 1\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": "notes.yaml", "content": "a: 2\n"}, _token(), hass)
+        assert outcome == "invalid_request"
+        assert "does not load notes.yaml" in content["content"][0]["text"]
+        assert (tmp_path / "notes.yaml").read_text(encoding="utf-8") == "a: 1\n"
+
+    async def test_refuses_a_file_loaded_under_a_protected_key(self, hass, tmp_path):
+        """The trust-boundary floor follows the key, not the filename.
+
+        http.yaml's own top level IS http:'s value, so trusted_proxies sits
+        there as an ordinary-looking key and the content-shaped rule-30 check
+        would never fire on it.
+        """
+        self._seed(tmp_path, "http: !include http.yaml\n")
+        (tmp_path / "http.yaml").write_text("trusted_proxies:\n  - 10.0.0.1\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "http.yaml", "content": "trusted_proxies:\n  - 0.0.0.0/0\n"},
+            _token(), hass)
+        assert outcome == "invalid_request"
+        assert "under http" in content["content"][0]["text"]
+        assert "0.0.0.0/0" not in (tmp_path / "http.yaml").read_text(encoding="utf-8")
+
+    async def test_refuses_a_packages_file(self, hass, tmp_path):
+        self._seed(tmp_path, "homeassistant:\n  packages: !include_dir_named packages\n")
+        (tmp_path / "packages").mkdir()
+        (tmp_path / "packages/kitchen.yaml").write_text("light: []\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "packages/kitchen.yaml", "content": "frontend:\n  extra_module_url:\n    - /local/x.js\n"},
+            _token(), hass)
+        assert outcome == "invalid_request"
+        assert "under homeassistant" in content["content"][0]["text"]
+
+    async def test_refuses_a_new_file_in_a_packages_directory(self, hass, tmp_path):
+        """Containment, not enumeration: the file does not exist yet."""
+        self._seed(tmp_path, "homeassistant:\n  packages: !include_dir_named packages\n")
+        (tmp_path / "packages").mkdir()
+        _, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "packages/new.yaml", "content": "light: []\n"}, _token(), hass)
+        assert outcome == "invalid_request"
+
+    async def test_refuses_when_a_protected_branch_cannot_be_read(self, hass, tmp_path):
+        self._seed(tmp_path, "http: !include http.yaml\ntemplate: !include templates.yaml\n")
+        (tmp_path / "http.yaml").write_text("{{{ not yaml", encoding="utf-8")
+        (tmp_path / "templates.yaml").write_text("[]\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": "templates.yaml", "content": "[]\n"}, _token(), hass)
+        assert outcome == "invalid_request"
+        assert "could not be read" in content["content"][0]["text"]
+
+    async def test_refuses_when_configuration_yaml_is_unparseable(self, hass, tmp_path):
+        self._seed(tmp_path, "{{{ not yaml")
+        (tmp_path / "templates.yaml").write_text("[]\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": "templates.yaml", "content": "[]\n"}, _token(), hass)
+        assert outcome == "invalid_request"
+        assert "cannot tell where templates.yaml is loaded" in content["content"][0]["text"]
+
+    @pytest.mark.parametrize("bad", [
+        "secrets.yaml", "../outside.yaml", "/etc/passwd", ".storage/core.entity_registry",
+        "templates.txt",
+    ])
+    async def test_path_jail(self, hass, tmp_path, bad):
+        self._seed(tmp_path)
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": bad, "content": "x\n"}, _token(), hass)
+        assert outcome == "invalid_request"
+        assert "can be written" in content["content"][0]["text"]
+
+    async def test_denied_token_learns_nothing_about_its_payload(self, hass, tmp_path):
+        """Rule 29(a): the cap check runs before every path and mount refusal."""
+        self._seed(tmp_path)
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": "../escape.yaml", "content": "x\n"},
+            _token(cap_yaml_edit="deny"), hass)
+        assert outcome == "denied"
+        assert "escape.yaml" not in content["content"][0]["text"]
+
+    async def test_executor_rechecks_the_mount_at_apply_time(self, hass, tmp_path):
+        """configuration.yaml can be re-routed while an approval waits."""
+        self._seed(tmp_path)
+        (tmp_path / "templates.yaml").write_text("[]\n", encoding="utf-8")
+        # Re-route the file under a protected key after the gate would have run.
+        self._seed(tmp_path, "http: !include templates.yaml\n")
+        content, outcome, _ = await _execute_set_yaml_config(
+            {"file": "templates.yaml", "content": "trusted_proxies: []\n"},
+            _token(), hass, MagicMock())
+        assert outcome == "invalid_request"
+        assert "under http" in content["content"][0]["text"]
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == "[]\n"
+
+    async def test_version_record_names_the_file(self, hass, tmp_path):
+        self._seed(tmp_path)
+        (tmp_path / "templates.yaml").write_text("[]\n", encoding="utf-8")
+        data = MagicMock()
+        data.versions.record = AsyncMock()
+        _, outcome, _ = await _execute_set_yaml_config(
+            {"file": "templates.yaml", "content": "- a\n"}, _token(), hass, data)
+        assert outcome == "allowed"
+        record = data.versions.record.await_args.kwargs
+        assert record["resource_type"] == "yaml_config"
+        assert record["resource_id"] == "templates.yaml"
+
+    async def test_expected_hash_applies_to_the_named_file(self, hass, tmp_path):
+        self._seed(tmp_path)
+        (tmp_path / "templates.yaml").write_text("- a\n", encoding="utf-8")
+        _, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "templates.yaml", "content": "- b\n", "expected_hash": content_hash("- stale\n")},
+            _token(), hass)
+        assert outcome == "invalid_request"
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == "- a\n"
+
+
+class TestPatchYamlConfigTargetsIncludeFiles:
+    """patch_yaml_config addresses a key or list entry in any writable file.
+
+    Same jail and same mount gate as set_yaml_config: a file is patchable only
+    where it is patchable as a whole.
+    """
+
+    async def test_patches_an_entry_in_an_include_target(self, hass, tmp_path):
+        (tmp_path / "configuration.yaml").write_text(
+            "template: !include templates.yaml\n", encoding="utf-8")
+        (tmp_path / "templates.yaml").write_text(
+            "- binary_sensor:\n    - name: 'Dark'\n      state: 'off'\n"
+            "- sensor:\n    - name: 'Outside'\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "patch_yaml_config",
+            {"file": "templates.yaml", "path": [0, "binary_sensor", 0, "state"],
+             "content": "'on'"},
+            _token(), hass)
+        assert outcome == "allowed"
+        body = _json(content)
+        assert body["path"] == "templates.yaml"
+        assert body["key"] == "[0].binary_sensor[0].state"
+        written = (tmp_path / "templates.yaml").read_text(encoding="utf-8")
+        assert "state: 'on'" in written
+        # The entry the patch never addressed was never resent, so it is intact.
+        assert "name: 'Outside'" in written
+
+    async def test_refuses_a_file_loaded_under_a_protected_key(self, hass, tmp_path):
+        (tmp_path / "configuration.yaml").write_text(
+            "http: !include http.yaml\n", encoding="utf-8")
+        (tmp_path / "http.yaml").write_text("server_port: 8123\n", encoding="utf-8")
+        content, outcome, _ = await _call(
+            "patch_yaml_config",
+            {"file": "http.yaml", "key": "server_port", "content": "80"}, _token(), hass)
+        assert outcome == "invalid_request"
+        assert "under http" in content["content"][0]["text"]
+        assert "8123" in (tmp_path / "http.yaml").read_text(encoding="utf-8")
+
+    async def test_refuses_a_file_nothing_loads(self, hass, tmp_path):
+        (tmp_path / "configuration.yaml").write_text("default_config:\n", encoding="utf-8")
+        (tmp_path / "notes.yaml").write_text("a: 1\n", encoding="utf-8")
+        _, outcome, _ = await _call(
+            "patch_yaml_config",
+            {"file": "notes.yaml", "key": "a", "content": "2"}, _token(), hass)
+        assert outcome == "invalid_request"
+
+    async def test_executor_rechecks_the_mount_at_apply_time(self, hass, tmp_path):
+        (tmp_path / "templates.yaml").write_text("a: 1\n", encoding="utf-8")
+        (tmp_path / "configuration.yaml").write_text(
+            "http: !include templates.yaml\n", encoding="utf-8")
+        content, outcome, _ = await _execute_patch_yaml_config(
+            {"file": "templates.yaml", "key": "a", "content": "2"},
+            _token(), hass, MagicMock())
+        assert outcome == "invalid_request"
+        assert "under http" in content["content"][0]["text"]
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == "a: 1\n"
+
+    async def test_version_record_names_the_file(self, hass, tmp_path):
+        (tmp_path / "configuration.yaml").write_text(
+            "template: !include templates.yaml\n", encoding="utf-8")
+        (tmp_path / "templates.yaml").write_text("- a: 1\n", encoding="utf-8")
+        data = MagicMock()
+        data.versions.record = AsyncMock()
+        _, outcome, _ = await _execute_patch_yaml_config(
+            {"file": "templates.yaml", "path": [0, "a"], "content": "2"},
+            _token(), hass, data)
+        assert outcome == "allowed"
+        assert data.versions.record.await_args.kwargs["resource_id"] == "templates.yaml"
+
+    async def test_denied_token_learns_nothing_about_its_payload(self, hass, tmp_path):
+        content, outcome, _ = await _call(
+            "patch_yaml_config", {"file": "../escape.yaml", "key": "x", "content": "1"},
+            _token(cap_yaml_edit="deny"), hass)
+        assert outcome == "denied"
+        assert "escape.yaml" not in content["content"][0]["text"]
+
+
+class TestIncludeTargetRoundTrip:
+    """The reported workflow, end to end: read an include target, edit, write back.
+
+    A model reaches for expected_hash from the read, so the two tools have to
+    agree on both the path and the hash for a real edit to land.
+    """
+
+    BEFORE = (
+        "- binary_sensor:\n"
+        "    - name: 'Dark'\n"
+        "      unique_id: dark\n"
+        "      device_class: light\n"
+        "      state: >\n"
+        "        {{ is_state('sun.sun', 'below_horizon') }}\n"
+    )
+    AFTER = (
+        "- binary_sensor:\n"
+        "    - name: 'Dark'\n"
+        "      unique_id: dark\n"
+        "      device_class: light\n"
+        "      state: >\n"
+        "        {% set lux = states('sensor.lux') | float(-1) %}\n"
+        "        {{ is_state('sun.sun', 'below_horizon') or (lux >= 0 and lux < 2900) }}\n"
+    )
+
+    async def test_read_edit_write(self, hass, tmp_path):
+        (tmp_path / "configuration.yaml").write_text(
+            "template: !include templates.yaml\n", encoding="utf-8")
+        (tmp_path / "templates.yaml").write_text(self.BEFORE, encoding="utf-8")
+        token = _token()
+
+        content, outcome, _ = await _call(
+            "get_yaml_config", {"file": "templates.yaml"}, token, hass)
+        assert outcome == "allowed"
+        read = _json(content)
+        assert read["content"] == self.BEFORE
+
+        content, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "templates.yaml", "content": self.AFTER,
+             "expected_hash": read["content_hash"]},
+            token, hass)
+        assert outcome == "allowed"
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == self.AFTER
+
+
+class TestListEntryRemovalGuard:
+    """The rule-31 backstop for a file whose top level is a LIST.
+
+    The mapping-key guard abstains there (no keys to compare), so a
+    read-modify-write returning 3 of 12 template blocks was accepted. Counting
+    is the whole mechanism: list entries have no stable identity, so an edit and
+    a delete-plus-add are indistinguishable and only the net matters.
+    """
+
+    THREE = "- a: 1\n- b: 2\n- c: 3\n"
+
+    def _seed(self, tmp_path):
+        (tmp_path / "configuration.yaml").write_text(
+            "template: !include templates.yaml\n", encoding="utf-8")
+        (tmp_path / "templates.yaml").write_text(self.THREE, encoding="utf-8")
+
+    async def test_an_undeclared_drop_is_refused(self, hass, tmp_path):
+        self._seed(tmp_path)
+        content, outcome, _ = await _call(
+            "set_yaml_config", {"file": "templates.yaml", "content": "- a: 1\n"},
+            _token(), hass)
+        assert outcome == "invalid_request"
+        text = content["content"][0]["text"]
+        assert "removes 2 top-level entries" in text
+        assert "remove_entries: 2" in text
+        assert "patch_yaml_config" in text
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == self.THREE
+
+    async def test_a_declared_drop_is_allowed(self, hass, tmp_path):
+        self._seed(tmp_path)
+        _, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "templates.yaml", "content": "- a: 1\n", "remove_entries": 2},
+            _token(), hass)
+        assert outcome == "allowed"
+        assert (tmp_path / "templates.yaml").read_text(encoding="utf-8") == "- a: 1\n"
+
+    @pytest.mark.parametrize("declared", [1, 3, True, "2", None, -2])
+    async def test_a_wrong_or_wrong_shaped_declaration_still_refuses(
+        self, hass, tmp_path, declared
+    ):
+        """Degrade-to-absent: a value that is not the exact count refuses."""
+        self._seed(tmp_path)
+        args = {"file": "templates.yaml", "content": "- a: 1\n"}
+        if declared is not None:
+            args["remove_entries"] = declared
+        _, outcome, _ = await _call("set_yaml_config", args, _token(), hass)
+        assert outcome == "invalid_request"
+
+    async def test_an_edit_that_keeps_the_count_needs_no_declaration(self, hass, tmp_path):
+        self._seed(tmp_path)
+        _, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "templates.yaml", "content": "- a: 9\n- b: 2\n- c: 3\n"},
+            _token(), hass)
+        assert outcome == "allowed"
+
+    async def test_growing_the_file_needs_no_declaration(self, hass, tmp_path):
+        self._seed(tmp_path)
+        _, outcome, _ = await _call(
+            "set_yaml_config",
+            {"file": "templates.yaml", "content": self.THREE + "- d: 4\n"},
+            _token(), hass)
+        assert outcome == "allowed"
+
+    async def test_a_restore_is_exempt(self, hass, tmp_path):
+        """Reproducing an admin-chosen snapshot legitimately drops later entries."""
+        from custom_components.phoenix_mcp.tool_common import _restore_ctx
+
+        self._seed(tmp_path)
+        token = _token()
+        marker = _restore_ctx.set({"user_id": "admin"})
+        try:
+            _, outcome, _ = await _execute_set_yaml_config(
+                {"file": "templates.yaml", "content": "- a: 1\n"}, token, hass, MagicMock())
+        finally:
+            _restore_ctx.reset(marker)
+        assert outcome == "allowed"
+
+    @pytest.mark.parametrize("count,fragment", [(1, "removing_entry"), (2, "removing_entries")])
+    async def test_the_diff_summary_reports_the_drop(self, hass, tmp_path, count, fragment):
+        """The History line must say what the write drops, not just that it wrote."""
+        from custom_components.phoenix_mcp.tools.config_files import (
+            _build_diff_set_yaml_config,
+        )
+
+        self._seed(tmp_path)
+        kept = "".join(f"- {name}: {n}\n" for n, name in list(enumerate("abc", 1))[: 3 - count])
+        diff = await _build_diff_set_yaml_config(
+            {"file": "templates.yaml", "content": kept}, _token(), hass)
+        assert diff["summary_key"] == f"diff.set_yaml_config.{fragment}"
+        assert diff["summary_params"]["file"] == "templates.yaml"
+        assert diff["target"]["id"] == "templates.yaml"

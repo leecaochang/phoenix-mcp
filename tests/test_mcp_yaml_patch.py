@@ -80,9 +80,9 @@ async def _call(args, token, hass, data=None):
     return await _call_tool("patch_yaml_config", args, token, hass, data or MagicMock())
 
 
-def _patch(text, key, op="set", content=None):
+def _patch(text, key, op="set", content=None, path=None):
     value = yaml_patch.parse_value(content) if op == "set" else None
-    return yaml_patch.apply_patch(text, key, op, content, value)
+    return yaml_patch.apply_patch(text, key, op, content, value, path)
 
 
 class TestSpliceEngine:
@@ -181,9 +181,18 @@ class TestSpliceEngine:
         with pytest.raises(yaml_patch.PatchError, match="flow style"):
             _patch("http: {server_port: 8123}\n", "http.server_port", content="80")
 
-    def test_a_non_mapping_document_is_refused(self):
-        with pytest.raises(yaml_patch.PatchError, match="not a mapping"):
+    def test_a_mapping_key_against_a_list_document_is_refused(self):
+        """A dotted key addresses mapping keys; a list top level needs an index."""
+        with pytest.raises(yaml_patch.PatchError, match="does not hold a mapping of keys"):
             _patch("- one\n- two\n", "one", content="1")
+
+    def test_an_index_against_a_mapping_document_is_refused(self):
+        with pytest.raises(yaml_patch.PatchError, match="does not hold a list of entries"):
+            _patch("a: 1\n", None, content="2", path=[0])
+
+    def test_a_scalar_document_is_refused(self):
+        with pytest.raises(yaml_patch.PatchError, match="neither a mapping of keys nor a list"):
+            _patch("just a string\n", "a", content="1")
 
     def test_an_unparseable_file_is_refused_before_anything_is_located(self):
         with pytest.raises(yaml_patch.PatchError, match="not valid YAML"):
@@ -204,14 +213,14 @@ class TestSpliceEngine:
         """
         monkeypatch.setattr(
             yaml_patch, "_render",
-            lambda key, content, indent, value: f"{' ' * indent}{key}: 999\n",
+            lambda key, content, indent, value, prefix="": f"{' ' * indent}{key}: 999\n",
         )
         with pytest.raises(yaml_patch.PatchError, match="did not come out as intended"):
             _patch(SAMPLE, "recorder.purge_keep_days", content="30")
 
     def test_the_self_check_refuses_a_result_that_no_longer_parses(self, monkeypatch):
         monkeypatch.setattr(
-            yaml_patch, "_render", lambda key, content, indent, value: "wrong: 1\n"
+            yaml_patch, "_render", lambda key, content, indent, value, prefix="": "wrong: 1\n"
         )
         with pytest.raises(yaml_patch.PatchError, match="would not be valid YAML"):
             _patch(SAMPLE, "recorder.purge_keep_days", content="30")
@@ -392,3 +401,147 @@ class TestPatchDiff:
             {"key": "recorder", "content": "db_url: mysql://u:hunter2@h/db\npassword: hunter2\n"},
             _token(), hass)
         assert "hunter2" not in json.dumps(diff)
+
+
+# A templates.yaml: a top-level LIST, which a dotted key cannot address at all.
+TEMPLATES = """\
+# Darkness detection
+- binary_sensor:
+    - name: 'Dark'
+      unique_id: dark
+      device_class: light
+      state: >
+        {{ is_state('sun.sun', 'below_horizon') }}
+
+- sensor:
+    - name: 'Outside'
+      unique_id: outside
+      state: "{{ states('sensor.outdoor_temp') }}"
+"""
+
+
+class TestListAddressing:
+    """Addressing a list entry, which is what an !include target usually is.
+
+    The point of these is not that the edit lands: it is that nothing the patch
+    did not address is resent, so nothing the caller never read can be lost.
+    """
+
+    def test_edits_one_field_deep_inside_an_entry(self):
+        new_state = (
+            ">\n"
+            "  {% set lux = states('sensor.lux') | float(-1) %}\n"
+            "  {{ is_state('sun.sun', 'below_horizon') or (lux >= 0 and lux < 2900) }}\n"
+        )
+        out = _patch(
+            TEMPLATES, None, content=new_state,
+            path=[0, "binary_sensor", 0, "state"],
+        ).text
+        assert "lux >= 0 and lux < 2900" in out
+        # The folded indicator stays on the key's own line, as it was written.
+        assert "state: >\n" in out
+        # The other entry, its comment, and the untouched fields all survive.
+        assert "# Darkness detection" in out
+        assert "unique_id: outside" in out
+        assert "device_class: light" in out
+        assert "sensor.outdoor_temp" in out
+
+    def test_replaces_a_whole_entry(self):
+        out = _patch(
+            TEMPLATES, None, content="switch:\n  - name: 'New'\n", path=[1],
+        ).text
+        assert "- switch:\n    - name: 'New'\n" in out
+        assert "unique_id: outside" not in out
+        assert "unique_id: dark" in out
+
+    def test_removes_an_entry(self):
+        out = _patch(TEMPLATES, None, op="remove", path=[0]).text
+        assert "unique_id: dark" not in out
+        assert "unique_id: outside" in out
+
+    def test_appends_at_one_past_the_end(self):
+        """The same affordance a missing mapping key has: set creates it."""
+        out = _patch(TEMPLATES, None, content="switch:\n  - name: 'Third'\n", path=[2]).text
+        assert out.rstrip("\n").endswith("- switch:\n    - name: 'Third'")
+        assert "unique_id: dark" in out and "unique_id: outside" in out
+
+    def test_before_is_the_entry_without_its_dash(self):
+        before = _patch(TEMPLATES, None, content="switch: []\n", path=[1]).before
+        assert before is not None
+        assert before.startswith("sensor:")
+        assert "unique_id: outside" in before
+
+    def test_a_lone_dash_entry_is_not_left_behind(self):
+        text = "-\n  a: 1\n-\n  a: 2\n"
+        out = _patch(text, None, content="a: 9\n", path=[0]).text
+        assert out == "- a: 9\n-\n  a: 2\n"
+
+    def test_an_index_into_a_nested_list_works(self):
+        out = _patch(TEMPLATES, None, content="name: 'Renamed'\nunique_id: dark\n",
+                     path=[0, "binary_sensor", 0]).text
+        assert "name: 'Renamed'" in out
+        assert "unique_id: outside" in out
+
+    @pytest.mark.parametrize("path,op,content,fragment", [
+        ([9], "set", "a: 1", "out of range"),
+        ([-1], "set", "a: 1", "negative"),
+        ([True], "set", "a: 1", "neither a mapping key"),
+        ([1.5], "set", "a: 1", "neither a mapping key"),
+        ([], "set", "a: 1", "non-empty list"),
+        (["binary_sensor"], "set", "a: 1", "does not hold a mapping of keys"),
+        ([0, "binary_sensor", 9], "set", "a: 1", "out of range"),
+        ([0, "absent", 0], "set", "a: 1", "does not exist"),
+        ([5], "remove", None, "out of range"),
+    ])
+    def test_refusals(self, path, op, content, fragment):
+        with pytest.raises(yaml_patch.PatchError, match=fragment):
+            _patch(TEMPLATES, None, op=op, content=content, path=path)
+
+    def test_both_forms_at_once_is_refused(self):
+        with pytest.raises(yaml_patch.PatchError, match="not both"):
+            _patch(TEMPLATES, "a", content="1", path=[0])
+
+    def test_a_flow_style_list_is_refused_rather_than_guessed_at(self):
+        with pytest.raises(yaml_patch.PatchError, match="flow style"):
+            _patch("[a, b]\n", None, content="c", path=[0])
+
+    def test_verify_refuses_a_splice_that_came_out_wrong(self, monkeypatch):
+        """The guarantee that replaces a deletion guard, so it is pinned directly.
+
+        A splice bug that dropped an unaddressed entry would otherwise be a
+        silent data loss; _verify compares the whole re-parsed document.
+        """
+        real_splice = yaml_patch._splice
+
+        def _lossy(text, start, end, replacement):
+            # Valid YAML, wrong document: the entry the patch never addressed is
+            # gone. This is the exact silent data loss a whole-file write can
+            # commit and a patch must be incapable of.
+            out = real_splice(text, start, end, replacement)
+            head, sep, _ = out.partition("- sensor:")
+            return head if sep else out
+
+        monkeypatch.setattr(yaml_patch, "_splice", _lossy)
+        with pytest.raises(yaml_patch.PatchError, match="did not come out as intended"):
+            _patch(TEMPLATES, None, content="switch: []\n", path=[0])
+
+    def test_verify_refuses_a_splice_that_did_not_apply(self, monkeypatch):
+        """The other half: the addressed path must hold the intended value."""
+        monkeypatch.setattr(yaml_patch, "_splice", lambda text, *_: text)
+        with pytest.raises(yaml_patch.PatchError, match="did not come out as intended"):
+            _patch(TEMPLATES, None, content="switch: []\n", path=[0])
+
+    def test_a_key_sharing_its_line_with_the_dash_keeps_the_dash(self):
+        """`- a: 1` puts the first pair on the dash's own line.
+
+        Replacing that line without re-emitting the dash deletes the whole list
+        entry. _verify caught it as a mismatch rather than writing it, which is
+        the self-check working, but the edit has to LAND, not be refused.
+        """
+        assert _patch("- a: 1\n- b: 2\n", None, content="9", path=[0, "a"]).text == (
+            "- a: 9\n- b: 2\n"
+        )
+
+    def test_a_later_key_in_an_inline_entry_is_indented_not_dashed(self):
+        text = "- a: 1\n  b: 2\n"
+        assert _patch(text, None, content="9", path=[0, "b"]).text == "- a: 1\n  b: 9\n"

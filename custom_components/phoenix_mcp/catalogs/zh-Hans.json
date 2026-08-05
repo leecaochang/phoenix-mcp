@@ -143,7 +143,7 @@
       },
       "cap_yaml_edit": {
         "label": "直接编辑 YAML",
-        "description": "直接读取和编辑 configuration.yaml。强烈建议要求审批。文件中的内联敏感信息会暴露，因此请使用 !secret 将敏感信息存放在 secrets.yaml 中。"
+        "description": "直接读取和编辑 configuration.yaml 及其加载的 YAML 文件。强烈建议要求审批。文件中的内联敏感信息会暴露，因此请使用 !secret 将敏感信息存放在 secrets.yaml 中。"
       },
       "confirmUnavailable": "此能力不支持要求审批。",
       "esphomeBadgeTitle": "在加载项可用之前，ESPHome 工具对此令牌保持隐藏。但现在仍可先设置该能力。",
@@ -720,7 +720,7 @@
       "set_entity": "更新 {entity_id} 的注册表元数据（{fields}）",
       "set_esphome_yaml": "编辑 ESPHome 设备配置 {rel}。此操作不会刷写设备。",
       "set_esphome_yaml.device": "编辑 ESPHome 设备配置 {rel}（{device}，{count} 个实体）。此操作不会刷写设备。",
-      "set_yaml_config": "替换 configuration.yaml",
+      "set_yaml_config": "替换 {file}",
       "write_file": "写入文件“{path}”",
       "zigbee_permit": "开放 Zigbee 网络以允许设备加入",
       "zigbee_permit.close": "关闭 Zigbee 入网窗口",
@@ -729,7 +729,7 @@
       "zigbee_reconfigure.device": "重新配置 Zigbee 设备 {label}",
       "zigbee_remove": "移除一个 Zigbee 设备",
       "zigbee_remove.device": "将 Zigbee 设备 {label} 从网络中移除",
-      "set_yaml_config.removing": "替换 configuration.yaml，移除顶层 {keys}",
+      "set_yaml_config.removing": "替换 {file}，移除顶层 {keys}",
       "patch_dashboard.set": "设置仪表盘“{label}”的 {path}",
       "patch_dashboard.append": "向仪表盘“{label}”的 {path} 追加内容",
       "patch_dashboard.remove": "从仪表盘“{label}”删除 {path}",
@@ -740,9 +740,11 @@
       "edit_energy_config.set_source.create": "能源：新增{source_type}来源（{fields}）",
       "edit_energy_config.rename_device": "能源：将“{old_label}”重命名为“{label}”",
       "edit_energy_config.remove_source": "能源：移除{source_type}来源（{old_statistic}）",
-      "patch_yaml_config.set": "设置 configuration.yaml 中的 {path}",
-      "patch_yaml_config.remove": "从 configuration.yaml 删除 {path}",
-      "config_entry.options": "更改助手“{label}”的 {keys}"
+      "patch_yaml_config.set": "设置 {file} 中的 {path}",
+      "patch_yaml_config.remove": "从 {file} 删除 {path}",
+      "config_entry.options": "更改助手“{label}”的 {keys}",
+      "set_yaml_config.removing_entry": "替换 {file}，移除 1 个条目",
+      "set_yaml_config.removing_entries": "替换 {file}，移除 {count} 个条目"
     },
     "approvals": {
       "approve": "批准并执行",

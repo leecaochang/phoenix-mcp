@@ -194,6 +194,144 @@ def test_layout_non_include_tag_routes_nothing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Mount point scan
+# ---------------------------------------------------------------------------
+
+
+USER_CONFIGURATION = """\
+    automation: !include automations.yaml
+    script: !include scripts.yaml
+    scene: !include scenes.yaml
+    sensor: !include sensors.yaml
+    template: !include templates.yaml
+"""
+
+
+@pytest.mark.parametrize("rel,key", [
+    ("automations.yaml", "automation"),
+    ("scripts.yaml", "script"),
+    ("scenes.yaml", "scene"),
+    ("sensors.yaml", "sensor"),
+    ("templates.yaml", "template"),
+])
+def test_mount_scan_finds_each_include_target(tmp_path, rel, key):
+    write(tmp_path, "configuration.yaml", USER_CONFIGURATION)
+    write(tmp_path, rel, "[]\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / rel))
+    assert scan.readable
+    assert scan.keys == {key}
+    assert scan.opaque == frozenset()
+
+
+def test_mount_scan_reports_nothing_for_an_unrouted_file(tmp_path):
+    write(tmp_path, "configuration.yaml", USER_CONFIGURATION)
+    write(tmp_path, "notes.yaml", "a: 1\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "notes.yaml"))
+    assert scan.readable and scan.keys == frozenset()
+
+
+def test_mount_scan_strips_a_label_from_the_key(tmp_path):
+    write(tmp_path, "configuration.yaml", "automation manual: !include manual.yaml\n")
+    write(tmp_path, "manual.yaml", "[]\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "manual.yaml"))
+    assert scan.keys == {"automation"}
+
+
+def test_mount_scan_finds_a_nested_include(tmp_path):
+    write(tmp_path, "configuration.yaml", "http: !include http.yaml\n")
+    write(tmp_path, "http.yaml", "trusted_proxies: !include proxies.yaml\n")
+    write(tmp_path, "proxies.yaml", "- 10.0.0.1\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "proxies.yaml"))
+    assert scan.keys == {"http"}
+
+
+def test_mount_scan_finds_a_directive_below_the_key(tmp_path):
+    """The directive can sit at any depth in the key's value, not just at its head."""
+    write(tmp_path, "configuration.yaml", """\
+        homeassistant:
+          packages: !include_dir_named packages
+    """)
+    write(tmp_path, "packages/kitchen.yaml", "light: []\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "packages/kitchen.yaml"))
+    assert scan.keys == {"homeassistant"}
+
+
+def test_mount_scan_matches_a_directory_by_containment(tmp_path):
+    """A file that does not exist yet still reports the directory's mount."""
+    write(tmp_path, "configuration.yaml", """\
+        homeassistant:
+          packages: !include_dir_named packages
+    """)
+    (tmp_path / "packages").mkdir()
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "packages/new.yaml"))
+    assert scan.keys == {"homeassistant"}
+
+
+def test_mount_scan_reports_every_key_that_reaches_a_shared_file(tmp_path):
+    """A file reachable from two keys reports both, so a caller sees the unsafe one.
+
+    A first-match answer would report whichever key came first in the document,
+    which is exactly how a protected mount would be missed.
+    """
+    write(tmp_path, "configuration.yaml", """\
+        template: !include shared.yaml
+        http: !include http.yaml
+    """)
+    write(tmp_path, "http.yaml", "trusted_proxies: !include shared.yaml\n")
+    write(tmp_path, "shared.yaml", "- 10.0.0.1\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "shared.yaml"))
+    assert scan.keys == {"template", "http"}
+
+
+def test_mount_scan_marks_an_unparseable_branch_opaque(tmp_path):
+    write(tmp_path, "configuration.yaml", """\
+        http: !include http.yaml
+        template: !include templates.yaml
+    """)
+    write(tmp_path, "http.yaml", "{{{ not yaml")
+    write(tmp_path, "templates.yaml", "[]\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "templates.yaml"))
+    assert scan.keys == {"template"}
+    assert scan.opaque == {"http"}
+
+
+def test_mount_scan_tolerates_an_unknown_third_party_tag(tmp_path):
+    """A vendor tag must not make a branch opaque and refuse unrelated writes."""
+    write(tmp_path, "configuration.yaml", """\
+        http: !include http.yaml
+        template: !include templates.yaml
+    """)
+    write(tmp_path, "http.yaml", "trusted_proxies: !vendor_thing arg\n")
+    write(tmp_path, "templates.yaml", "[]\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "templates.yaml"))
+    assert scan.opaque == frozenset()
+
+
+def test_mount_scan_survives_an_include_cycle(tmp_path):
+    write(tmp_path, "configuration.yaml", "template: !include a.yaml\n")
+    write(tmp_path, "a.yaml", "x: !include b.yaml\n")
+    write(tmp_path, "b.yaml", "y: !include a.yaml\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "b.yaml"))
+    assert scan.keys == {"template"}
+
+
+def test_mount_scan_ignores_a_target_outside_the_config_dir(tmp_path):
+    outside = tmp_path.parent / "outside.yaml"
+    outside.write_text("a: 1\n", encoding="utf-8")
+    write(tmp_path, "configuration.yaml", "template: !include ../outside.yaml\n")
+    scan = yi.scan_mount_points(str(tmp_path), str(outside))
+    assert scan.readable and scan.keys == frozenset()
+
+
+@pytest.mark.parametrize("content", [None, "{{{ not yaml", "- just\n- a list\n"])
+def test_mount_scan_is_unreadable_without_a_usable_root(tmp_path, content):
+    if content is not None:
+        write(tmp_path, "configuration.yaml", content)
+    scan = yi.scan_mount_points(str(tmp_path), str(tmp_path / "templates.yaml"))
+    assert not scan.readable and scan.keys == frozenset()
+
+
+# ---------------------------------------------------------------------------
 # Directory enumeration
 # ---------------------------------------------------------------------------
 
