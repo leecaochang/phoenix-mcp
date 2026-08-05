@@ -12,7 +12,7 @@ import re
 # served to the panel by admin_view.PhoenixAdminCatalogView.
 CATALOGS_DIR = pathlib.Path(__file__).parent / "catalogs"
 
-PHOENIX_VERSION = "1.0.0"
+PHOENIX_VERSION = "1.1.0"
 # The lowest Home Assistant this integration is claimed to run on. It is a floor
 # derived from the APIs actually imported, not a guess, and two separate lines
 # were checked to arrive at it. Setup imports StaticPathConfig,
