@@ -245,7 +245,7 @@ def test_operations_route_table_lists_every_token_facing_route() -> None:
     [("Assist", ASSIST_API_MIN_HA), ("AI Task", AI_TASK_MIN_HA)],
 )
 def test_connect_page_states_the_ha_version_floor(feature: str, floor: str) -> None:
-    """The optional AI surfaces need newer HA than the headline 2024.5 floor."""
+    """The optional AI surfaces need newer HA than the headline floor."""
     major_minor = ".".join(floor.split(".")[:2])
     html = (DOCS / "connect.html").read_text(encoding="utf-8")
     assert major_minor in html, (

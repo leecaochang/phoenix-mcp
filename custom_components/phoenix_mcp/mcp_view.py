@@ -34,7 +34,7 @@ from .data import PhoenixData
 from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
 from .ws_dispatch import WsDispatchError, async_ws_command
 from .mesa_tools import MESA_TOOL_NAMES, async_call_mesa_tool, mesa_tool_defs
-from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
+from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
 # Shared tool primitives live in tool_common (extracted so per-domain tool
 # modules can use them without importing this transport module).
 # Per-domain tools live under tools/; this module keeps the transport, the
@@ -352,16 +352,28 @@ def _jsonrpc_result(msg_id: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
 
-def _sanitize_jsonrpc_id(raw_id: Any) -> str | int | None:
-    """Coerce a JSON-RPC id to a valid type (string, number, or null).
+def _valid_jsonrpc_id(raw_id: Any) -> bool:
+    """Is this a conforming JSON-RPC 2.0 id?
 
-    JSON-RPC 2.0 requires id to be a string, number, or null. If the client
-    sends a dict, list, or other non-conforming type, coerce to None rather
-    than echoing it back.
+    The spec allows String, Number or Null, and requires the server to echo the
+    SAME value back. `bool` is excluded explicitly because it is a subclass of
+    `int` in Python: `id: true` would otherwise pass every type check here and
+    then be echoed back as `true`, which is not a value any client can correlate.
     """
-    if raw_id is None or isinstance(raw_id, (str, int, float)):
-        return raw_id  # type: ignore[return-value]  # float is accepted on the wire; see the id contract above
-    return None
+    if isinstance(raw_id, bool):
+        return False
+    return raw_id is None or isinstance(raw_id, (str, int, float))
+
+
+def _sanitize_jsonrpc_id(raw_id: Any) -> str | int | None:
+    """Reduce a JSON-RPC id to something safe to put in a RESPONSE envelope.
+
+    Only for the error paths, where a reply has to carry an id and the request's
+    own is unusable: the spec says an Invalid Request answers with `id: null`.
+    A conforming request never needs this, since `_classify_jsonrpc_message`
+    refuses a bad id before dispatch rather than quietly repairing it.
+    """
+    return raw_id if _valid_jsonrpc_id(raw_id) else None
 
 
 def _jsonrpc_error(msg_id: Any, code: int, message: str) -> dict:
@@ -376,6 +388,9 @@ def _classify_jsonrpc_message(body: dict) -> tuple[str, Any]:
     that is not an object or a `method` that is not a string; the tools/call
     dispatcher does `params.get(...)` and would raise before the per-call
     exception net, escaping to an aiohttp 500 rather than a clean JSON-RPC error.
+    It can also send an `id` that is an object, an array or a boolean, which was
+    coerced to None and DISPATCHED anyway, so a malformed message could apply a
+    side effect and then answer with an id its sender could not correlate.
     This gate runs before dispatch in BOTH the single-request and batch paths so
     the shape is validated once. Returns one of:
       ("dispatch", (method, params)) - a well-formed request to hand to _dispatch_mcp.
@@ -396,6 +411,13 @@ def _classify_jsonrpc_message(body: dict) -> tuple[str, Any]:
     if method is None and ("result" in body or "error" in body):
         return "accepted", None
     if not isinstance(method, str) or not method:
+        return "error", (-32600, "Invalid Request.")
+    # A present id must be String, Number or Null. A malformed one used to be
+    # coerced to None and then DISPATCHED, so `{"id": {}, "method": "tools/call"}`
+    # ran its side effect and answered with an id the caller could not match to
+    # its request, which is exactly the shape that makes a client retry a
+    # non-idempotent call. Refusing costs a conforming client nothing.
+    if "id" in body and not _valid_jsonrpc_id(body["id"]):
         return "error", (-32600, "Invalid Request.")
     raw_params = body.get("params")
     # JSON-RPC allows params to be an Array (positional) or Object (by-name). Phoenix MCP
@@ -1933,6 +1955,18 @@ async def async_restore_version(
         _restore_ctx.reset(ctx)
 
 
+class ExecutorNotRegistered(LookupError):
+    """No executor is registered for a tool name.
+
+    Its own type, rather than the bare KeyError this used to raise, because the
+    approve path treats "nothing could have run" as retryable and everything else
+    as possibly-applied. A KeyError raised INSIDE an executor (a dict lookup on a
+    service response, a missing config key) is indistinguishable from the lookup
+    failing, so the caller cleared the durable marker and re-offered an approval
+    whose side effect had already begun.
+    """
+
+
 async def async_execute_approved_tool(
     tool_name: str,
     args: dict,
@@ -1942,11 +1976,12 @@ async def async_execute_approved_tool(
 ) -> tuple[dict, str, str]:
     """Run the side-effect path for a previously-gated tool. Returns the tool result tuple.
 
-    Raises KeyError if no executor is registered for the tool_name.
+    Raises ExecutorNotRegistered if no executor is registered for the tool_name,
+    which is the ONLY failure here that proves nothing was dispatched.
     """
     fn = _EXECUTOR_REGISTRY.get(tool_name)
     if fn is None:
-        raise KeyError(f"No executor registered for tool {tool_name!r}")
+        raise ExecutorNotRegistered(f"No executor registered for tool {tool_name!r}")
     # The admin's approval covers the whole action, so the MESA gate inside the
     # executor runs under confirm-approved semantics (see _approved_exec_ctx).
     ctx = _approved_exec_ctx.set(True)
@@ -3082,11 +3117,11 @@ async def _handle_streamable_batch(
             headers={"X-Phoenix-Request-ID": request_id},
         )
 
-    # Batch rate limiting design: each batch consumes ONE rate-limit token, not one
-    # per item. Per-item counting would let a single 50-item batch exhaust a token's
-    # entire 60 req/min budget, making batching worse than sequential calls. The
-    # MAX_BATCH_ITEMS cap bounds the multiplier to 50x, an acceptable tradeoff
-    # for MCP batch usability.
+    # Rate limiting for a batch is charged PER ITEM and preflighted against both
+    # the minute and burst ceilings by RateLimiter.charge_batch, in post() before
+    # anything here runs. This comment used to say the opposite, that one batch
+    # cost one unit and the 50x multiplier was an acceptable trade for usability;
+    # it is not, since it let a token spend fifty times its configured ceiling.
     # Items are dispatched sequentially (not via asyncio.gather) so a batch can never
     # run up to MAX_BATCH_ITEMS side-effecting tools concurrently and interleave
     # writes; order is preserved and one item's failure stays isolated.
@@ -3487,6 +3522,35 @@ class PhoenixMcpView(PhoenixView):
         rl_headers = _rate_limit_headers(token, rl_result)
 
         if isinstance(parsed, list):
+            # A batch is ONE HTTP request carrying up to MAX_BATCH_ITEMS calls,
+            # and the auth check above charged it as one, so a token on the
+            # default 60/min could issue 3,000 tool calls a minute by batching.
+            # The items are the work, so the other N-1 are charged here, now that
+            # the count is known, and the whole batch is REFUSED if the budget
+            # will not cover it. Preflighting is what makes the ceiling real:
+            # charging without refusing let a token limited to 10/min run all 50
+            # items and only then be throttled. Nothing has been dispatched yet,
+            # so there is no half-applied batch to worry about.
+            batch_rl = data.rate_limiter.charge_batch(
+                token.id, token.rate_limit_requests, token.rate_limit_burst,
+                min(len(parsed), MAX_BATCH_ITEMS) - 1,
+            )
+            if not batch_rl.allowed:
+                _fire_rate_limit_events(hass, data, token)
+                _log(
+                    data, token, request_id=request_id, method="POST",
+                    resource="mcp:batch", outcome="rate_limited", client_ip=client_ip,
+                )
+                resp = _error("rate_limited", "Rate limit exceeded.", 429, request_id)
+                resp.headers["Retry-After"] = str(batch_rl.retry_after)
+                return resp
+            # From here on the batch's own result is what the client is told, on
+            # BOTH paths: the single-request result above was computed before the
+            # other N-1 items were charged, so it reported a budget the token no
+            # longer has (a 50-item batch answered X-RateLimit-Remaining: 59).
+            # This covers the SSE framing; the JSON path takes batch_rl directly.
+            if batch_rl.rate_limiting_enabled:
+                rl_headers = _rate_limit_headers(token, batch_rl)
             if wants_sse and _batch_expects_response(parsed) and 0 < len(parsed) <= MAX_BATCH_ITEMS:
                 bus = _ProgressBus()
                 _progress_ctx.set(bus)
@@ -3495,7 +3559,7 @@ class PhoenixMcpView(PhoenixView):
                     _dispatch_streamable_batch(
                         parsed, token, hass, data, client_ip, base_url=base_url),
                 ))
-            return await _handle_streamable_batch(parsed, token, rl_result, hass, data, request_id, client_ip, base_url=base_url)
+            return await _handle_streamable_batch(parsed, token, batch_rl, hass, data, request_id, client_ip, base_url=base_url)
 
         if not isinstance(parsed, dict):
             return web.Response(

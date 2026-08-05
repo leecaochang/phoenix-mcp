@@ -13,7 +13,18 @@ import re
 CATALOGS_DIR = pathlib.Path(__file__).parent / "catalogs"
 
 PHOENIX_VERSION = "1.0.0"
-MIN_HA_VERSION = "2024.5.0"
+# The lowest Home Assistant this integration is claimed to run on. It is a floor
+# derived from the APIs actually imported, not a guess, and two separate lines
+# were checked to arrive at it. Setup imports StaticPathConfig,
+# async_register_static_paths and remove_extra_js_url, none of which exist before
+# 2024.7.0, so anything older raises ImportError before setup completes. The
+# dashboard tools then need lovelace.const.LOVELACE_DATA, which lands in 2025.2.0;
+# below it every one of them fails cleanly with "lovelace is not loaded", so
+# 2024.7 would start but ship a surface with a hole in it. 2025.2.0 is also
+# ASSIST_API_MIN_HA, so the claim is one number rather than two.
+# Raising this means re-deriving it, not editing it: check the module-level
+# `from homeassistant...` imports across the package against the target release.
+MIN_HA_VERSION = "2025.2.0"
 GITHUB_URL = "https://github.com/leecaochang/phoenix-mcp"
 DOMAIN = "phoenix_mcp"
 STORAGE_KEY = "phoenix_mcp"

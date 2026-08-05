@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import pathlib
 import secrets
 import uuid
 from datetime import timedelta
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.components.sensor import SensorStateClass
 from homeassistant.const import UnitOfTime
@@ -20,6 +24,7 @@ from custom_components.phoenix_mcp.audit import AuditLog
 from custom_components.phoenix_mcp.rate_limiter import RateLimiter
 from custom_components.phoenix_mcp.sensor import (
     PhoenixTokenSensor,
+    _SENSOR_TYPES,
     _make_sensors,
     async_create_token_sensors,
     async_remove_token_sensors,
@@ -98,19 +103,26 @@ def test_make_sensors_returns_six():
 
 
 def test_make_sensors_unique_ids():
+    """Identity is the token's id, never its name.
+
+    The name is mutable, and while the slug WAS the identity every rename deleted
+    six registry rows and created six new ones under new entity_ids, so anything
+    naming one broke. The device was already keyed on the id; these now agree.
+    """
     token = _make_token(name="alpha")
     data = _make_data()
     sensors = _make_sensors(token, data)
     unique_ids = [s._attr_unique_id for s in sensors]
     expected = [
-        "phoenix_mcp_alpha_status",
-        "phoenix_mcp_alpha_request_count",
-        "phoenix_mcp_alpha_denied_count",
-        "phoenix_mcp_alpha_rate_limit_hits",
-        "phoenix_mcp_alpha_last_access",
-        "phoenix_mcp_alpha_expires_in",
+        f"phoenix_mcp_{token.id}_status",
+        f"phoenix_mcp_{token.id}_request_count",
+        f"phoenix_mcp_{token.id}_denied_count",
+        f"phoenix_mcp_{token.id}_rate_limit_hits",
+        f"phoenix_mcp_{token.id}_last_access",
+        f"phoenix_mcp_{token.id}_expires_in",
     ]
     assert unique_ids == expected
+    assert not any("alpha" in uid for uid in unique_ids)
 
 
 def test_make_sensors_names_come_from_the_translation_catalog():
@@ -147,14 +159,14 @@ def test_make_sensors_names_come_from_the_translation_catalog():
 def test_status_active():
     token = _make_token()
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "status", data)
+    sensor = PhoenixTokenSensor(token, "status", data)
     assert sensor.native_value == "active"
 
 
 def test_status_revoked():
     token = _make_token(revoked=True)
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "status", data)
+    sensor = PhoenixTokenSensor(token, "status", data)
     assert sensor.native_value == "revoked"
 
 
@@ -163,7 +175,7 @@ def test_status_expired():
 
     token = _make_token(expires_at=utcnow() - timedelta(hours=1))
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "status", data)
+    sensor = PhoenixTokenSensor(token, "status", data)
     assert sensor.native_value == "expired"
 
 
@@ -172,7 +184,7 @@ def test_status_expired():
 def test_request_count_zero_when_no_counters():
     token = _make_token()
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "request_count", data)
+    sensor = PhoenixTokenSensor(token, "request_count", data)
     assert sensor.native_value == 0
 
 
@@ -180,7 +192,7 @@ def test_request_count_from_token_counters():
     token = _make_token()
     data = _make_data()
     data.token_counters[token.id] = {"request_count": 42, "denied_count": 3, "rate_limit_hits": 1}
-    sensor = PhoenixTokenSensor(token, "my_token", "request_count", data)
+    sensor = PhoenixTokenSensor(token, "request_count", data)
     assert sensor.native_value == 42
 
 
@@ -188,7 +200,7 @@ def test_denied_count_from_token_counters():
     token = _make_token()
     data = _make_data()
     data.token_counters[token.id] = {"request_count": 10, "denied_count": 5, "rate_limit_hits": 0}
-    sensor = PhoenixTokenSensor(token, "my_token", "denied_count", data)
+    sensor = PhoenixTokenSensor(token, "denied_count", data)
     assert sensor.native_value == 5
 
 
@@ -196,14 +208,14 @@ def test_rate_limit_hits_from_token_counters():
     token = _make_token()
     data = _make_data()
     data.token_counters[token.id] = {"request_count": 10, "denied_count": 0, "rate_limit_hits": 7}
-    sensor = PhoenixTokenSensor(token, "my_token", "rate_limit_hits", data)
+    sensor = PhoenixTokenSensor(token, "rate_limit_hits", data)
     assert sensor.native_value == 7
 
 
 def test_denied_count_zero_when_no_counters():
     token = _make_token()
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "denied_count", data)
+    sensor = PhoenixTokenSensor(token, "denied_count", data)
     assert sensor.native_value == 0
 
 
@@ -212,7 +224,7 @@ def test_denied_count_zero_when_no_counters():
 def test_last_access_never_when_none():
     token = _make_token(last_used_at=None)
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "last_access", data)
+    sensor = PhoenixTokenSensor(token, "last_access", data)
     assert sensor.native_value is None
 
 
@@ -222,7 +234,7 @@ def test_last_access_returns_iso_string():
     ts = utcnow()
     token = _make_token(last_used_at=ts)
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "last_access", data)
+    sensor = PhoenixTokenSensor(token, "last_access", data)
     assert sensor.native_value == ts.isoformat()
 
 
@@ -238,7 +250,7 @@ def test_expires_in_is_unknown_without_an_expiry():
     """
     token = _make_token(expires_at=None)
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "expires_in", data)
+    sensor = PhoenixTokenSensor(token, "expires_in", data)
     assert sensor.native_value is None
     assert sensor.state_class is SensorStateClass.MEASUREMENT
     assert sensor.native_unit_of_measurement == UnitOfTime.DAYS
@@ -249,8 +261,8 @@ def test_expires_in_carries_the_same_unit_with_and_without_an_expiry():
     from homeassistant.util.dt import utcnow
 
     data = _make_data()
-    with_expiry = PhoenixTokenSensor(_make_token(expires_at=utcnow() + timedelta(days=5)), "a", "expires_in", data)
-    without = PhoenixTokenSensor(_make_token(expires_at=None), "b", "expires_in", data)
+    with_expiry = PhoenixTokenSensor(_make_token(expires_at=utcnow() + timedelta(days=5)), "expires_in", data)
+    without = PhoenixTokenSensor(_make_token(expires_at=None), "expires_in", data)
     assert with_expiry.native_unit_of_measurement == without.native_unit_of_measurement
     assert with_expiry.state_class is without.state_class
 
@@ -260,7 +272,7 @@ def test_expires_in_returns_days():
 
     token = _make_token(expires_at=utcnow() + timedelta(days=5))
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "expires_in", data)
+    sensor = PhoenixTokenSensor(token, "expires_in", data)
     assert sensor.native_value == 5
 
 
@@ -269,7 +281,7 @@ def test_expires_in_partial_day_rounds_up():
 
     token = _make_token(expires_at=utcnow() + timedelta(hours=2))
     data = _make_data()
-    sensor = PhoenixTokenSensor(token, "my_token", "expires_in", data)
+    sensor = PhoenixTokenSensor(token, "expires_in", data)
     assert sensor.native_value == 1
 
 
@@ -496,3 +508,269 @@ class TestCounterWriteDebounce:
         from custom_components.phoenix_mcp.helpers import flush_sensor_writes
 
         assert is_callback(flush_sensor_writes)
+
+
+# --- token identity survives a rename (real entity registry) ------------------
+#
+# These use the REAL entity and device registries rather than a MagicMock hass,
+# because the whole defect lives in registry bookkeeping: a MagicMock records the
+# calls and asserts nothing about identity, which is why the previous tests
+# pinned the hazardous implementation instead of catching it. The sensors are
+# registered by hand rather than through the platform so the test stays about
+# identity and does not need a full config entry set up.
+
+class TestTokenRenameKeepsSensorIdentity:
+    """A rename must change what is DISPLAYED, never what is ADDRESSED."""
+
+    @staticmethod
+    def _register(hass, token):
+        """Put one token's six sensors in the registry under the current scheme."""
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.sensor import (
+            _SENSOR_TYPES, _device_name, _unique_id,
+        )
+
+        entity_reg = er.async_get(hass)
+        device_reg = dr.async_get(hass)
+        entry = MockConfigEntry(domain=DOMAIN)
+        entry.add_to_hass(hass)
+        device = device_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, token.id)},
+            name=_device_name(token.name),
+        )
+        return {
+            sensor_type: entity_reg.async_get_or_create(
+                "sensor", DOMAIN, _unique_id(token.id, sensor_type),
+                config_entry=entry, device_id=device.id,
+            ).entity_id
+            for sensor_type in _SENSOR_TYPES
+        }, device.id
+
+    @pytest.mark.asyncio
+    async def test_rename_keeps_every_entity_id(self, hass):
+        from homeassistant.helpers import device_registry as dr
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.sensor import (
+            _device_name, async_rename_token_sensors,
+        )
+
+        token = _make_token(name="alpha")
+        data = _make_data(tokens=[token])
+        hass.data[DOMAIN] = data
+        before, device_id = self._register(hass, token)
+
+        renamed = replace(token, name="beta")
+        await async_rename_token_sensors(hass, "alpha", renamed)
+
+        entity_reg = er.async_get(hass)
+        after = {
+            sensor_type: entity_reg.async_get_entity_id("sensor", DOMAIN, uid)
+            for sensor_type, uid in (
+                (t, f"phoenix_mcp_{token.id}_{t}") for t in before
+            )
+        }
+        # Same rows, same entity_ids: a dashboard card naming one still resolves.
+        assert after == before
+        assert all(entity_id is not None for entity_id in after.values())
+        # Only the display name moved.
+        device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, token.id)})
+        assert device.name == _device_name("beta")
+        assert device.id == device_id
+
+    @pytest.mark.asyncio
+    async def test_rename_repoints_the_sensors_at_the_new_record(self, hass):
+        # The sensors read every value off the TokenRecord they hold. The rebuild
+        # this replaced got that for free by constructing new ones; in-place has
+        # to do it explicitly or the status sensor reports the stale record.
+        from custom_components.phoenix_mcp.sensor import async_rename_token_sensors
+
+        token = _make_token(name="alpha")
+        data = _make_data(tokens=[token])
+        hass.data[DOMAIN] = data
+        sensors = _make_sensors(token, data)
+        data.platform_entities["alpha"] = sensors
+        data.token_id_sensors[token.id] = sensors
+
+        revoked = replace(token, name="beta", revoked=True)
+        await async_rename_token_sensors(hass, "alpha", revoked)
+
+        status = next(s for s in sensors if s._sensor_type == "status")
+        assert status.native_value == "revoked"
+        # Re-keyed so the slug-keyed revoke path still finds them.
+        assert "alpha" not in data.platform_entities
+        assert data.platform_entities["beta"] is sensors
+
+    @pytest.mark.asyncio
+    async def test_platform_setup_runs_the_migration(self, hass):
+        # The migration is only worth anything if setup actually performs it, and
+        # calling the helper directly proves nothing about that wiring.
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.sensor import _legacy_unique_id, _unique_id
+
+        token = _make_token(name="alpha")
+        data = _make_data(tokens=[token])
+        hass.data[DOMAIN] = data
+        entry = MockConfigEntry(domain=DOMAIN)
+        entry.add_to_hass(hass)
+        entity_reg = er.async_get(hass)
+        legacy_id = entity_reg.async_get_or_create(
+            "sensor", DOMAIN, _legacy_unique_id("alpha", "status"), config_entry=entry,
+        ).entity_id
+
+        await async_setup_entry(hass, entry, MagicMock())
+
+        assert entity_reg.async_get_entity_id(
+            "sensor", DOMAIN, _unique_id(token.id, "status")
+        ) == legacy_id
+
+    @pytest.mark.asyncio
+    async def test_upgrade_rekeys_legacy_rows_in_place(self, hass):
+        # Without this an upgrade looks exactly like a rename: the old rows keep
+        # their name-derived unique_ids, nothing claims them, and six new
+        # entities appear beside them with _2 suffixes.
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.sensor import (
+            _SENSOR_TYPES, _async_migrate_unique_ids, _legacy_unique_id, _unique_id,
+        )
+
+        token = _make_token(name="alpha")
+        entry = MockConfigEntry(domain=DOMAIN)
+        entry.add_to_hass(hass)
+        entity_reg = er.async_get(hass)
+        legacy = {
+            sensor_type: entity_reg.async_get_or_create(
+                "sensor", DOMAIN, _legacy_unique_id("alpha", sensor_type), config_entry=entry,
+            ).entity_id
+            for sensor_type in _SENSOR_TYPES
+        }
+
+        _async_migrate_unique_ids(hass, [token])
+
+        for sensor_type, entity_id in legacy.items():
+            # Same row, re-keyed: the entity_id an operator already references.
+            assert entity_reg.async_get_entity_id(
+                "sensor", DOMAIN, _unique_id(token.id, sensor_type)
+            ) == entity_id
+            assert entity_reg.async_get_entity_id(
+                "sensor", DOMAIN, _legacy_unique_id("alpha", sensor_type)
+            ) is None
+
+    @pytest.mark.asyncio
+    async def test_migration_leaves_an_already_claimed_id_alone(self, hass):
+        # A legacy row left over from a pre-migration rename would collide with
+        # the token's real row. Re-keying onto a taken unique_id raises, so the
+        # leftover is stepped over rather than allowed to abort the rest.
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.sensor import (
+            _async_migrate_unique_ids, _legacy_unique_id, _unique_id,
+        )
+
+        token = _make_token(name="alpha")
+        entry = MockConfigEntry(domain=DOMAIN)
+        entry.add_to_hass(hass)
+        entity_reg = er.async_get(hass)
+        stale = entity_reg.async_get_or_create(
+            "sensor", DOMAIN, _legacy_unique_id("alpha", "status"), config_entry=entry,
+        ).entity_id
+        claimed = entity_reg.async_get_or_create(
+            "sensor", DOMAIN, _unique_id(token.id, "status"), config_entry=entry,
+        ).entity_id
+
+        _async_migrate_unique_ids(hass, [token])
+
+        assert entity_reg.async_get_entity_id(
+            "sensor", DOMAIN, _unique_id(token.id, "status")
+        ) == claimed
+        assert entity_reg.async_get_entity_id(
+            "sensor", DOMAIN, _legacy_unique_id("alpha", "status")
+        ) == stale
+
+
+# --- the entity IDs Home Assistant actually generates -------------------------
+
+
+@pytest.mark.asyncio
+async def test_generated_entity_ids_match_the_documentation(hass, enable_custom_integrations):
+    """Pin the ID a FRESH install gets, through HA's real naming path.
+
+    docs/operations.html lists these IDs for an operator to put in a dashboard or
+    an automation, and they were wrong from the day they were written: the table
+    said `sensor.phoenix_mcp_my_token_status` while HA produces
+    `sensor.phoenix_mcp_token_my_token_status`. Nothing noticed because no test
+    ever created a sensor through the entity platform, which is what composes
+    `has_entity_name` device name + entity name into the object id; a hand-built
+    registry row skips exactly that step and reproduces neither.
+    """
+    import logging
+    from datetime import timedelta as _timedelta
+
+    from homeassistant.helpers.entity_platform import EntityPlatform
+
+    token = _make_token(name="my-token")
+    data = _make_data(tokens=[token])
+    hass.data[DOMAIN] = data
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+
+    platform = EntityPlatform(
+        hass=hass, logger=logging.getLogger(__name__), domain="sensor",
+        platform_name=DOMAIN, platform=None, scan_interval=_timedelta(seconds=60),
+        entity_namespace=None,
+    )
+    platform.config_entry = entry
+    # The sensors carry a translation_key rather than a literal name, and the
+    # platform resolves it from the translations HA loads during a real setup.
+    # A hand-built platform loads none, so every entity would come out unnamed and
+    # collide into _2.._6 suffixes: the object id would be the DEVICE name alone,
+    # which reproduces neither what HA generates nor what the docs say. Loading
+    # the integration's own catalog keeps this exercising the real composition.
+    _catalog = json.loads(
+        (pathlib.Path(__file__).resolve().parent.parent / "custom_components"
+         / "phoenix_mcp" / "translations" / "en.json").read_text(encoding="utf-8")
+    )["entity"]["sensor"]
+    _translations = {
+        f"component.{DOMAIN}.entity.sensor.{key}.name": value["name"]
+        for key, value in _catalog.items()
+    }
+
+    async def _fake_get_translations(language, category, integration):
+        return _translations
+
+    # Patched AT the seam HA itself calls, not next to it: async_load_translations
+    # is what a real setup runs, and it is what populates the read-only
+    # platform_translations the naming path reads.
+    platform._async_get_translations = _fake_get_translations
+    await platform.async_load_translations()
+
+    sensors = _make_sensors(token, data)
+    await platform.async_add_entities(sensors)
+    await hass.async_block_till_done()
+
+    # Each generated id is compared to the id documented for THAT sensor, and the
+    # two sets are compared whole. A prefix assertion plus a separate "the docs
+    # mention this string" check was the first attempt and bound nothing: with
+    # both, HA could generate `..._wrong_status` and every assertion still passed,
+    # which is the same ineffective-guard shape this file exists to prevent.
+    docs = (
+        pathlib.Path(__file__).resolve().parent.parent / "docs" / "operations.html"
+    ).read_text(encoding="utf-8")
+
+    generated = {s._sensor_type: s.entity_id for s in sensors}
+    documented = {
+        sensor_type: f"sensor.phoenix_mcp_token_my_token_{sensor_type}"
+        for sensor_type in _SENSOR_TYPES
+    }
+    assert generated == documented, (
+        "Home Assistant generates different entity IDs than docs/operations.html "
+        "documents. Operators copy these into dashboards and automations.\n"
+        f"  generated: {generated}\n  documented: {documented}"
+    )
+    # And the table really contains them, so correcting the expectation above
+    # without correcting the page cannot pass.
+    for sensor_type, entity_id in documented.items():
+        assert entity_id in docs, (
+            f"docs/operations.html does not list {entity_id} for the "
+            f"{sensor_type} sensor."
+        )

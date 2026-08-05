@@ -29,7 +29,7 @@
         </header>
 
         <h2 id="rate-limiting">Rate limiting</h2>
-        <p>Every token has a sliding-window rate limit covering its network requests: the REST proxy and the MCP endpoint. The in-process AI surfaces (Agent Chat, the Assist tool provider, the voice agent, and AI Task) are operator-initiated and are deliberately not rate limited; their loops are bounded by the steps-before-check-in limit instead, and their tool calls are still audited and counted. The defaults are 60 requests per minute with a burst of 10 per second, both configurable per token. Setting <code>rate_limit_requests</code> to 0 disables rate limiting for that token. Pass-through tokens get the same default limits and are rate limited like any other token; the create dialog hides the inputs while pass-through is selected, so adjust them afterward on the token's detail page.</p>
+        <p>Every token has a sliding-window rate limit covering its network requests: the REST proxy and the MCP endpoint. The in-process AI surfaces (Agent Chat, the Assist tool provider, the voice agent, and AI Task) are operator-initiated and are deliberately not rate limited; their loops are bounded by the steps-before-check-in limit instead, and their tool calls are still audited and counted. The defaults are 60 requests per minute with a burst of 10 per second, both configurable per token. Setting <code>rate_limit_requests</code> to 0 disables rate limiting for that token. Pass-through tokens get the same default limits and are rate limited like any other token; the create dialog hides the inputs while pass-through is selected, so adjust them afterward on the token's detail page. A JSON-RPC batch counts each call in it, not the one HTTP request that carried them, so a fifty-call batch spends fifty of the minute's budget. A batch that would take the token over its limit is refused whole, with a 429 and a <code>Retry-After</code>, before any of its calls run; nothing is half-applied.</p>
         <p>A rate-limited request returns HTTP 429 with a <code>Retry-After</code> header. Successful responses carry the current limit state.</p>
         <pre class="code" data-lang="http" data-label="Response headers"><code>X-RateLimit-Limit: 60
 X-RateLimit-Remaining: 47
@@ -37,21 +37,21 @@ X-RateLimit-Reset: 1712345678</code></pre>
         <p>If <strong>Notify on rate limit</strong> is enabled in global settings, Home Assistant raises a persistent notification when a token hits its limit, throttled to once per token per minute.</p>
 
         <h2>Telemetry &amp; sensors</h2>
-        <p>Phoenix MCP creates six Home Assistant sensors for each active token. For a token named <code>my_token</code>:</p>
+        <p>Phoenix MCP creates six Home Assistant sensors for each active token. For a token named <code>my_token</code> they are usually named as below. Home Assistant assigns the entity ID when a sensor is first created and resolves any collision by adding a suffix, so copy the real IDs from the device page rather than typing these; tokens created before version 1.0.0 keep whatever IDs they were given then.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th scope="col">Entity</th><th scope="col">Reports</th></tr></thead>
             <tbody>
-              <tr><td><code>sensor.phoenix_mcp_my_token_denied_count</code></td><td>Requests blocked by permission rules</td></tr>
-              <tr><td><code>sensor.phoenix_mcp_my_token_expires_in</code></td><td>Days until expiry; unknown when the token has no expiry</td></tr>
-              <tr><td><code>sensor.phoenix_mcp_my_token_last_access</code></td><td>Timestamp of the most recent request</td></tr>
-              <tr><td><code>sensor.phoenix_mcp_my_token_rate_limit_hits</code></td><td>Times this token has been rate limited</td></tr>
-              <tr><td><code>sensor.phoenix_mcp_my_token_request_count</code></td><td>Total requests made with this token</td></tr>
-              <tr><td><code>sensor.phoenix_mcp_my_token_status</code></td><td><code>active</code> in practice: sensors are removed the moment a token is revoked or archived, and expiry archives the token, so the <code>expired</code> / <code>revoked</code> values are only ever visible transiently. Automate on the <code>phoenix_mcp_token_expired</code> / <code>phoenix_mcp_token_revoked</code> events below instead</td></tr>
+              <tr><td><code>sensor.phoenix_mcp_token_my_token_denied_count</code></td><td>Requests blocked by permission rules</td></tr>
+              <tr><td><code>sensor.phoenix_mcp_token_my_token_expires_in</code></td><td>Days until expiry; unknown when the token has no expiry</td></tr>
+              <tr><td><code>sensor.phoenix_mcp_token_my_token_last_access</code></td><td>Timestamp of the most recent request</td></tr>
+              <tr><td><code>sensor.phoenix_mcp_token_my_token_rate_limit_hits</code></td><td>Times this token has been rate limited</td></tr>
+              <tr><td><code>sensor.phoenix_mcp_token_my_token_request_count</code></td><td>Total requests made with this token</td></tr>
+              <tr><td><code>sensor.phoenix_mcp_token_my_token_status</code></td><td><code>active</code> in practice: sensors are removed the moment a token is revoked or archived, and expiry archives the token, so the <code>expired</code> / <code>revoked</code> values are only ever visible transiently. Automate on the <code>phoenix_mcp_token_expired</code> / <code>phoenix_mcp_token_revoked</code> events below instead</td></tr>
             </tbody>
           </table>
         </div>
-        <p>Sensors are removed automatically when a token is revoked. Phoenix MCP's own sensors are blocked from all token access, so an external tool cannot read its telemetry through Phoenix MCP.</p>
+        <p>Sensors are removed automatically when a token is revoked. Renaming a token changes the display name only; the entity IDs are fixed when the sensors are first created and a rename does not move them, so a dashboard card or automation referring to one keeps working. Phoenix MCP's own sensors are blocked from all token access, so an external tool cannot read its telemetry through Phoenix MCP.</p>
 
         <h2 id="global-settings">Global settings</h2>
         <div class="table-wrap">

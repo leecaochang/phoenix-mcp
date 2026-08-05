@@ -459,6 +459,48 @@ describe("AgentCliSettings capability probe", () => {
     expect(await screen.findByText(/no levels to check/)).toBeTruthy();
     expect(screen.queryByText(/does not validate the options/)).toBeNull();
   });
+
+  it.each([
+    ["effort_levels as a bare string", { model: "m", probed: { effort_levels: "high" }, calls: 2, checked_at: "x", effort_checkable: true, answered: true }],
+    ["effort_levels holding non-strings", { model: "m", probed: { effort_levels: [1, 2] }, calls: 2, checked_at: "x", effort_checkable: true, answered: true }],
+    ["effort_levels as an object", { model: "m", probed: { effort_levels: { a: 1 } }, calls: 2, checked_at: "x", effort_checkable: true, answered: true }],
+  ])("survives %s inside an otherwise well-formed response", async (_label, response) => {
+    // A level deeper than the container check. `probed` IS an object here, so the
+    // outer guard passes; a string has a truthy `.length` but no `.map`, so
+    // cardResultText threw during render, which is the same unhandled render
+    // error one nesting level down. A malformed levels list reads as "no levels
+    // reported", which this card already renders, rather than as a failure.
+    probeAgentCliCapabilities.mockResolvedValue(response);
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    fireEvent.click(await screen.findByText("Check now"));
+    await waitFor(() => expect(probeAgentCliCapabilities).toHaveBeenCalledWith("i1"));
+    // Rendered an outcome rather than crashing, and the card is still usable.
+    expect(await screen.findByText(/Checked with 2 requests/)).toBeTruthy();
+    expect(screen.getByLabelText("Check options")).toBeTruthy();
+  });
+
+  it.each([
+    ["a 204, which the client returns as undefined", undefined],
+    ["a success that did not parse as JSON", { error: "parse_error", message: "OK" }],
+    ["a response with no probed block", { calls: 3, answered: true }],
+    ["a null probed block", { probed: null, calls: 1, answered: true }],
+  ])("survives %s", async (_label, response) => {
+    // A response the return type does not admit must read as a failed check
+    // rather than take the card down. The card result used to be assembled
+    // INSIDE the setRefreshResult updater, which React runs during the next
+    // render: the throw landed outside the try, so it was an unhandled render
+    // error, not a caught failure. Assert what renders, because the suite
+    // reported every assertion passing while vitest exited non-zero on it.
+    probeAgentCliCapabilities.mockResolvedValue(response);
+    renderCard();
+    fireEvent.click(await screen.findByLabelText("Check options"));
+    fireEvent.click(await screen.findByText("Check now"));
+    await waitFor(() => expect(probeAgentCliCapabilities).toHaveBeenCalledWith("i1"));
+    expect(await screen.findByText("Connection failed.")).toBeTruthy();
+    // Still mounted and still offering the action.
+    expect(screen.getByLabelText("Check options")).toBeTruthy();
+  });
 });
 
 // Four labelled buttons plus a status line outgrew the card, so the actions

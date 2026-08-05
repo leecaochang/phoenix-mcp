@@ -599,6 +599,197 @@ async def test_mcp_malformed_no_id_is_invalid_request_not_notification():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", [{}, [], True, False, {"a": 1}, [1, 2]])
+async def test_mcp_invalid_id_is_refused_and_never_dispatched(bad_id):
+    """An id that is not a String, Number or Null must not reach a tool.
+
+    It used to be coerced to None and dispatched anyway, so a tools/call with
+    `id: {}` ran its side effect and answered with an id its sender could not
+    match to the request, which is the shape that makes a client retry a
+    non-idempotent call. Booleans are in here because bool subclasses int in
+    Python, so `id: true` passed every type check and was echoed back as `true`.
+    """
+    token, raw = _make_token()
+    data = _make_data(token)
+    view = _make_mcp_view(data)
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": bad_id, "method": "tools/call",
+        "params": {"name": "get_state", "arguments": {"entity_id": "light.x"}},
+    }).encode()
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"}, body=body)
+
+    with patch("custom_components.phoenix_mcp.mcp_view._call_tool") as call_tool:
+        result = await view.post(request)
+
+    assert result.status == 200
+    payload = json.loads(result.text)
+    assert payload["error"]["code"] == -32600
+    # The spec answers an Invalid Request with id null, never the bad value.
+    assert payload["id"] is None
+    call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("good_id", ["abc", 1, 0, -5, 2.5, None])
+async def test_mcp_valid_id_shapes_still_dispatch(good_id):
+    # The refusal above must not narrow what a conforming client may send.
+    token, raw = _make_token()
+    data = _make_data(token)
+    view = _make_mcp_view(data)
+    body = json.dumps({"jsonrpc": "2.0", "id": good_id, "method": "ping"}).encode()
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"}, body=body)
+
+    result = await view.post(request)
+
+    assert result.status == 200
+    payload = json.loads(result.text)
+    assert "error" not in payload
+    assert payload["id"] == good_id
+
+
+@pytest.mark.asyncio
+async def test_mcp_invalid_id_in_a_batch_errors_only_that_item():
+    token, raw = _make_token()
+    data = _make_data(token)
+    view = _make_mcp_view(data)
+    body = json.dumps([
+        {"jsonrpc": "2.0", "id": {}, "method": "ping"},
+        {"jsonrpc": "2.0", "id": "ok", "method": "ping"},
+    ]).encode()
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"}, body=body)
+
+    result = await view.post(request)
+
+    payload = json.loads(result.text)
+    assert payload[0]["error"]["code"] == -32600
+    assert payload[0]["id"] is None
+    assert "error" not in payload[1]
+    assert payload[1]["id"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_mcp_batch_spends_one_rate_limit_unit_per_item():
+    """The batch multiplier: 50 calls used to cost one unit.
+
+    Pinned at the transport, not just on the limiter: charge_extra passing its
+    own unit tests says nothing about the batch path calling it, and the whole
+    finding was that the request-level check is the only thing that ran.
+    """
+    token, raw = _make_token()
+    data = _make_data(token)
+    view = _make_mcp_view(data)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(10)]
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"},
+        body=json.dumps(batch).encode())
+
+    with patch.object(data.rate_limiter, "charge_batch",
+                      wraps=data.rate_limiter.charge_batch) as charge:
+        await view.post(request)
+
+    charge.assert_called_once()
+    # The request itself was already charged by the auth check, so the batch
+    # adds the other nine.
+    assert charge.call_args.args[3] == 9
+
+
+@pytest.mark.asyncio
+async def test_mcp_batch_over_the_rate_limit_is_refused_before_any_item_runs():
+    """The ceiling has to hold, not just be accounted for afterwards.
+
+    Charging without refusing let a token limited to 10/min send a 50-item batch,
+    execute all 50, and only then be throttled. Nothing is dispatched before this
+    check, so refusing the whole batch leaves nothing half-applied.
+    """
+    token, raw = _make_token()
+    token.rate_limit_requests = 10
+    token.rate_limit_burst = 0
+    data = _make_data(token)
+    # A REAL limiter: the factory's MagicMock returns a truthy .allowed for every
+    # call, so it would report the batch as admitted whatever the budget said.
+    # The view does its own check() for the request itself; doing one here too
+    # would double-charge and make the assertions describe the wrong window.
+    data.rate_limiter = RateLimiter()
+    view = _make_mcp_view(data)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(50)]
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"},
+        body=json.dumps(batch).encode())
+
+    with patch("custom_components.phoenix_mcp.mcp_view._call_tool") as call_tool:
+        result = await view.post(request)
+
+    assert result.status == 429
+    assert result.headers.get("Retry-After")
+    call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcp_batch_over_the_burst_ceiling_is_refused():
+    # A batch lands in one instant, so its whole cost falls in one burst window.
+    # Checking only the minute limit let 60/min + burst 10/sec run 50 items.
+    token, raw = _make_token()
+    token.rate_limit_requests = 60
+    token.rate_limit_burst = 10
+    data = _make_data(token)
+    data.rate_limiter = RateLimiter()
+    view = _make_mcp_view(data)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(50)]
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"},
+        body=json.dumps(batch).encode())
+
+    with patch("custom_components.phoenix_mcp.mcp_view._call_tool") as call_tool:
+        result = await view.post(request)
+
+    assert result.status == 429
+    call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mcp_batch_response_headers_report_the_batch_spend():
+    """Headers must describe what the batch spent, not one request.
+
+    They were built from the single-request result computed before the other N-1
+    items were charged, so a 50-item batch answered X-RateLimit-Remaining: 59.
+    """
+    token, raw = _make_token()
+    token.rate_limit_requests = 60
+    token.rate_limit_burst = 0
+    data = _make_data(token)
+    data.rate_limiter = RateLimiter()
+    view = _make_mcp_view(data)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(50)]
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"},
+        body=json.dumps(batch).encode())
+
+    result = await view.post(request)
+
+    assert result.status == 200
+    assert result.headers["X-RateLimit-Remaining"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_mcp_single_request_charges_nothing_extra():
+    # A lone request is not a batch and must keep costing exactly one unit.
+    token, raw = _make_token()
+    data = _make_data(token)
+    view = _make_mcp_view(data)
+    request = _make_request(
+        method="POST", headers={"Authorization": f"Bearer {raw}"},
+        body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode())
+
+    with patch.object(data.rate_limiter, "charge_batch") as charge:
+        await view.post(request)
+
+    charge.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_mcp_positional_params_notification_gets_no_response():
     # JSON-RPC allows array (positional) params. A no-id request with array params
     # is a valid notification Phoenix MCP can't dispatch, so it must get NO response, but a

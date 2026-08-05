@@ -8,6 +8,7 @@ import { collectPreviewViews, DashboardPreview, rememberPreviewMode, SegmentedTo
 import { YamlView, toYaml } from "../components/YamlView";
 import { approvalStatusLabel, formatDateTime, friendlyToolName } from "../utils";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
+import { useLatestRequest } from "../utils/latest_request";
 import { hasMessage, t, tn } from "../i18n";
 
 interface Props {
@@ -57,6 +58,7 @@ const REASON_LABEL_KEYS: Record<string, string> = {
   token_revoked: "approvals.reason.token_revoked",
   token_expired: "approvals.reason.token_expired",
   execution_failed: "approvals.reason.execution_failed",
+  execution_interrupted: "approvals.reason.execution_interrupted",
 };
 
 /** The approval's summary in the operator's language.
@@ -141,23 +143,36 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
     setSelected(null);
   }, []);
 
+  // The two loaders below write the same records/offset/hasMore state and are
+  // called from six places with no ordering between them (mount, poll, event,
+  // manual refresh, tab or filter change, Load more), so one generation covers
+  // both: a response that a newer request has superseded is dropped instead of
+  // putting the previous filter's rows back on screen.
+  const beginLoad = useLatestRequest();
+
   const loadPending = useCallback(async (offset = 0) => {
+    const isLatest = beginLoad();
     setError(null);
     try {
       const resp = await api.listApprovals({ status: "pending", limit: HISTORY_PAGE, offset });
+      if (!isLatest()) return;
       setRecords((prev) => (offset === 0 ? resp.approvals : [...prev, ...resp.approvals]));
       setRawOffset(offset + resp.approvals.length);
       setPendingTotal(resp.total);
       setHasMore(offset + resp.approvals.length < resp.total);
     } catch (e: unknown) {
+      if (!isLatest()) return;
       setError(e instanceof Error ? e.message : t("approvals.loadFailed"));
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (isLatest()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, []);
+  }, [beginLoad]);
 
   const loadHistory = useCallback(async (offset: number) => {
+    const isLatest = beginLoad();
     setError(null);
     try {
       const resp = await api.listApprovals({
@@ -165,6 +180,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
         limit: HISTORY_PAGE,
         offset,
       });
+      if (!isLatest()) return;
       const page = histFilter === "all"
         ? resp.approvals.filter((r) => r.status !== "pending")
         : resp.approvals;
@@ -176,12 +192,15 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       setRawOffset(offset + resp.approvals.length);
       setHasMore(offset + resp.approvals.length < resp.total);
     } catch (e: unknown) {
+      if (!isLatest()) return;
       setError(e instanceof Error ? e.message : t("approvals.loadFailed"));
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (isLatest()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [histFilter]);
+  }, [histFilter, beginLoad]);
 
   // (Re)load when the tab or the history filter changes.
   useEffect(() => {

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import CoreState, HomeAssistant, Event, callback
+from homeassistant.core import CoreState, HomeAssistant, Event, EventType, callback
 from homeassistant.helpers import area_registry as ar_mod
 from homeassistant.helpers import device_registry as dr_mod
 from homeassistant.helpers import entity_registry as er_mod
@@ -120,6 +122,106 @@ def _audit_template_sandbox() -> None:
         _LOGGER.debug("Phoenix MCP: could not audit template environment", exc_info=True)
 
 
+# Names of the view classes already registered on HA's aiohttp router, kept in
+# hass.data under its own key so it survives unload: async_unload_entry pops
+# hass.data[DOMAIN], but the ROUTES it registered cannot be unregistered and are
+# still there. Same pattern as panel._PANEL_REGISTERED_KEY.
+_VIEWS_REGISTERED_KEY = "phoenix_mcp_registered_views"
+
+
+@callback
+def _listen_once_until_unload(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    event_type: EventType | str,
+    listener: Callable,
+) -> None:
+    """Listen for one event, unregistering on unload ONLY if it never fired.
+
+    `hass.bus.async_listen_once` already removes its own listener when the event
+    arrives, so handing its remove-callback straight to `entry.async_on_unload`
+    asks Home Assistant to remove the same listener twice: once by firing, once
+    by unloading. The second removal raises `ValueError: list.remove(x): x not in
+    list`, which HA catches and logs as "Unable to remove unknown job listener"
+    with a traceback naming Phoenix.
+
+    LIVE-FOUND on a config-entry reload, and only there: `homeassistant_started`
+    fires once at boot, so the listener is already gone by the time any later
+    reload unloads the entry. Nothing breaks, which is why it survived, but it
+    puts an ERROR with a Phoenix traceback in the operator's log on every reload,
+    and a log that cries wolf is where a real fault goes unnoticed. The
+    `homeassistant_stop` registration has the same shape and the same defect at
+    shutdown.
+
+    The listener is wrapped rather than the removal being made
+    exception-tolerant: swallowing the error would also hide a genuine
+    double-remove somewhere else.
+    """
+    fired = False
+
+    def _mark() -> None:
+        nonlocal fired
+        fired = True
+
+    # inspect, not asyncio: asyncio.iscoroutinefunction is deprecated for 3.16.
+    # This reads the function's own coroutine flag and evaluates no annotations,
+    # so it is not the inspect.signature hazard documented for HA internals.
+    #
+    # The two wrappers have DISTINCT names rather than one conditional `_once`,
+    # because a coroutine and a callback are different signatures and a shared
+    # name is a redefinition. The async branch has to stay async: wrapping an
+    # async listener in a @callback would leave its coroutine unawaited and
+    # silently skip the shutdown flush _on_stop performs.
+    if inspect.iscoroutinefunction(listener):
+        async def _async_once(event: Event) -> None:
+            _mark()
+            await listener(event)
+
+        remove = hass.bus.async_listen_once(event_type, _async_once)
+    else:
+        @callback
+        def _sync_once(event: Event) -> None:
+            _mark()
+            listener(event)
+
+        remove = hass.bus.async_listen_once(event_type, _sync_once)
+
+    @callback
+    def _remove_if_still_pending() -> None:
+        if not fired:
+            remove()
+
+    entry.async_on_unload(_remove_if_still_pending)
+
+
+@callback
+def _register_views(hass: HomeAssistant, view_classes: list) -> None:
+    """Register each view class once per Home Assistant process.
+
+    Registration is permanent: aiohttp has no way to remove a route, so HA's
+    register_view is one-way and unload leaves every Phoenix route in place. It
+    does not RAISE on a repeat, which is the part worth knowing, because it makes
+    the bug silent: aiohttp reuses a resource only when it is the last one added,
+    so re-registering the whole set builds a second complete set of resources
+    that shadow the first and can never be reached. A config-entry reload leaked
+    about 93 dead route objects, every time, for the life of the process.
+
+    Skipping the ones already present is correct rather than merely tidy: the
+    views hold no per-setup state (they read hass.data[DOMAIN] fresh on every
+    request), so the routes registered by the previous setup serve the new one
+    with no change. The kill switch works the same way, refusing at request time
+    rather than by removing routes.
+    """
+    registered: set[str] = hass.data.setdefault(_VIEWS_REGISTERED_KEY, set())
+    for view_cls in view_classes:
+        if view_cls.__name__ in registered:
+            continue
+        view = view_cls()
+        view.hass = hass
+        hass.http.register_view(view)
+        registered.add(view_cls.__name__)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Phoenix MCP from a config entry.
 
@@ -197,10 +299,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     from .admin_view import ALL_ADMIN_VIEWS
     from .agentcli import ALL_AGENTCLI_ADMIN_VIEWS
-    for view_cls in ALL_ADMIN_VIEWS + ALL_AGENTCLI_ADMIN_VIEWS:
-        view = view_cls()
-        view.hass = hass
-        hass.http.register_view(view)
+    _register_views(hass, ALL_ADMIN_VIEWS + ALL_AGENTCLI_ADMIN_VIEWS)
 
     from .panel import (
         async_register_phoenix_panel,
@@ -223,10 +322,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from .mcp_view import ALL_MCP_VIEWS
         from .skill_view import ALL_SKILL_VIEWS
         from .agentcli import ALL_AGENTCLI_CHAT_VIEWS
-        for view_cls in ALL_VIEWS + ALL_MCP_VIEWS + ALL_SKILL_VIEWS + ALL_AGENTCLI_CHAT_VIEWS:
-            view = view_cls()
-            view.hass = hass
-            hass.http.register_view(view)
+        _register_views(hass, ALL_VIEWS + ALL_MCP_VIEWS + ALL_SKILL_VIEWS + ALL_AGENTCLI_CHAT_VIEWS)
 
     data.async_register_routes = _register_routes
     if not settings.kill_switch:
@@ -370,6 +466,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             dismiss_approval_notification(hass, approval.id)
             fire_approval_resolved_event(hass, approval)
 
+    async def _reconcile_interrupted_approvals() -> None:
+        """Resolve approvals whose executor started but never reported back.
+
+        Runs once, at startup, BEFORE the expiry sweep: an interrupted approval
+        is still pending and could otherwise be expired instead, which would
+        report a clean timeout for an action that may well have applied.
+        """
+        from .approvals import (  # noqa: PLC0415
+            dismiss_approval_notification,
+            async_reconcile_interrupted_approvals,
+            fire_approval_resolved_event,
+        )
+
+        async with store.async_lock:
+            interrupted = await async_reconcile_interrupted_approvals(store)
+        for approval in interrupted:
+            dismiss_approval_notification(hass, approval.id)
+            fire_approval_resolved_event(hass, approval)
+
+    await _reconcile_interrupted_approvals()
     await _sweep_expired_approvals()
     cancel_approval_sweep = async_track_time_interval(
         hass,
@@ -379,12 +495,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(cancel_approval_sweep)
 
     async def _on_stop(event: Event) -> None:
-        await store.async_flush_last_used()
-        await audit.async_save()
+        # Both writes are best-effort, for the reason spelled out on
+        # async_unload_entry: this runs inside Home Assistant's own stop
+        # sequence, so an unwritable store must not raise into it. The first
+        # failure must also not skip the second, hence two separate guards.
+        try:
+            await store.async_flush_last_used()
+        except Exception:  # noqa: BLE001 - shutdown must not depend on a writable disk
+            _LOGGER.exception("Phoenix MCP: could not flush token usage at shutdown")
+        try:
+            await audit.async_save()
+        except Exception:  # noqa: BLE001 - shutdown must not depend on a writable disk
+            _LOGGER.exception("Phoenix MCP: could not persist the audit log at shutdown")
 
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
-    )
+    _listen_once_until_unload(hass, entry, EVENT_HOMEASSISTANT_STOP, _on_stop)
 
     _audit_template_sandbox()
 
@@ -445,8 +569,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if hass.state is CoreState.running:
             _prime_suggestions()
         else:
-            entry.async_on_unload(
-                hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _prime_suggestions)
+            _listen_once_until_unload(
+                hass, entry, EVENT_HOMEASSISTANT_STARTED, _prime_suggestions,
             )
 
         async def _on_automation_reloaded(_event=None) -> None:
@@ -466,23 +590,68 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Tear down Phoenix MCP: unload sensor platform, remove panel."""
+    """Tear down Phoenix MCP: unload sensor platform, remove panel.
+
+    EVERY step before the platform unload is best-effort, and that is the whole
+    shape of this function. `shutting_down` is set first and `helpers` gates every
+    token request on it, so anything that raises between here and the unload
+    leaves the worst possible state: the entry still loaded, every route still
+    registered, and every request answering 503 until the next restart, with a
+    logged store error as the only clue. Persisting the last few audit rows and
+    removing the panel are both worth attempting and neither is worth that, so a
+    failure in either is logged and stepped over.
+    """
     data: PhoenixData | None = hass.data.get(DOMAIN)
     if data is not None:
         data.shutting_down = True
-        await data.audit.async_save()
+        try:
+            await data.audit.async_save()
+        except Exception:  # noqa: BLE001 - teardown must not depend on a writable disk
+            _LOGGER.exception("Phoenix MCP: could not persist the audit log during unload")
 
-    from .panel import remove_agentchat_inject, remove_phoenix_panel, remove_mesa_inject
-    remove_mesa_inject(hass)
-    remove_agentchat_inject(hass)
-    remove_phoenix_panel(hass)
-
+    # The platform unload runs BEFORE the frontend comes down, and that order is
+    # load-bearing: HA keeps a FAILED unload loaded, so tearing the panel down
+    # first left a still-running integration with no administrative UI, and the
+    # only ways back were a later successful reload or a restart. Nothing in the
+    # teardown depends on the frontend already being gone, so waiting until the
+    # outcome is known costs nothing.
     unload_ok = await hass.config_entries.async_unload_platforms(entry, _entry_platforms())
 
     if unload_ok:
+        _remove_frontend(hass)
         hass.data.pop(DOMAIN, None)
+    elif data is not None:
+        # Still loaded, so it has to stay usable: this flag gates every token
+        # request, and the panel and injectors are deliberately left registered.
+        data.shutting_down = False
 
     return unload_ok
+
+
+@callback
+def _remove_frontend(hass: HomeAssistant) -> None:
+    """Take down the panel and both injected modules, one failure at a time.
+
+    Guarded INDIVIDUALLY rather than as a block. They are three unrelated
+    removals, and sharing one `try` meant an unexpected failure in the first
+    silently skipped the other two, leaving modules injected into every Home
+    Assistant page with nothing left to service them.
+    """
+    from .panel import (  # noqa: PLC0415
+        remove_agentchat_inject,
+        remove_mesa_inject,
+        remove_phoenix_panel,
+    )
+
+    for name, remove in (
+        ("MESA injector", remove_mesa_inject),
+        ("Agent Chat injector", remove_agentchat_inject),
+        ("panel", remove_phoenix_panel),
+    ):
+        try:
+            remove(hass)
+        except Exception:  # noqa: BLE001 - one stuck removal must not skip the rest
+            _LOGGER.exception("Phoenix MCP: could not remove the %s during unload", name)
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

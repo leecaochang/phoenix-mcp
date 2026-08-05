@@ -2234,16 +2234,28 @@ async def test_token_patch_accepts_valid_inline_wait(wait):
 
 @pytest.mark.asyncio
 async def test_token_patch_rename_sensor_rebuild_failure_never_fails_the_patch():
-    """Sensor rebuild is best-effort; a registry problem must not 500 the rename."""
+    """Following a rename onto the sensors is best-effort; it must not 500 the rename.
+
+    It must also not go through the archive/create callbacks. Those DESTROY the
+    token's six entities and build six new ones, which is how a rename used to
+    change every entity_id out from under whatever referred to them; the sensors
+    are keyed on the token id now and are updated in place.
+    """
     token = _make_active_token(name="old-name")
     data = _token_patch_data(token)
     renamed = _make_active_token(name="new-name")
     renamed.id = token.id
     data.store.async_patch_token = AsyncMock(return_value=renamed)
-    data.async_on_token_archived = AsyncMock(side_effect=RuntimeError("registry boom"))
-    data.async_on_token_created = AsyncMock(side_effect=RuntimeError("registry boom"))
+    data.async_on_token_archived = AsyncMock()
+    data.async_on_token_created = AsyncMock()
 
-    resp = await _token_patch(data, token.id, {"name": "new-name"})
+    with patch(
+        "custom_components.phoenix_mcp.sensor.async_rename_token_sensors",
+        AsyncMock(side_effect=RuntimeError("registry boom")),
+    ) as rename:
+        resp = await _token_patch(data, token.id, {"name": "new-name"})
+
     assert resp.status == 200
-    data.async_on_token_archived.assert_awaited_once()
-    data.async_on_token_created.assert_awaited_once()
+    rename.assert_awaited_once()
+    data.async_on_token_archived.assert_not_awaited()
+    data.async_on_token_created.assert_not_awaited()

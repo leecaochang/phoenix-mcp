@@ -80,7 +80,8 @@
         "admin_cancelled": "Cancelled by admin",
         "token_revoked": "Token revoked",
         "token_expired": "Token expired",
-        "execution_failed": "Execution failed"
+        "execution_failed": "Execution failed",
+        "execution_interrupted": "Interrupted; may have applied"
       },
       "reasonExecutionFailedDetail": "Execution failed: {detail}",
       "reasonLabel": "Optional rejection reason",
@@ -761,7 +762,7 @@
       "thenLabel": "Then",
       "tokenCreatedBanner": "Token created. Name and expiry are now fixed; cancel and start over to change them.",
       "tokenLabel": "Token",
-      "tokenSub": "Use a dedicated token for testing. You can change the suggested name now. The name and expiry cannot be changed after creation.",
+      "tokenSub": "Use a dedicated token for testing. You can change the suggested name now, and rename it later from the token's page. The expiry cannot be changed after creation.",
       "tokenTitle": "Name your test token",
       "tryLabel": "Try",
       "tryNow": "Try now",

@@ -787,7 +787,7 @@ async def _execute_delete_script(
 # which holds two separately size-limited dicts: `runs` (the automation actually
 # fired) and `not_triggered` (a trigger evaluated a relevant change and did NOT
 # fire), so the latter can never evict the former. Both accessors below read
-# either shape, because Phoenix supports HA 2024.5+. Re-verify on upgrades.
+# either shape, because Phoenix supports HA 2025.2+. Re-verify on upgrades.
 #
 # Not-triggered traces are deliberately INCLUDED: "why did it not run" is the
 # usual reason to read traces at all, and each trace self-reports via a

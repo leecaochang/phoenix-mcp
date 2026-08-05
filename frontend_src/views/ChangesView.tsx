@@ -8,6 +8,7 @@ import { YamlView } from "../components/YamlView";
 import { collectPreviewViews, DashboardPreview, rememberPreviewMode, SegmentedToggle, storedPreviewMode, useHuiCardReady } from "../components/DashboardPreview";
 import { Loading, ErrorMsg, RefreshIcon } from "../index";
 import { formatDateTime } from "../utils";
+import { useLatestRequest } from "../utils/latest_request";
 import { hasMessage, t } from "../i18n";
 import { tRich } from "../i18n/rich";
 
@@ -164,21 +165,32 @@ export function ChangesView({ hass }: { hass: unknown }) {
   // refresh, or a background poll/event - the feed is a live list, so a poll
   // tick shows what's live now rather than preserving a stale "loaded more"
   // window). A manual "Load more" click passes the next offset and appends.
+  // The feed is loaded from four places with no ordering between them (mount,
+  // manual refresh, config-changed event, poll tick) plus Load more, all writing
+  // the same state. A superseded response is dropped rather than allowed to put
+  // an older page back, or to append a "Load more" window whose offset was
+  // computed against a feed that has since been replaced.
+  const beginLoad = useLatestRequest();
+
   const loadFeed = useCallback(async (offset = 0, background = false) => {
+    const isLatest = beginLoad();
     if (!background && offset === 0) setLoading(true);
     if (offset > 0) setLoadingMore(true);
     setError(null);
     try {
       const resp = await api.listVersions({ limit: CHANGES_PAGE, offset });
+      if (!isLatest()) return;
       setFeed((prev) => (offset === 0 ? resp.versions : [...prev, ...resp.versions]));
       setHasMore(offset + resp.versions.length < resp.total);
     } catch (e: unknown) {
-      if (!background) setError(e instanceof Error ? e.message : t("changes.loadFailed"));
+      if (!background && isLatest()) setError(e instanceof Error ? e.message : t("changes.loadFailed"));
     } finally {
-      if (!background) setLoading(false);
-      setLoadingMore(false);
+      if (isLatest()) {
+        if (!background) setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, []);
+  }, [beginLoad]);
 
   useEffect(() => { loadFeed(0); }, [loadFeed]);
 

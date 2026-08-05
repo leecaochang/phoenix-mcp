@@ -14,7 +14,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.phoenix_mcp as phoenix_init
@@ -115,6 +115,221 @@ async def test_unload_removes_data(hass: HomeAssistant):
 
     assert ok is True
     assert DOMAIN not in hass.data
+
+
+async def test_setup_reconciles_approvals_interrupted_by_the_last_shutdown(hass: HomeAssistant):
+    """Startup must resolve approvals whose executor never reported back.
+
+    An approval marked as executing and still pending is one whose side effect
+    may already have applied. Leaving it pending offers the admin a button that
+    could apply a service call or a config write a second time, which is the one
+    outcome with no recovery. Pinned at the wiring level because the reconcile
+    function passing its own unit tests says nothing about setup calling it.
+    """
+    with patch(
+        "custom_components.phoenix_mcp.approvals.async_reconcile_interrupted_approvals",
+        AsyncMock(return_value=[]),
+    ) as reconcile:
+        await _run_setup(hass, kill_switch=False)
+
+    reconcile.assert_awaited_once()
+
+
+# --- one-shot event listeners ------------------------------------------------
+
+
+async def test_a_fired_one_shot_listener_is_not_removed_again_on_unload(hass: HomeAssistant, caplog):
+    """LIVE-FOUND on a config-entry reload.
+
+    `hass.bus.async_listen_once` removes its own listener when the event fires,
+    so passing its remove-callback to `entry.async_on_unload` asks HA to remove
+    the same listener twice. The second call raises
+    `ValueError: list.remove(x): x not in list`, which HA logs as "Unable to
+    remove unknown job listener" with a Phoenix traceback.
+
+    Only reproducible in the reload-after-a-cold-start order: the event has to
+    have FIRED before the unload. A happy-path setup/unload test never fires it,
+    which is why this survived. Both `homeassistant_started` (suggestion priming)
+    and `homeassistant_stop` (the final flush) had the shape.
+    """
+    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    seen: list[str] = []
+
+    @callback
+    def _listener(_event=None) -> None:
+        seen.append("fired")
+
+    phoenix_init._listen_once_until_unload(
+        hass, entry, EVENT_HOMEASSISTANT_STARTED, _listener)
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert seen == ["fired"]
+
+    # Runs the on-unload callbacks, which is the mechanism under test.
+    #
+    # Asserted on the LOG, not on a raised exception: HA catches the ValueError
+    # inside _async_remove_listener and logs it, so an exception-based assertion
+    # passes whether or not the bug is present. That is how the first version of
+    # this test survived the mutation that restores the defect.
+    caplog.clear()
+    await entry._async_process_on_unload(hass)
+    await hass.async_block_till_done()
+
+    assert "Unable to remove unknown job listener" not in caplog.text, (
+        "the already-fired listener was removed a second time on unload; this is "
+        "the ERROR + Phoenix traceback seen in the operator's log on every reload"
+    )
+
+
+async def test_an_unfired_one_shot_listener_is_still_removed_on_unload(hass: HomeAssistant):
+    # The other half: if the event never arrives, the listener must NOT be left
+    # behind, or a reload would stack a second one and prime twice.
+    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    seen: list[str] = []
+
+    @callback
+    def _listener(_event=None) -> None:
+        seen.append("fired")
+
+    phoenix_init._listen_once_until_unload(
+        hass, entry, EVENT_HOMEASSISTANT_STARTED, _listener)
+
+    await entry._async_process_on_unload(hass)
+    await hass.async_block_till_done()
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert seen == [], "the listener outlived the entry that registered it"
+
+
+async def test_a_coroutine_one_shot_listener_is_awaited(hass: HomeAssistant):
+    # _on_stop is async. Wrapping it in a sync @callback would leave a coroutine
+    # unawaited and silently skip the shutdown flush.
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    seen: list[str] = []
+
+    async def _listener(_event=None) -> None:
+        seen.append("awaited")
+
+    phoenix_init._listen_once_until_unload(
+        hass, entry, EVENT_HOMEASSISTANT_STOP, _listener)
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+
+    assert seen == ["awaited"]
+
+
+# --- unload is failure-tolerant ---------------------------------------------
+#
+# Every step before the platform unload is best-effort. These pin that, because
+# the failure they prevent is silent and total: shutting_down is set FIRST and
+# helpers gates every token request on it, so an exception on the way out used to
+# leave the entry loaded with every route registered and every request answering
+# 503 until the next restart. Happy-path unload tests cannot see any of it.
+
+
+async def test_unload_survives_an_unwritable_audit_store(hass: HomeAssistant):
+    await _run_setup(hass, kill_switch=False)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    data = hass.data[DOMAIN]
+    data.audit.async_save = AsyncMock(side_effect=OSError("disk full"))
+
+    with patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel"), \
+         patch("custom_components.phoenix_mcp.panel.remove_mesa_inject"), \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject"), \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)) as unload:
+        ok = await phoenix_init.async_unload_entry(hass, entry)
+
+    assert ok is True
+    # The teardown ran to completion rather than aborting at the save.
+    assert unload.await_count == 1
+    assert DOMAIN not in hass.data
+
+
+async def test_unload_survives_a_failing_panel_removal(hass: HomeAssistant):
+    await _run_setup(hass, kill_switch=False)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    with patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel",
+               side_effect=RuntimeError("panel gone")), \
+         patch("custom_components.phoenix_mcp.panel.remove_mesa_inject"), \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject"), \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)) as unload:
+        ok = await phoenix_init.async_unload_entry(hass, entry)
+
+    assert ok is True
+    assert unload.await_count == 1
+    assert DOMAIN not in hass.data
+
+
+async def test_one_failing_frontend_removal_does_not_skip_the_others(hass: HomeAssistant):
+    # They are three unrelated removals. Sharing one try meant a failure in the
+    # first silently skipped the rest, leaving modules injected into every HA
+    # page with nothing left to service them.
+    await _run_setup(hass, kill_switch=False)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    with patch("custom_components.phoenix_mcp.panel.remove_mesa_inject",
+               side_effect=RuntimeError("stuck")) as mesa, \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject") as chat, \
+         patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel") as panel, \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)):
+        assert await phoenix_init.async_unload_entry(hass, entry) is True
+
+    mesa.assert_called_once()
+    chat.assert_called_once()
+    panel.assert_called_once()
+
+
+async def test_a_failed_unload_keeps_the_frontend(hass: HomeAssistant):
+    """HA keeps a failed unload LOADED, so its admin UI has to survive it.
+
+    Removing the panel before knowing the outcome left a still-running
+    integration with no administrative surface, recoverable only by a later
+    successful reload or a restart. The token routes stay live either way, so
+    this is the operator losing the one control that could fix the situation.
+    """
+    await _run_setup(hass, kill_switch=False)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    with patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel") as panel, \
+         patch("custom_components.phoenix_mcp.panel.remove_mesa_inject") as mesa, \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject") as chat, \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=False)):
+        assert await phoenix_init.async_unload_entry(hass, entry) is False
+
+    panel.assert_not_called()
+    mesa.assert_not_called()
+    chat.assert_not_called()
+    assert hass.data[DOMAIN].shutting_down is False
+
+
+async def test_a_failed_unload_leaves_the_integration_usable(hass: HomeAssistant):
+    # HA keeps a failed unload LOADED. Leaving shutting_down set would 503 every
+    # token request against an integration Home Assistant still considers up.
+    await _run_setup(hass, kill_switch=False)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    with patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel"), \
+         patch("custom_components.phoenix_mcp.panel.remove_mesa_inject"), \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject"), \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=False)):
+        ok = await phoenix_init.async_unload_entry(hass, entry)
+
+    assert ok is False
+    assert DOMAIN in hass.data
+    assert hass.data[DOMAIN].shutting_down is False
 
 
 # --- startup compat probes (system_log shape, template env construction) -----

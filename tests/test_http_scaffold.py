@@ -192,3 +192,69 @@ async def test_scoped_single_state_in_scope_vs_out_of_scope(hass: HomeAssistant,
     ghost = await client.get("/api/phoenix-mcp/states/sensor.ghost_xyz", headers=auth)
     assert out_of_scope.status == ghost.status == 404
     assert await out_of_scope.json() == await ghost.json()
+
+
+# --- routes are registered once per process ----------------------------------
+
+
+class TestRouteRegistrationIsIdempotent:
+    """A config-entry reload must not add a second set of routes.
+
+    HA's register_view is one-way (aiohttp cannot remove a route), so unload
+    leaves every Phoenix route in place and the next setup re-registers them all.
+    It does not raise: aiohttp reuses a resource only when it is the LAST one
+    added, so re-registering the whole set silently builds a second complete set
+    that shadows the first and can never be reached.
+
+    These use HA's REAL aiohttp router. A MagicMock hass.http counts calls and
+    can say nothing about what ended up on the router, which is why the leak
+    survived a happy-path setup/unload test.
+    """
+
+    @staticmethod
+    def _all_view_classes():
+        from custom_components.phoenix_mcp.admin_view import ALL_ADMIN_VIEWS
+        from custom_components.phoenix_mcp.mcp_view import ALL_MCP_VIEWS
+        from custom_components.phoenix_mcp.proxy_view import ALL_VIEWS
+        from custom_components.phoenix_mcp.skill_view import ALL_SKILL_VIEWS
+
+        return list(ALL_ADMIN_VIEWS) + list(ALL_VIEWS) + list(ALL_MCP_VIEWS) + list(ALL_SKILL_VIEWS)
+
+    @pytest.mark.asyncio
+    async def test_repeat_registration_adds_no_routes(self, hass):
+        from custom_components.phoenix_mcp import _register_views
+
+        assert await async_setup_component(hass, "http", {})
+        await hass.async_block_till_done()
+        views = self._all_view_classes()
+
+        _register_views(hass, views)
+        after_first = len(list(hass.http.app.router.routes()))
+        assert after_first > 0, "the first registration put nothing on the router"
+
+        # Two more setups' worth, as a reload would do.
+        _register_views(hass, views)
+        _register_views(hass, views)
+
+        assert len(list(hass.http.app.router.routes())) == after_first
+
+    @pytest.mark.asyncio
+    async def test_a_route_still_resolves_after_repeat_registration(self, hass):
+        # Skipping must leave the surface WORKING, not merely small: the views
+        # hold no per-setup state, so the first registration serves every later
+        # setup. If that were wrong this is where it would show.
+        from aiohttp.test_utils import make_mocked_request
+        from custom_components.phoenix_mcp import _register_views
+
+        assert await async_setup_component(hass, "http", {})
+        await hass.async_block_till_done()
+        views = self._all_view_classes()
+
+        _register_views(hass, views)
+        _register_views(hass, views)
+
+        match = await hass.http.app.router.resolve(
+            make_mocked_request("GET", "/api/phoenix-mcp/skill", app=hass.http.app)
+        )
+        assert match is not None
+        assert callable(getattr(match, "handler", None))

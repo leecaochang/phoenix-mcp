@@ -6,13 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: this workflow only reads the checkout and reports results.
+permissions:
+  contents: read
+
 jobs:
   pytest:
     name: Python (pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           # Matches the pinned test stack in requirements_test.txt
           # (pytest-homeassistant-custom-component -> homeassistant 2026.7.x).
@@ -40,8 +44,8 @@ jobs:
     name: Frontend (vitest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # Sourced from .nvmrc so CI, local dev, and the lockfile stay on one
           # Node major. It must match the npm that generated package-lock.json

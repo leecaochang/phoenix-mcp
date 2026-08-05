@@ -30,7 +30,7 @@
 
         <h2>Requirements</h2>
         <dl class="kv">
-          <div class="kv-row"><dt>Home Assistant</dt><dd>2024.5.0 or later. HACS reads this minimum from <code>hacs.json</code>, but it is not enforced at runtime or pinned in the integration manifest. The automated test suite runs against current Home Assistant (the version pinned by the test harness, 2026.x at the time of writing), so recent versions are what is continuously verified; the 2024.5 floor reflects the APIs Phoenix MCP uses but is not re-tested every release.</dd></div>
+          <div class="kv-row"><dt>Home Assistant</dt><dd>2025.2.0 or later. HACS reads this minimum from <code>hacs.json</code>; it is not enforced at runtime or pinned in the integration manifest, so an older install will accept the files and then fail to start. The test suite runs against current Home Assistant (2026.x at the time of writing), which is the version continuously verified. The 2025.2 floor is the oldest release carrying every API the base integration and the dashboard tools need, and it is not re-tested each release. Some features need newer: the Assist tool provider 2025.2, the in-context profile control 2025.5, AI Task 2025.7, and semantic moments 2026.7. Each of those is disabled in the panel on a version that cannot run it.</dd></div>
           <div class="kv-row"><dt>Instances</dt><dd>One Phoenix MCP instance per Home Assistant. The config flow will not let you add a second.</dd></div>
           <div class="kv-row"><dt>Dependencies</dt><dd>None beyond what Home Assistant already ships. No Python packages to install.</dd></div>
         </dl>

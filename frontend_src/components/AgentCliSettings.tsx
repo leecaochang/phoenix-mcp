@@ -129,6 +129,40 @@ type CardResult =
   | { kind: "probed"; calls: number; levels?: string[]; effortCheckable: boolean; answered: boolean }
   | { kind: "failed"; message: string };
 
+/** Turn a probe response into its card result, or throw so the caller reports a failure.
+ *
+ *  Built here, synchronously, rather than inside the `setRefreshResult` updater
+ *  that consumes it. A state updater does not run at the await; React runs it
+ *  during the NEXT render, where a throw is an unhandled render error that the
+ *  `try` around the request cannot see and that takes the whole settings
+ *  component down with it. The shape is checked rather than assumed because the
+ *  client can hand back values the return type does not admit: `undefined` for a
+ *  204, and an `{error, message}` object for a success that did not parse as JSON.
+ */
+function probedCard(r: Awaited<ReturnType<typeof api.probeAgentCliCapabilities>>): CardResult {
+  if (!r || typeof r !== "object" || typeof r.probed !== "object" || r.probed === null) {
+    throw new Error(t("settings.agentcliConnectionFailed"));
+  }
+  // Every FIELD is checked, not just the container. Validating only that `probed`
+  // was an object still let `effort_levels: "high"` through, and a string has a
+  // truthy `.length` but no `.map`, so cardResultText threw during render, which
+  // is the same unhandled-render-error crash one level deeper. Levels degrade to
+  // absent rather than throwing: "the provider did not report levels" is a real
+  // answer this card already renders, so a malformed levels list is worth
+  // reporting as that rather than as a failed connection.
+  const levels = Array.isArray(r.probed.effort_levels)
+    && r.probed.effort_levels.every((l) => typeof l === "string")
+    ? r.probed.effort_levels
+    : undefined;
+  return {
+    kind: "probed",
+    calls: typeof r.calls === "number" ? r.calls : 0,
+    answered: r.answered === true,
+    levels,
+    effortCheckable: r.effort_checkable === true,
+  };
+}
+
 function cardResultText(r: CardResult): string {
   if (r.kind === "failed") return r.message;
   if (r.kind === "refreshed") {
@@ -260,15 +294,16 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
     setRefreshResult((r) => ({ ...r, [inst.id]: null }));
     try {
       const r = await api.refreshAgentCliProvider(inst.id);
-      setLiveModels((m) => ({ ...m, [inst.id]: r.models }));
-      await load();
+      // Read off the response HERE, not inside the updaters below: see probedCard.
+      if (!r || !Array.isArray(r.models)) throw new Error(t("settings.agentcliConnectionFailed"));
+      const models = r.models;
       // "This provider publishes none" is a real answer and must not read like a
       // failed refresh: most providers report an id and an owner and nothing
       // else, so an empty result is the norm rather than a fault.
-      setRefreshResult((res) => ({
-        ...res,
-        [inst.id]: { kind: "refreshed", models: r.models.length, declared: r.declared },
-      }));
+      const card: CardResult = { kind: "refreshed", models: models.length, declared: r.declared };
+      setLiveModels((m) => ({ ...m, [inst.id]: models }));
+      await load();
+      setRefreshResult((res) => ({ ...res, [inst.id]: card }));
     } catch (err: unknown) {
       setRefreshResult((res) => ({
         ...res,
@@ -310,14 +345,8 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
    */
   const runProbe = async (id: string) => {
     try {
-      const r = await api.probeAgentCliCapabilities(id);
-      setRefreshResult((res) => ({
-        ...res,
-        [id]: {
-          kind: "probed", calls: r.calls, answered: r.answered,
-          levels: r.probed.effort_levels, effortCheckable: r.effort_checkable,
-        },
-      }));
+      const card = probedCard(await api.probeAgentCliCapabilities(id));
+      setRefreshResult((res) => ({ ...res, [id]: card }));
     } catch (err: unknown) {
       setRefreshResult((res) => ({
         ...res,
@@ -380,13 +409,16 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
     setForm((f) => ({ ...f, validating: true, error: null }));
     try {
       const r = await api.probeAgentCliProvider(adding, meta(adding)?.keyless ? { base_url: value } : { api_key: value });
-      if (!r.ok) {
-        setForm((f) => ({ ...f, validating: false, validated: false, models: [], error: r.error ?? t("settings.agentcliConnectionFailed") }));
+      // Read off the response HERE, not inside the updaters below: see probedCard.
+      if (!r || typeof r !== "object" || !r.ok || !Array.isArray(r.models)) {
+        const error = (r && typeof r === "object" && r.error) || t("settings.agentcliConnectionFailed");
+        setForm((f) => ({ ...f, validating: false, validated: false, models: [], error }));
         return;
       }
+      const models = r.models;
       setForm((f) => ({
         ...f, validating: false, validated: true, error: null,
-        models: r.models, model: r.models.includes(f.model) ? f.model : (r.models[0] ?? ""),
+        models, model: models.includes(f.model) ? f.model : (models[0] ?? ""),
       }));
     } catch (err: unknown) {
       setForm((f) => ({ ...f, validating: false, validated: false, models: [], error: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed") }));

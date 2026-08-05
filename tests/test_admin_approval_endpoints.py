@@ -367,6 +367,79 @@ class TestApprovalApprove:
         assert out["approved_by_user_id"] == "admin-user"
 
     @pytest.mark.asyncio
+    async def test_approve_marks_execution_on_disk_before_running_the_executor(self):
+        """The durable half of the double-run guard.
+
+        approvals_in_progress makes a double-click safe within one process, but
+        it dies with the process. The executor runs OUTSIDE the store lock and
+        its outcome is written afterwards, so a restart in that window left an
+        untouched pending record whose action may already have applied. The
+        marker is only worth anything if it is on disk BEFORE the executor runs,
+        which is what this observes from inside it.
+        """
+        token = _make_token("tok-1", cap_restart="confirm")
+        store = _make_store(pending=[_make_pending("appr_a", token_id="tok-1")], tokens=[token])
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+        request = _make_admin_request(body=b"{}")
+        seen: dict = {}
+
+        async def _observing_executor(name, args, tok, hass, data):
+            entry = next(r for r in store._pending if r["id"] == "appr_a")
+            seen["marker"] = entry.get("execution_started_at")
+            seen["status"] = entry["status"]
+            return ({"content": [{"type": "text", "text": "{}"}]}, "allowed", "restart_ha")
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", side_effect=_observing_executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"):
+            resp = await view.post(request, approval_id="appr_a")
+
+        assert resp.status == 200
+        assert seen["marker"] is not None, (
+            "execution_started_at was not persisted before the executor ran"
+        )
+        assert seen["status"] == STATUS_PENDING
+        # Cleared once the outcome is recorded, so the history carries no
+        # half-finished marker and a later startup has nothing to reconcile.
+        assert "execution_started_at" not in next(r for r in store._pending if r["id"] == "appr_a")
+
+    @pytest.mark.asyncio
+    async def test_approve_refuses_when_the_marker_cannot_be_persisted(self):
+        """Fail CLOSED: no durable marker, no execution.
+
+        The same store records the terminal status afterwards, so a disk that
+        cannot take the marker cannot record the outcome either. Running anyway
+        would leave a pending record whose action HAS run with nothing saying so,
+        which is precisely the replay the marker exists to prevent. Asserting the
+        executor is never reached, because "did not block the approval" was the
+        original contract here and it was the wrong one.
+        """
+        token = _make_token("tok-1", cap_restart="confirm")
+        store = _make_store(pending=[_make_pending("appr_a", token_id="tok-1")], tokens=[token])
+        store.async_save = AsyncMock(side_effect=OSError("disk full"))
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+        request = _make_admin_request(body=b"{}")
+
+        executor = AsyncMock()
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"):
+            resp = await view.post(request, approval_id="appr_a")
+
+        assert resp.status == 503
+        executor.assert_not_called()
+        # Still pending, and the claim released so a retry is possible once the
+        # store is writable again.
+        assert next(r for r in store._pending if r["id"] == "appr_a")["status"] == STATUS_PENDING
+        assert "appr_a" not in data.approvals_in_progress
+
+    @pytest.mark.asyncio
     async def test_approve_rejected_when_already_in_progress(self):
         # Double-run race guard: an approve whose id is already claimed by a
         # concurrent in-flight approve returns 409 and never runs the executor.
@@ -708,10 +781,21 @@ class TestApprovalClaimSignal:
         assert self._claim_events(hass) == [("appr_a", True)]
 
     @pytest.mark.asyncio
-    async def test_failed_execution_releases_and_restores_the_notification(self):
-        """A raising executor leaves the record pending and retryable, so the
-        surfaces that were told to stop offering it have to be told it is back.
-        Without this a live approval is invisible until the next reload."""
+    async def test_a_raising_executor_closes_the_approval_instead_of_re_offering_it(self):
+        """A raising executor may already have applied its side effect.
+
+        This test asserted the OPPOSITE contract: that the record stayed pending
+        and the notification came back, so a live approval was never invisible.
+        That reasoning is right about visibility and wrong about safety. A service
+        call that succeeded and then raised in result handling is indistinguishable
+        from one that never ran, so re-offering invites the admin to apply it a
+        second time, seconds later, while they are still looking at it. The
+        durable marker did not cover this: it is only read at STARTUP.
+
+        The record is therefore resolved exactly as startup reconciliation
+        resolves an interrupted one, and the surfaces learn from the resolved
+        event rather than from the approval reappearing.
+        """
         token = _make_token("tok-1", cap_restart="confirm")
         store = _make_store(pending=[_make_pending("appr_a", token_id="tok-1")], tokens=[token])
         data = _make_data(store)
@@ -728,9 +812,188 @@ class TestApprovalClaimSignal:
             resp = await view.post(request, approval_id="appr_a")
 
         assert resp.status == 500
+        stored = next(r for r in store._pending if r["id"] == "appr_a")
+        assert stored["status"] == STATUS_REJECTED
+        assert stored["rejected_reason"] == "execution_interrupted"
+        # Not released back to pending, so no claimed=False and no notification
+        # inviting a second attempt.
+        assert self._claim_events(hass) == [("appr_a", True)]
+        assert create.call_count == 0
+        assert "appr_a" not in data.approvals_in_progress
+
+    @pytest.mark.asyncio
+    async def test_a_second_approve_after_a_raising_executor_cannot_run_it_again(self):
+        # The two-POST shape: the whole point is that the admin looking at the
+        # 500 cannot click Approve again and apply the side effect twice.
+        token = _make_token("tok-1", cap_restart="confirm")
+        store = _make_store(pending=[_make_pending("appr_a", token_id="tok-1")], tokens=[token])
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+
+        executor = AsyncMock(side_effect=[
+            RuntimeError("raised after the side effect landed"),
+            ({"content": [{"type": "text", "text": "{}"}]}, "allowed", "restart_ha"),
+        ])
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool", executor), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create"):
+            first = await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+            second = await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+
+        assert first.status == 500
+        # The executor ran exactly ONCE: that is the whole guarantee. The second
+        # POST answers 200 because approving an already-terminal record is
+        # idempotent (pre-existing behaviour), so it reports the stored outcome
+        # rather than running anything.
+        assert executor.await_count == 1
+        assert json.loads(second.text)["status"] == STATUS_REJECTED
+        assert json.loads(second.text)["rejected_reason"] == "execution_interrupted"
+
+    @pytest.mark.asyncio
+    async def test_an_unregistered_tool_stays_retryable(self):
+        # The other side of the line: the registry lookup is the first thing
+        # async_execute_approved_tool does, so a KeyError means nothing ran and
+        # nothing can have applied. That one keeps its old, correct behaviour, and
+        # the marker is cleared so a later startup does not resolve a healthy
+        # pending approval as interrupted.
+        token = _make_token("tok-1", cap_restart="confirm")
+        store = _make_store(pending=[_make_pending("appr_a", token_id="tok-1")], tokens=[token])
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+
+        from custom_components.phoenix_mcp.mcp_view import ExecutorNotRegistered
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch("custom_components.phoenix_mcp.mcp_view.async_execute_approved_tool",
+                   side_effect=ExecutorNotRegistered("no such tool")), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create") as create:
+            resp = await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+
+        assert resp.status == 400
+        stored = next(r for r in store._pending if r["id"] == "appr_a")
+        assert stored["status"] == STATUS_PENDING
+        assert "execution_started_at" not in stored
         assert self._claim_events(hass) == [("appr_a", True), ("appr_a", False)]
         assert create.call_count == 1
-        assert next(r for r in store._pending if r["id"] == "appr_a")["status"] == STATUS_PENDING
+
+    @pytest.mark.asyncio
+    async def test_a_real_executor_raising_KeyError_is_not_treated_as_a_missing_one(self):
+        """A KeyError from INSIDE an executor must not read as "nothing ran".
+
+        This drives the REAL registry and the real dispatcher, because mocking
+        `async_execute_approved_tool` cannot tell a lookup failure from an
+        executor failure, and that is precisely the confusion being tested. The
+        old code caught bare KeyError for the retryable branch, so an executor
+        doing an ordinary dict lookup on a service response could clear the
+        durable marker and re-offer an action it had already applied.
+        """
+        from custom_components.phoenix_mcp import mcp_view
+
+        token = _make_token("tok-1", cap_restart="confirm")
+        store = _make_store(
+            pending=[_make_pending("appr_a", token_id="tok-1", tool_name="restart_ha")],
+            tokens=[token])
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+        applied: list[str] = []
+
+        async def _executor(args, tok, hass_, data_):
+            applied.append("side effect landed")
+            raise KeyError("a lookup inside the executor, long after the write")
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch.dict(mcp_view._EXECUTOR_REGISTRY, {"restart_ha": _executor}), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create"):
+            first = await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+            second = await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+
+        assert first.status == 500
+        # Ran once, and the record is closed rather than offered back.
+        assert applied == ["side effect landed"]
+        stored = next(r for r in store._pending if r["id"] == "appr_a")
+        assert stored["status"] == STATUS_REJECTED
+        assert stored["rejected_reason"] == "execution_interrupted"
+        assert json.loads(second.text)["rejected_reason"] == "execution_interrupted"
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_execution_does_not_re_offer_the_approval(self):
+        """asyncio.CancelledError does NOT inherit from Exception.
+
+        A cancelled task therefore skipped the failure handler entirely, ran the
+        finally, released the claim and put the approval back on offer with its
+        side effect possibly applied. The cancellation is re-raised rather than
+        swallowed, so the assertion is about what the STORE looks like afterwards.
+        """
+        from custom_components.phoenix_mcp import mcp_view
+
+        token = _make_token("tok-1", cap_restart="confirm")
+        store = _make_store(
+            pending=[_make_pending("appr_a", token_id="tok-1", tool_name="restart_ha")],
+            tokens=[token])
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+        applied: list[str] = []
+
+        async def _cancelled_executor(args, tok, hass_, data_):
+            applied.append("side effect landed")
+            raise asyncio.CancelledError()
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch.dict(mcp_view._EXECUTOR_REGISTRY, {"restart_ha": _cancelled_executor}), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create"):
+            with pytest.raises(asyncio.CancelledError):
+                await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+
+        assert applied == ["side effect landed"]
+        stored = next(r for r in store._pending if r["id"] == "appr_a")
+        assert stored["status"] == STATUS_REJECTED
+        assert stored["rejected_reason"] == "execution_interrupted"
+
+    @pytest.mark.asyncio
+    async def test_an_approval_carrying_a_stale_marker_refuses_to_run_again(self):
+        """Belt and braces for every path that leaves a marker behind.
+
+        A marker on a still-pending record means an earlier attempt reached
+        dispatch and never reported back, so the action may already have applied.
+        Overwriting the marker and running again is exactly the retry that must
+        not happen; startup reconciliation is what resolves these.
+        """
+        from custom_components.phoenix_mcp import mcp_view
+
+        token = _make_token("tok-1", cap_restart="confirm")
+        pending = _make_pending("appr_a", token_id="tok-1", tool_name="restart_ha")
+        pending["execution_started_at"] = utcnow().isoformat()
+        store = _make_store(pending=[pending], tokens=[token])
+        data = _make_data(store)
+        hass = _make_hass(data)
+        view = PhoenixAdminApprovalApproveView()
+        view.hass = hass
+        applied: list[str] = []
+
+        async def _executor(args, tok, hass_, data_):
+            applied.append("should never run")
+            return ({"content": [{"type": "text", "text": "{}"}]}, "allowed", "restart_ha")
+
+        with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
+             patch.dict(mcp_view._EXECUTOR_REGISTRY, {"restart_ha": _executor}), \
+             patch("homeassistant.components.persistent_notification.async_dismiss"), \
+             patch("homeassistant.components.persistent_notification.async_create"):
+            resp = await view.post(_make_admin_request(body=b"{}"), approval_id="appr_a")
+
+        assert resp.status == 409
+        assert applied == []
         assert "appr_a" not in data.approvals_in_progress
 
     @pytest.mark.asyncio

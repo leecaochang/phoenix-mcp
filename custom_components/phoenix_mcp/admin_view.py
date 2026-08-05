@@ -714,27 +714,24 @@ def _validated_token_patch(
     return patchable, None
 
 
-async def _rebuild_token_sensors_after_rename(
-    data: PhoenixData, token_id: str, old_name: str, updated: Any
+async def _rename_token_sensors(
+    hass: HomeAssistant, token_id: str, old_name: str, updated: Any
 ) -> None:
-    """Re-key a renamed token's sensors and device onto the new name slug.
+    """Follow a token rename on its sensors, in place.
 
-    The per-token sensors and device are keyed on the token-name slug, so a
-    rename has to remove the old slug's entities and recreate under the new one.
-    Best-effort on both halves: a registry problem must never fail a patch that
-    already succeeded, so each is caught and logged.
+    Best-effort: a registry problem must never fail a patch that already
+    succeeded. It used to remove the old slug's entities and recreate them under
+    the new one, because the sensor unique_id was derived from the token NAME;
+    that gave every sensor a new entity_id on every rename and broke whatever
+    referred to the old one. Identity is now the token id, so the rename only
+    updates the device's display name and the record the sensors read from.
     """
-    old_slug = token_name_slug(old_name)
-    if data.async_on_token_archived:
-        try:
-            await data.async_on_token_archived(old_slug)
-        except Exception:  # noqa: BLE001
-            _LOGGER.warning("Sensor cleanup failed renaming token %s; registry may have a ghost entry", token_id, exc_info=True)
-    if data.async_on_token_created:
-        try:
-            await data.async_on_token_created(updated)
-        except Exception:  # noqa: BLE001
-            _LOGGER.warning("Sensor recreate failed renaming token %s", token_id, exc_info=True)
+    from .sensor import async_rename_token_sensors  # noqa: PLC0415
+
+    try:
+        await async_rename_token_sensors(hass, old_name, updated)
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning("Sensor rename failed for token %s", token_id, exc_info=True)
 
 
 class PhoenixAdminTokenView(PhoenixView):
@@ -797,7 +794,7 @@ class PhoenixAdminTokenView(PhoenixView):
         )
 
         if updated is not None and old_name is not None and updated.name != old_name:
-            await _rebuild_token_sensors_after_rename(data, token_id, old_name, updated)
+            await _rename_token_sensors(self.hass, token_id, old_name, updated)
 
         return _ok(updated.to_dict(), request_id=rid)
 
@@ -2417,6 +2414,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
     """Validate, execute, and finalize a previously-pending approval."""
     from .approvals import (  # noqa: PLC0415
         REASON_CAPABILITY_DENIED,
+        REASON_EXECUTION_INTERRUPTED,
         REASON_KILL_SWITCH,
         REASON_TOKEN_INACTIVE,
         STATUS_APPROVED,
@@ -2427,10 +2425,12 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
         fire_approval_claim_event,
         fire_approval_resolved_event,
         get_approval,
+        async_clear_execution_marker,
+        async_mark_execution_started,
         async_update_approval_status,
     )
     from .helpers import effective_cap  # noqa: PLC0415
-    from .mcp_view import async_execute_approved_tool  # noqa: PLC0415
+    from .mcp_view import ExecutorNotRegistered, async_execute_approved_tool  # noqa: PLC0415
 
     rid = request["phoenix_mcp_rid"]
     data: PhoenixData = hass.data[DOMAIN]
@@ -2493,6 +2493,38 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
         if approval_id in data.approvals_in_progress:
             return _err("conflict", "Approval is already being processed.", 409, rid)
         data.approvals_in_progress.add(approval_id)
+        # The claim above dies with the process. Record the same fact on disk,
+        # still under the lock, so a stop or crash during the execution below
+        # leaves a trace: the executor runs OUTSIDE the lock and its outcome is
+        # written afterwards, so without this a restart in that window left an
+        # untouched pending record whose side effect may already have applied,
+        # and approving it again would apply it twice. FAIL CLOSED: if the marker
+        # cannot be persisted the executor must not run, because the same store
+        # has to record the outcome afterwards, so executing would leave a pending
+        # record whose action HAS run with nothing saying so. Release the claim on
+        # the way out so a retry is possible once the store is writable.
+        #
+        # A marker ALREADY on the record means a previous attempt got as far as
+        # dispatch and never reported back, so this approval may already have
+        # applied. Refuse rather than overwrite the marker: overwriting is what
+        # would let an admin retry straight past the evidence that something is
+        # unresolved. Startup reconciliation resolves these; nothing else should.
+        if record.execution_started_at is not None:
+            data.approvals_in_progress.discard(approval_id)
+            return _err(
+                "conflict",
+                "A previous attempt to run this approval did not report back, so it "
+                "may already have applied. It will be resolved on the next restart; "
+                "check the result rather than running it again.",
+                409, rid,
+            )
+        if not await async_mark_execution_started(data.store, approval_id):
+            data.approvals_in_progress.discard(approval_id)
+            return _err(
+                "service_unavailable",
+                "Could not record this approval before running it. Nothing was run; try again.",
+                503, rid,
+            )
 
     # Tell every surface the claim landed, BEFORE the execution rather than after
     # it: the resolved event cannot fire until the tool finishes, and until then
@@ -2504,18 +2536,83 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
     dismiss_approval_notification(hass, approval_id)
 
     # Execute outside the lock so the tool can use it freely. The claim is
-    # released in the finally below so a failed execution stays retryable while
-    # a successful one cannot be re-run.
+    # released in the finally below; whether the approval is OFFERED AGAIN after a
+    # failure depends on whether the executor could have applied anything, which
+    # is the distinction the two excepts below draw.
     try:
         try:
             tool_result, outcome, _resource = await async_execute_approved_tool(
                 record.tool_name, record.args, token, hass, data,
             )
-        except KeyError:
+        except ExecutorNotRegistered:
+            # The ONLY failure that proves nothing was dispatched: raised by the
+            # registry lookup before any executor is called. It has its own type
+            # for exactly this reason. Catching bare KeyError here was wrong,
+            # because an executor that raises KeyError internally (a dict lookup
+            # on a service response, a missing config key) is indistinguishable
+            # from the lookup failing, so a side effect that HAD begun was
+            # re-offered as retryable.
+            await async_clear_execution_marker(data.store, approval_id)
             return _err("invalid_request", "No executor registered for this tool.", 400, rid)
-        except Exception:
-            _LOGGER.exception("Approval execution failed for %s", approval_id)
-            return _err("internal_error", "Execution failed.", 500, rid)
+        except BaseException as exc:
+            # BaseException, not Exception, because asyncio.CancelledError does
+            # not inherit from Exception: a cancelled task skipped this handler
+            # entirely, ran the finally, released the claim and re-offered an
+            # approval whose executor had already been dispatched.
+            #
+            # Anything landing here may have raised AFTER the side effect
+            # applied: a service call that succeeded and then failed in result
+            # handling is indistinguishable from one that never ran. Re-offering
+            # invites the admin to apply it a second time, so the record resolves
+            # exactly as startup reconciliation resolves an interrupted one. The
+            # durable marker alone did not cover this, because it is read only at
+            # STARTUP while this leaves the approval re-approvable seconds later,
+            # in-process, by the admin already looking at the error.
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            if cancelled:
+                _LOGGER.warning(
+                    "Approval %s was cancelled mid-execution; it may have applied",
+                    approval_id,
+                )
+            else:
+                _LOGGER.exception("Approval execution failed for %s", approval_id)
+            # Best-effort during a cancellation: awaiting inside a cancelled task
+            # can be interrupted again, and the marker left on disk is the
+            # backstop either way (startup reconciles it, and the pre-existing
+            # marker check above refuses any retry before then). So a failure to
+            # resolve here degrades to "resolved at next startup", never to
+            # "offered again now".
+            try:
+                async with data.store.async_lock:
+                    interrupted = await async_update_approval_status(
+                        data.store, approval_id,
+                        status=STATUS_REJECTED,
+                        approved_by_user_id=user.id,
+                        rejected_reason=REASON_EXECUTION_INTERRUPTED,
+                    )
+                resolved = True
+                if interrupted is not None:
+                    fire_approval_resolved_event(hass, interrupted)
+            except BaseException:  # noqa: BLE001 - the marker is the backstop
+                _LOGGER.exception(
+                    "Could not resolve approval %s after a failed execution; the "
+                    "next startup will close it as interrupted", approval_id,
+                )
+                # NOT resolved, so the finally re-offers it, but the marker check
+                # refuses the retry. Leave `resolved` False only for cancellation,
+                # where re-raising skips the response anyway.
+                resolved = not cancelled
+            if cancelled:
+                # Never swallow a cancellation: the event loop owns it, and
+                # returning a response here would report a completed request for
+                # a task Home Assistant is tearing down.
+                raise
+            return _err(
+                "internal_error",
+                "Execution failed and may have partly applied. This approval was "
+                "closed rather than offered again; check the result before retrying.",
+                500, rid,
+            )
 
         is_error = bool(tool_result.get("isError"))
         saved_result = {"tool_result": tool_result, "outcome": outcome}

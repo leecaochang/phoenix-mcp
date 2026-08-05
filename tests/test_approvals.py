@@ -23,6 +23,9 @@ from custom_components.phoenix_mcp.approvals import (
     async_expire_overdue_approval_records,
     get_approval,
     list_approvals,
+    REASON_EXECUTION_INTERRUPTED,
+    async_mark_execution_started,
+    async_reconcile_interrupted_approvals,
     async_update_approval_status,
 )
 from custom_components.phoenix_mcp.approvals import create_approval_notification
@@ -559,3 +562,128 @@ class TestArgsRedaction:
         )
         stored = store.get_pending_approvals()[0]
         assert stored["args"]["content"] == "api_key: abc123secret"
+
+
+# --- interrupted execution ----------------------------------------------------
+
+
+class TestInterruptedExecution:
+    """A crash between the side effect and its recorded outcome.
+
+    The in-memory claim in data.approvals_in_progress makes a double-click safe,
+    but it dies with the process. The executor runs OUTSIDE the store lock and
+    the terminal status is written afterwards, so a stop in that window left an
+    untouched pending record whose action may already have applied, and approving
+    it again applied it twice. Nothing covered this: the existing tests are all
+    same-process races.
+    """
+
+    async def _pending(self, store) -> str:
+        approval = await async_create_pending_approval(
+            store, token_id="t1", token_name="tok", tool_name="call_service",
+            cap_name="cap_physical_control", args={}, diff={}, request_id="r",
+        )
+        return approval.id
+
+    @pytest.mark.asyncio
+    async def test_marker_is_written_before_the_executor_runs(self, store):
+        approval_id = await self._pending(store)
+
+        await async_mark_execution_started(store, approval_id)
+
+        entry = store.get_pending_approvals()[0]
+        # Still pending: the marker records that it MIGHT have applied, and the
+        # record only becomes terminal once the executor actually reports.
+        assert entry["status"] == STATUS_PENDING
+        assert entry["execution_started_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_a_restart_mid_execution_resolves_rather_than_re_offering(self, store):
+        approval_id = await self._pending(store)
+        await async_mark_execution_started(store, approval_id)
+
+        # A new process reads the store back and reconciles.
+        changed = await async_reconcile_interrupted_approvals(store)
+
+        assert [a.id for a in changed] == [approval_id]
+        entry = store.get_pending_approvals()[0]
+        assert entry["status"] == STATUS_REJECTED
+        assert entry["rejected_reason"] == REASON_EXECUTION_INTERRUPTED
+        # Approving it again is the one unrecoverable outcome, so the record must
+        # not be pending any more.
+        assert get_approval(store, approval_id).status != STATUS_PENDING
+
+    @pytest.mark.asyncio
+    async def test_an_untouched_pending_approval_is_left_alone(self, store):
+        # The whole point is telling "nobody acted on this" apart from "someone
+        # started acting and we lost the answer". Resolving both would throw away
+        # every approval waiting in the queue at a restart.
+        approval_id = await self._pending(store)
+
+        changed = await async_reconcile_interrupted_approvals(store)
+
+        assert changed == []
+        assert get_approval(store, approval_id).status == STATUS_PENDING
+
+    @pytest.mark.asyncio
+    async def test_a_completed_execution_clears_the_marker(self, store):
+        approval_id = await self._pending(store)
+        await async_mark_execution_started(store, approval_id)
+
+        await async_update_approval_status(
+            store, approval_id, status=STATUS_APPROVED, approved_by_user_id="admin",
+        )
+
+        entry = store.get_pending_approvals()[0]
+        assert "execution_started_at" not in entry
+        # And a later startup has nothing to reconcile.
+        assert await async_reconcile_interrupted_approvals(store) == []
+
+    @pytest.mark.asyncio
+    async def test_an_unwritable_store_refuses_rather_than_running_unmarked(self, store):
+        """Fail CLOSED, which reverses this test's original assertion.
+
+        It used to require that an unwritable store not block an approval the
+        admin had already authorized. That sounds right and is wrong: the same
+        store has to persist the terminal status afterwards, so a disk that
+        cannot take the marker cannot record the outcome either. Executing anyway
+        buys nothing and leaves a pending record whose action HAS run with no
+        trace saying so, which is the replay this marker exists to prevent, made
+        permanent instead of crash-dependent.
+        """
+        approval_id = await self._pending(store)
+        store.async_save = AsyncMock(side_effect=OSError("disk full"))
+
+        assert await async_mark_execution_started(store, approval_id) is False
+        # Still pending and still approvable once the disk is writable, with no
+        # half-written marker left to be reconciled away at the next startup.
+        assert get_approval(store, approval_id).status == STATUS_PENDING
+        assert "execution_started_at" not in store.get_pending_approvals()[0]
+
+    @pytest.mark.asyncio
+    async def test_a_durable_marker_reports_success(self, store):
+        approval_id = await self._pending(store)
+        assert await async_mark_execution_started(store, approval_id) is True
+
+    @pytest.mark.asyncio
+    async def test_an_already_resolved_approval_reports_failure(self, store):
+        # Nothing to mark, so nothing may run: the caller treats False as "do not
+        # execute", and a terminal record must never be executed again.
+        approval_id = await self._pending(store)
+        await async_update_approval_status(
+            store, approval_id, status=STATUS_APPROVED, approved_by_user_id="admin")
+
+        assert await async_mark_execution_started(store, approval_id) is False
+
+    @pytest.mark.asyncio
+    async def test_the_marker_survives_a_store_round_trip(self, store):
+        # It is only worth anything if it is still there in the NEXT process.
+        approval_id = await self._pending(store)
+        await async_mark_execution_started(store, approval_id)
+
+        reloaded = PendingApproval.from_dict(store.get_pending_approvals()[0])
+
+        assert reloaded.execution_started_at is not None
+        assert PendingApproval.from_dict(
+            reloaded.to_dict(redact_args=False)
+        ).execution_started_at == reloaded.execution_started_at

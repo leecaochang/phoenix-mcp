@@ -121,6 +121,84 @@ class RateLimiter:
             retry_after=0,
         )
 
+    def charge_batch(
+        self,
+        token_id: str,
+        rate_limit_requests: int,
+        rate_limit_burst: int,
+        extra: int,
+    ) -> RateLimitResult:
+        """Charge `extra` further units, or refuse the whole batch.
+
+        A JSON-RPC batch arrives as ONE HTTP request carrying up to
+        MAX_BATCH_ITEMS calls, so `check` charged it once and a token on the
+        default 60/min could issue 3,000 tool calls a minute by batching. The
+        items are the work, so the items are what the window has to count.
+
+        This is a PREFLIGHT, run before any item is dispatched, and the refusal
+        is the point. Charging-without-denying was tried first and left a real
+        hole: entries clamp at the limit, so a token limited to 10/min could send
+        a 50-item batch, have all 50 execute, and only then be throttled, i.e. 40
+        operations past a ceiling the operator set deliberately. Because nothing
+        has run yet, refusing here is clean; there is no half-applied batch, and
+        the caller answers 429 exactly as any other over-limit request does.
+
+        BOTH ceilings are checked. The minute limit alone was not enough: a batch
+        lands in a single instant, so its whole cost falls inside one burst
+        window, and a token configured 60/min with burst 10/sec could run a
+        50-item batch, exceeding the per-second ceiling fivefold while satisfying
+        the per-minute one. Burst is the setting that exists to stop exactly that
+        shape of traffic, so skipping it here defeated its purpose.
+
+        Returns an allowed result (rate limiting disabled, or both budgets cover
+        the batch) or a denied one carrying `retry_after`. `check` still runs
+        first for the request itself, so this only ever decides the remainder.
+        The returned result is what the caller must put in its response headers:
+        the one from `check` describes a single request and understates the spend.
+        """
+        if rate_limit_requests == 0:
+            return RateLimitResult(allowed=True, rate_limiting_enabled=False)
+
+        now = time.monotonic()
+        wall_now = time.time()
+        window = self._windows.setdefault(token_id, deque())
+        while window and window[0] <= now - WINDOW_SECONDS:
+            window.popleft()
+
+        def _denied(oldest: float, wait_until: float) -> RateLimitResult:
+            return RateLimitResult(
+                allowed=False,
+                rate_limiting_enabled=True,
+                limit=rate_limit_requests,
+                remaining=max(0, rate_limit_requests - len(window)),
+                reset=int(wall_now + (oldest + WINDOW_SECONDS - now)),
+                retry_after=max(1, math.ceil(wait_until - now)),
+            )
+
+        if extra > 0 and len(window) + extra > rate_limit_requests:
+            oldest = window[0] if window else now
+            return _denied(oldest, oldest + WINDOW_SECONDS)
+
+        if extra > 0 and rate_limit_burst > 0:
+            burst_cutoff = now - BURST_WINDOW_SECONDS
+            in_burst = sum(1 for t in window if t > burst_cutoff)
+            if in_burst + extra > rate_limit_burst:
+                oldest = window[0] if window else now
+                # The whole batch is charged at `now`, so waiting for the current
+                # burst window to clear is the soonest it could be accepted.
+                return _denied(oldest, now + BURST_WINDOW_SECONDS)
+
+        if extra > 0:
+            window.extend([now] * extra)
+        return RateLimitResult(
+            allowed=True,
+            rate_limiting_enabled=True,
+            limit=rate_limit_requests,
+            remaining=max(0, rate_limit_requests - len(window)),
+            reset=int(wall_now + (window[0] + WINDOW_SECONDS - now)) if window else int(wall_now + WINDOW_SECONDS),
+            retry_after=0,
+        )
+
     def destroy(self, token_id: str) -> None:
         """Destroy rate limit state for a single token (call on revocation/archival)."""
         self._windows.pop(token_id, None)

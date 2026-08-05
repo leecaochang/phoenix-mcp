@@ -471,3 +471,105 @@ class TestRateLimitResult:
         assert result.allowed is True
         assert result.rate_limiting_enabled is False
         assert result.limit == 0
+
+
+# --- batch accounting ---------------------------------------------------------
+
+
+class TestChargeBatch:
+    """A JSON-RPC batch is one HTTP request carrying up to 50 calls.
+
+    check() charged it once, so a token on the default 60/min could issue 3,000
+    tool calls a minute by batching. The items are the work, so the window has to
+    count the items AND the ceiling has to hold: charging without refusing was
+    the first attempt and left a token limited to 10/min able to run all 50 items
+    before throttling began.
+    """
+
+    def test_a_batch_spends_one_unit_per_item(self):
+        limiter = RateLimiter()
+        assert limiter.check("t1", 60, 0).allowed  # the request itself
+
+        assert limiter.charge_batch("t1", 60, 0, 49).allowed  # a 50-item batch
+
+        # 50 spent, 10 left, rather than 59 left.
+        assert limiter.check("t1", 60, 0).remaining == 9
+
+    def test_a_batch_over_the_ceiling_is_refused_outright(self):
+        # The whole point: with a limit of 10 a 50-item batch used to EXECUTE all
+        # 50 and only then throttle, 40 operations past a ceiling the operator
+        # set deliberately. Nothing has been dispatched yet, so refusing is clean.
+        limiter = RateLimiter()
+        assert limiter.check("t1", 10, 0).allowed
+
+        result = limiter.charge_batch("t1", 10, 0, 49)
+
+        assert result.allowed is False
+        assert result.retry_after >= 1
+        # Refused means not charged: the window still holds only the request.
+        assert len(limiter._windows["t1"]) == 1
+
+    def test_a_batch_that_exactly_fits_is_allowed(self):
+        # Boundary: the request plus its items equal the limit precisely.
+        limiter = RateLimiter()
+        assert limiter.check("t1", 10, 0).allowed
+        assert limiter.charge_batch("t1", 10, 0, 9).allowed
+        assert limiter.check("t1", 10, 0).allowed is False
+
+    def test_one_more_than_fits_is_refused(self):
+        limiter = RateLimiter()
+        assert limiter.check("t1", 10, 0).allowed
+        assert limiter.charge_batch("t1", 10, 0, 10).allowed is False
+
+    def test_disabled_rate_limiting_is_untouched(self):
+        limiter = RateLimiter()
+        result = limiter.charge_batch("t1", 0, 0, 49)
+        assert result.allowed is True
+        assert result.rate_limiting_enabled is False
+        assert "t1" not in limiter._windows
+
+    def test_zero_extra_is_allowed_and_charges_nothing(self):
+        # A one-item batch charges nothing further: check() already covered it.
+        limiter = RateLimiter()
+        limiter.check("t1", 60, 0)
+        before = len(limiter._windows["t1"])
+        assert limiter.charge_batch("t1", 60, 0, 0).allowed
+        assert len(limiter._windows["t1"]) == before
+
+    def test_a_batch_over_the_burst_ceiling_is_refused(self):
+        """Burst is the setting that exists to stop exactly this shape.
+
+        A batch lands in one instant, so its whole cost falls inside a single
+        burst window. Checking only the minute limit let 60/min + burst 10/sec
+        admit a 50-item batch, exceeding the per-second ceiling fivefold while
+        satisfying the per-minute one.
+        """
+        limiter = RateLimiter()
+        assert limiter.check("t1", 60, 10).allowed
+
+        result = limiter.charge_batch("t1", 60, 10, 49)
+
+        assert result.allowed is False
+        assert result.retry_after >= 1
+        assert len(limiter._windows["t1"]) == 1  # refused means not charged
+
+    def test_a_batch_within_both_ceilings_is_allowed(self):
+        limiter = RateLimiter()
+        assert limiter.check("t1", 60, 10).allowed
+        assert limiter.charge_batch("t1", 60, 10, 9).allowed
+
+    def test_burst_of_zero_means_unlimited_burst(self):
+        # 0 disables the burst check everywhere else in this class; a batch must
+        # not invent a ceiling the operator did not set.
+        limiter = RateLimiter()
+        assert limiter.check("t1", 60, 0).allowed
+        assert limiter.charge_batch("t1", 60, 0, 49).allowed
+
+    def test_the_returned_result_describes_the_batch_not_the_request(self):
+        # The caller puts this in its response headers. The result from check()
+        # was computed before the items were charged, so it reported a budget the
+        # token no longer has (59 of 60 remaining after spending 50).
+        limiter = RateLimiter()
+        limiter.check("t1", 60, 0)
+        result = limiter.charge_batch("t1", 60, 0, 49)
+        assert result.remaining == 10

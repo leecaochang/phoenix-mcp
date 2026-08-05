@@ -4,7 +4,7 @@
 [![Hassfest](https://github.com/leecaochang/phoenix-mcp/actions/workflows/hassfest.yml/badge.svg)](https://github.com/leecaochang/phoenix-mcp/actions/workflows/hassfest.yml)
 [![Tests](https://github.com/leecaochang/phoenix-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/leecaochang/phoenix-mcp/actions/workflows/tests.yml)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.5%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
 [中文](#中文)
@@ -21,7 +21,7 @@ New here? Start with the **[Quick start](https://leecaochang.github.io/phoenix-m
 
 ## Requirements
 
-- Home Assistant 2024.5.0 or later.
+- Home Assistant 2025.2.0 or later.
 - One Phoenix MCP instance per Home Assistant. No Python dependencies beyond what HA ships.
 
 ## Install via HACS

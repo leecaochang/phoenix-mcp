@@ -187,7 +187,7 @@ class TestGetAutomationTraces:
 class TestTraceStorageShapes:
     """HA 2026.7 replaced the per-automation dict with TraceBuckets.
 
-    Phoenix supports HA 2024.5+, so both shapes must read correctly, and the
+    Phoenix supports HA 2025.2+, so both shapes must read correctly, and the
     not-triggered bucket (new in the same change) must be visible: "why did it
     not fire" is the usual reason to read traces at all.
     """

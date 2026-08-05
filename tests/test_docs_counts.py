@@ -67,6 +67,28 @@ NUMBER = re.compile(
     r'(?<![\w.-])\b(' + _WORD_ALT + r'|\d{1,3})\b[^.<"]{0,45}?\b' + _NOUNS + r"\b",
     re.IGNORECASE,
 )
+# The same count with the noun FIRST ("tools: 139", "capabilities (26)"). The
+# pattern above reads number-then-noun only, so this grammar was invisible to it.
+# Its window is DELIBERATELY far tighter than NUMBER's 45 characters: reading
+# right-to-left across a sentence sweeps up every number that merely follows the
+# noun, and the first attempt read "capability returns 400" as a capability count
+# of 400. Only light punctuation is allowed between the two, which is the whole
+# difference between a stated count and a number that happens to come later.
+NUMBER_AFTER_NOUN = re.compile(
+    r'(?<![\w.-])\b' + _NOUNS + r"\b[\s:=(\[]{0,3}(" + _WORD_ALT + r"|\d{1,3})\b",
+    re.IGNORECASE,
+)
+# A count with its noun ELIDED: "plus 116 more", "and 23 others". Neither pattern
+# above can see one, since there is no noun on either side to anchor to. This is
+# the exact shape the stale 108 hid in, so it is matched on the quantifier
+# instead and the VALUE is checked against every count the page may legitimately
+# state. Deliberately narrow: only the few phrasings that always mean a count,
+# so an ordinary sentence containing a number cannot trip it.
+ELIDED_COUNT = re.compile(
+    r"(?<![\w.-])\b(?:plus|and|another|a further)\s+(" + _WORD_ALT + r"|\d{1,3})\b\s+"
+    r"(?:more|others|further|additional)\b",
+    re.IGNORECASE,
+)
 # A count too large for the word list must be digits; "one hundred and
 # twenty-seven tools" is unparseable to this test and therefore forbidden.
 BIG_WORD = re.compile(
@@ -120,16 +142,34 @@ def test_no_stale_counts_in_prose(page: pathlib.Path) -> None:
                 f"{page.name}:{lineno} says {big.group(0)!r};"
                 " write the count in digits so this test can check it"
             )
-        for match in NUMBER.finditer(line):
-            raw, noun = match.group(1).lower(), match.group(2).lower()
-            value = WORDS.get(raw)
+        for pattern, num_group, noun_group in (
+            (NUMBER, 1, 2),
+            (NUMBER_AFTER_NOUN, 2, 1),
+        ):
+            for match in pattern.finditer(line):
+                raw = match.group(num_group).lower()
+                noun = match.group(noun_group).lower()
+                value = WORDS.get(raw)
+                if value is None:
+                    value = int(raw)
+                kind = next(k for k in allowed if noun.startswith(k))
+                if value not in allowed[kind]:
+                    stale.append(
+                        f"{page.name}:{lineno} says {match.group(0)!r};"
+                        f" {kind} should be one of {sorted(allowed[kind])}"
+                    )
+        for match in ELIDED_COUNT.finditer(line):
+            raw = match.group(1).lower()
+            value = WORDS.get(raw, None)
             if value is None:
                 value = int(raw)
-            kind = next(k for k in allowed if noun.startswith(k))
-            if value not in allowed[kind]:
+            # No noun to key on, so any count the page could legitimately be
+            # stating is accepted; a value matching none of them is stale.
+            every = {v for values in allowed.values() for v in values}
+            if value not in every:
                 stale.append(
-                    f"{page.name}:{lineno} says {match.group(0)!r};"
-                    f" {kind} should be one of {sorted(allowed[kind])}"
+                    f"{page.name}:{lineno} says {match.group(0)!r} with the noun left"
+                    f" out; that count matches none of {sorted(every)}"
                 )
         for match in NUMBER_ZH.finditer(line):
             kind = _ZH_KIND[match.group(2)]

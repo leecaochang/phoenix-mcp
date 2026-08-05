@@ -44,6 +44,10 @@ REASON_ADMIN_CANCELLED = "admin_cancelled"
 REASON_REVOKED = "token_revoked"
 REASON_TOKEN_EXPIRED = "token_expired"
 REASON_WIPED = "phoenix_mcp_data_wiped"
+# The approval's executor started and Home Assistant stopped before its outcome
+# was persisted, so whether the side effect landed is genuinely UNKNOWN. See
+# async_reconcile_interrupted_approvals for why that resolves to a rejection.
+REASON_EXECUTION_INTERRUPTED = "execution_interrupted"
 # There is deliberately no constant for target_out_of_scope / target_missing /
 # rate_limited_at_execution. The approve path re-validates only the three things
 # it owns (token active, capability permits, kill switch off); target scope and
@@ -78,6 +82,13 @@ class PendingApproval:
     approved_by_user_id: str | None = None
     rejected_reason: str | None = None
     result: Any = None
+    # Set on disk immediately BEFORE the executor runs and cleared when its
+    # outcome is persisted. It is the only durable trace that a side effect may
+    # already have been applied: the in-memory claim in data.approvals_in_progress
+    # answers the same question for concurrent requests in this process, but it
+    # dies with the process, so a crash mid-execution left a still-pending record
+    # that an admin could approve again and apply twice.
+    execution_started_at: datetime | None = None
 
     def to_dict(self, redact_args: bool = True) -> dict:
         """Serialise the approval.
@@ -107,6 +118,9 @@ class PendingApproval:
             "result": self.result,
             "request_id": self.request_id,
             "client_ip": self.client_ip,
+            "execution_started_at": (
+                self.execution_started_at.isoformat() if self.execution_started_at else None
+            ),
         }
 
     @classmethod
@@ -128,6 +142,10 @@ class PendingApproval:
             result=data.get("result"),
             request_id=data.get("request_id", ""),
             client_ip=data.get("client_ip"),
+            execution_started_at=(
+                parse_datetime(data["execution_started_at"])
+                if data.get("execution_started_at") else None
+            ),
         )
 
     def is_terminal(self) -> bool:
@@ -247,10 +265,143 @@ async def async_update_approval_status(
             entry["rejected_reason"] = rejected_reason
         if result is not None:
             entry["result"] = result
+        # The record is terminal now, so the "may be mid-execution" marker has
+        # done its job and must not survive into the stored history.
+        entry.pop("execution_started_at", None)
         store.set_pending_approvals(raw)
         await store.async_save()
         return PendingApproval.from_dict(entry)
     return None
+
+
+async def async_mark_execution_started(
+    store: TokenStore,
+    approval_id: str,
+) -> bool:
+    """Record on DISK that this approval's executor is about to run.
+
+    The in-memory claim in data.approvals_in_progress answers "is another request
+    already running this?" and is enough for a double-click, but it dies with the
+    process. The executor runs outside the store lock and its outcome is written
+    afterwards, so a stop or crash in that window left an untouched pending record
+    whose side effect may already have been applied, and an admin could approve it
+    again. This marker is what async_reconcile_interrupted_approvals reads at the
+    next startup.
+
+    Returns True when the marker is durable. A False return MUST stop the caller
+    from executing, and that is a FAIL-CLOSED choice replacing an earlier
+    best-effort one. The best-effort version reasoned that an unwritable store
+    should not block an approval the admin had already authorized, which sounds
+    right and is wrong: the very same store has to persist the terminal status
+    afterwards, so a disk that cannot take the marker cannot record the outcome
+    either. Executing anyway buys nothing and leaves a pending record whose action
+    HAS run, with no trace saying so, i.e. exactly the replay this marker exists to
+    prevent, made permanent instead of crash-dependent. Refusing costs a retry.
+
+    Caller must hold store.async_lock.
+    """
+    raw = store.get_pending_approvals()
+    for entry in raw:
+        if entry.get("id") != approval_id:
+            continue
+        if entry.get("status") != STATUS_PENDING:
+            return False
+        entry["execution_started_at"] = utcnow().isoformat()
+        store.set_pending_approvals(raw)
+        try:
+            await store.async_save()
+        except Exception:  # noqa: BLE001 - see the docstring: this must fail closed
+            _LOGGER.exception(
+                "Could not record the start of execution for approval %s; refusing to "
+                "run it, because a store that cannot take the marker cannot record the "
+                "outcome either and the action would be re-approvable after it ran",
+                approval_id,
+            )
+            entry.pop("execution_started_at", None)
+            store.set_pending_approvals(raw)
+            return False
+        return True
+    return False
+
+
+async def async_clear_execution_marker(
+    store: TokenStore,
+    approval_id: str,
+) -> None:
+    """Undo async_mark_execution_started for an attempt that provably never ran.
+
+    Only for failures that happen BEFORE the executor could apply anything (today
+    just an unregistered tool name, which the registry lookup raises on before
+    doing any work). Leaving the marker there would have the next startup resolve
+    a perfectly good pending approval as interrupted.
+
+    Never call this after a failure that might have applied something: that is the
+    case the marker exists for, and the caller resolves the record instead.
+
+    Takes the store lock itself, so callers must not hold it.
+    """
+    async with store.async_lock:
+        raw = store.get_pending_approvals()
+        for entry in raw:
+            if entry.get("id") != approval_id:
+                continue
+            if not entry.pop("execution_started_at", None):
+                return
+            store.set_pending_approvals(raw)
+            try:
+                await store.async_save()
+            except Exception:  # noqa: BLE001 - the record is still pending either way
+                _LOGGER.exception(
+                    "Could not clear the execution marker for approval %s; the next "
+                    "startup will resolve it as interrupted", approval_id,
+                )
+            return
+
+
+async def async_reconcile_interrupted_approvals(
+    store: TokenStore,
+) -> list[PendingApproval]:
+    """Resolve approvals whose executor started but never reported an outcome.
+
+    Called once at startup. A record still PENDING while carrying
+    execution_started_at is one whose side effect was begun by a process that is
+    now gone, so whether it landed is genuinely unknown.
+
+    It resolves to REJECTED rather than being left pending, and the asymmetry is
+    the whole point: leaving it pending offers the admin a button that may apply a
+    service call, a restart or a configuration write for the SECOND time, whereas
+    rejecting it means at worst an action the agent can request again and the
+    admin can approve again, with the reason naming exactly what is uncertain.
+    Duplicating an unknown side effect silently is the one outcome with no
+    recovery.
+
+    Returns the records it changed so the caller can dismiss their notifications
+    and fire the resolved event. Caller must hold store.async_lock.
+    """
+    raw = store.get_pending_approvals()
+    changed: list[PendingApproval] = []
+    for entry in raw:
+        if entry.get("status") != STATUS_PENDING:
+            continue
+        if not entry.get("execution_started_at"):
+            continue
+        entry["status"] = STATUS_REJECTED
+        entry["resolved_at"] = utcnow().isoformat()
+        entry["rejected_reason"] = REASON_EXECUTION_INTERRUPTED
+        entry.pop("execution_started_at", None)
+        try:
+            changed.append(PendingApproval.from_dict(entry))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if changed:
+        store.set_pending_approvals(raw)
+        await store.async_save()
+        _LOGGER.warning(
+            "Phoenix MCP: %d approval(s) were being executed when Home Assistant "
+            "stopped; whether they applied is unknown, so they were resolved as "
+            "rejected rather than left approvable again", len(changed),
+        )
+    return changed
 
 
 async def async_cancel_approvals_for_token(

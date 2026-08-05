@@ -793,7 +793,8 @@
         "target_out_of_scope": "目标超出范围",
         "token_expired": "令牌已过期",
         "token_inactive": "令牌处于非活动状态",
-        "token_revoked": "令牌已吊销"
+        "token_revoked": "令牌已吊销",
+        "execution_interrupted": "已中断，可能已生效"
       },
       "reasonExecutionFailedDetail": "执行失败：{detail}",
       "reasonLabel": "拒绝原因（可选）",
@@ -1410,7 +1411,7 @@
       "thenLabel": "然后",
       "tokenCreatedBanner": "令牌已创建。名称和有效期现已固定；如需更改，请取消并重新开始。",
       "tokenLabel": "令牌",
-      "tokenSub": "请使用一个专用令牌进行测试。现在可以修改建议的名称。创建之后，名称和有效期将无法更改。",
+      "tokenSub": "请使用一个专用令牌进行测试。现在可以修改建议的名称，之后也可以在令牌页面重命名。创建之后，有效期将无法更改。",
       "tokenTitle": "为测试令牌命名",
       "tryLabel": "试用",
       "tryNow": "立即试用",
