@@ -36,6 +36,13 @@ export function YamlView({ value }: { value: string }) {
 
   useEffect(() => {
     if (!useEditor || !ref.current) return;
+    // React 18 writes a className prop on a CUSTOM element as a junk
+    // attribute literally named "classname", so a JSX className here leaves
+    // the element with no class and no .yaml-editor rule (border, the
+    // --code-mirror-max-height cap, the theme-variable pins) ever matches.
+    // Set the real attribute imperatively; React never writes "class" on its
+    // own, so nothing fights it.
+    ref.current.setAttribute("class", "yaml-editor");
     const el = ref.current as unknown as Record<string, unknown>;
     el.mode = "yaml";
     el.readOnly = true;
@@ -46,7 +53,7 @@ export function YamlView({ value }: { value: string }) {
   if (!value) return <pre className="yaml-pre yaml-pre-empty">{t("common.none")}</pre>;
 
   if (useEditor) {
-    return <ha-code-editor ref={ref as React.RefObject<HTMLElement>} className="yaml-editor" />;
+    return <ha-code-editor ref={ref as React.RefObject<HTMLElement>} />;
   }
   return <pre className="yaml-pre">{value}</pre>;
 }

@@ -8,31 +8,31 @@
    Design tokens - light mode (default)
    ============================================================ */
 :host {
-  --phx-bg:           #faf9f7;
+  --phx-bg:           #fafafa;
   --phx-surface:      #ffffff;
-  --phx-surface-2:    #f6f5f3;
+  --phx-surface-2:    #f4f4f5;
   /* Light-mode text-bearing tokens sit one shade darker than the classic
-     amber-600/stone-500 palette so small text hits WCAG 4.5:1 on every
+     amber-600/zinc-500 palette so small text hits WCAG 4.5:1 on every
      surface it is used on (white, surface-2, and the translucent tint
      backgrounds). Dark mode has its own ramp below and already passes. */
   --phx-accent:       #b45309;
   --phx-accent-hov:   #92400e;
   --phx-accent-lt:    #faf3e8;
   --phx-accent-fg:    #ffffff;
-  --phx-text:         #1c1917;
-  --phx-text-2:       #6e6862;
-  --phx-border:       #e7e5e4;
-  --phx-divider:      #f5f5f4;
+  --phx-text:         #18181b;
+  --phx-text-2:       #63636b;
+  --phx-border:       #e4e4e7;
+  --phx-divider:      #f1f1f2;
   --phx-success:      #15803d;
   --phx-success-bg:   rgba(22,163,74,0.1);
   --phx-error:        #dc2626;
   --phx-error-bg:     rgba(220,38,38,0.1);
   --phx-warning:      #b45309;
   --phx-warning-bg:   rgba(217,119,6,0.1);
-  --phx-info:         #6e6862;
-  --phx-info-bg:      rgba(120,113,108,0.10);
-  --phx-shadow:       0 1px 3px rgba(120,80,0,0.08), 0 1px 2px rgba(120,80,0,0.05);
-  --phx-shadow-md:    0 4px 16px rgba(120,80,0,0.1), 0 2px 6px rgba(120,80,0,0.06);
+  --phx-info:         #63636b;
+  --phx-info-bg:      rgba(113,113,122,0.10);
+  --phx-shadow:       0 1px 3px rgba(24,24,27,0.08), 0 1px 2px rgba(24,24,27,0.05);
+  --phx-shadow-md:    0 4px 16px rgba(24,24,27,0.1), 0 2px 6px rgba(24,24,27,0.06);
   --phx-shadow-lg:    0 8px 32px rgba(0,0,0,0.18);
   --phx-radius:       12px;
   --phx-radius-sm:    8px;
@@ -44,14 +44,14 @@
   --phx-z-modal:      100;
   --phx-z-agentcli:   200;
   --phx-grey-tint:    rgba(0,0,0,0.07);
-  --phx-hover:        #f0eeea;
-  --phx-purple:       #6e6862;
-  --phx-purple-bg:    rgba(120,113,108,0.10);
+  --phx-hover:        #eeeef1;
+  --phx-purple:       #63636b;
+  --phx-purple-bg:    rgba(113,113,122,0.10);
   /* Agent Chat window: a shade darker than --phx-surface so the floating
      window reads as a distinct layer over the Phoenix MCP panel behind it, not a
      seamless continuation of it. */
-  --phx-agentcli-surface:  #d6d3d1;
-  --phx-agentcli-titlebar: #c8c4c0;
+  --phx-agentcli-surface:  #d4d4d8;
+  --phx-agentcli-titlebar: #c6c6cb;
 
   /* Native controls (selects, scrollbars) render from the browser's
      color-scheme, which they would otherwise inherit from the HA page;
@@ -75,70 +75,70 @@
    the class at all and silently misbehaves. */
 @media (prefers-color-scheme: dark) {
   :host(:not(.phx-theme-light)) {
-    --phx-bg:           #1c1917;
-    --phx-surface:      #292524;
-    --phx-surface-2:    #211f1d;
+    --phx-bg:           #18181b;
+    --phx-surface:      #27272a;
+    --phx-surface-2:    #1e1e21;
     --phx-accent:       #f59e0b;
     --phx-accent-hov:   #fbbf24;
     --phx-accent-lt:    #3d2806;
-    --phx-accent-fg:    #1c1917;
-    --phx-text:         #fafaf9;
-    --phx-text-2:       #a8a29e;
-    --phx-border:       #44403c;
-    --phx-divider:      #292524;
+    --phx-accent-fg:    #18181b;
+    --phx-text:         #fafafa;
+    --phx-text-2:       #a1a1aa;
+    --phx-border:       #3f3f46;
+    --phx-divider:      #27272a;
     --phx-success:      #4ade80;
     --phx-success-bg:   rgba(74,222,128,0.12);
     --phx-error:        #f87171;
     --phx-error-bg:     rgba(248,113,113,0.12);
     --phx-warning:      #fbbf24;
     --phx-warning-bg:   rgba(251,191,36,0.12);
-    --phx-info:         #a8a29e;
-    --phx-info-bg:      rgba(168,162,158,0.12);
+    --phx-info:         #a1a1aa;
+    --phx-info-bg:      rgba(161,161,170,0.12);
     --phx-shadow:       0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
     --phx-shadow-md:    0 4px 16px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.4);
     --phx-shadow-lg:    0 8px 32px rgba(0,0,0,0.6);
     --phx-grey-tint:    rgba(255,255,255,0.08);
     --phx-hover:        rgba(255,255,255,0.06);
-    --phx-purple:       #a8a29e;
-    --phx-purple-bg:    rgba(168,162,158,0.12);
+    --phx-purple:       #a1a1aa;
+    --phx-purple-bg:    rgba(161,161,170,0.12);
     /* Agent Chat window: a shade lighter than --phx-surface for the same
        reason as the light-mode value above, mirrored for dark mode. */
-    --phx-agentcli-surface:  #37322d;
-    --phx-agentcli-titlebar: #2e2a25;
+    --phx-agentcli-surface:  #323238;
+    --phx-agentcli-titlebar: #2b2b30;
     color-scheme: dark;
   }
 }
 
 /* Forced dark (overrides system light preference) */
 :host(.phx-theme-dark) {
-  --phx-bg:           #1c1917;
-  --phx-surface:      #292524;
-  --phx-surface-2:    #211f1d;
+  --phx-bg:           #18181b;
+  --phx-surface:      #27272a;
+  --phx-surface-2:    #1e1e21;
   --phx-accent:       #f59e0b;
   --phx-accent-hov:   #fbbf24;
   --phx-accent-lt:    #3d2806;
-  --phx-accent-fg:    #1c1917;
-  --phx-text:         #fafaf9;
-  --phx-text-2:       #a8a29e;
-  --phx-border:       #44403c;
-  --phx-divider:      #292524;
+  --phx-accent-fg:    #18181b;
+  --phx-text:         #fafafa;
+  --phx-text-2:       #a1a1aa;
+  --phx-border:       #3f3f46;
+  --phx-divider:      #27272a;
   --phx-success:      #4ade80;
   --phx-success-bg:   rgba(74,222,128,0.12);
   --phx-error:        #f87171;
   --phx-error-bg:     rgba(248,113,113,0.12);
   --phx-warning:      #fbbf24;
   --phx-warning-bg:   rgba(251,191,36,0.12);
-  --phx-info:         #a8a29e;
-  --phx-info-bg:      rgba(168,162,158,0.12);
+  --phx-info:         #a1a1aa;
+  --phx-info-bg:      rgba(161,161,170,0.12);
   --phx-shadow:       0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
   --phx-shadow-md:    0 4px 16px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.4);
   --phx-shadow-lg:    0 8px 32px rgba(0,0,0,0.6);
   --phx-grey-tint:    rgba(255,255,255,0.08);
   --phx-hover:        rgba(255,255,255,0.06);
-  --phx-purple:       #a8a29e;
-  --phx-purple-bg:    rgba(168,162,158,0.12);
-  --phx-agentcli-surface:  #37322d;
-  --phx-agentcli-titlebar: #2e2a25;
+  --phx-purple:       #a1a1aa;
+  --phx-purple-bg:    rgba(161,161,170,0.12);
+  --phx-agentcli-surface:  #323238;
+  --phx-agentcli-titlebar: #2b2b30;
   color-scheme: dark;
 }
 
@@ -558,7 +558,7 @@
 .input.error { border-color: var(--phx-error); }
 .field-error { font-size: 12px; color: var(--phx-error); }
 select.input {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2378716c' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 32px;
@@ -1171,7 +1171,7 @@ select.input {
   margin: 0 -20px;
   padding: 20px 20px 12px;
   border-bottom: 1px solid var(--phx-border);
-  box-shadow: 0 2px 8px rgba(120,80,0,0.07);
+  box-shadow: 0 2px 8px rgba(24,24,27,0.07);
 }
 .token-detail-body { padding-top: 16px; }
 @media (max-width: 900px) {
@@ -1684,15 +1684,74 @@ button.changes-row:hover { background: var(--phx-surface-2); }
    container and would grow past the viewport). Both panes give up their own
    max-height so the PAGE is the single scroller: with each pane scrolling
    internally, comparing side-by-side means dragging two boxes into alignment by
-   hand. They also disagreed, since ha-code-editor does not honour
-   --code-mirror-max-height, so the code view already ran full height while the
-   red/green diff stopped at 60vh. Covers stacked as well as side-by-side.
+   hand. They also disagreed: the code view ran full height while the
+   red/green diff stopped at 60vh, because the .yaml-editor class (and its
+   60vh cap) only reaches the element via YamlView's imperative setAttribute;
+   a JSX className lands on a custom element as the junk attribute
+   "classname". Covers stacked as well as side-by-side.
    .yaml-pre keeps overflow:auto for the x-axis (white-space: pre, long lines). */
 .change-detail-body .yaml-pre { max-height: none; }
 .change-detail-body .yaml-editor { --code-mirror-max-height: none; }
 .yaml-editor {
   display: block; border: 1px solid var(--phx-border); border-radius: var(--phx-radius-xs); overflow: hidden;
-  --code-mirror-max-height: 60vh; --code-mirror-background: var(--phx-surface-2);
+  --code-mirror-max-height: 60vh;
+  /* ha-code-editor styles itself from HA PAGE-level custom properties, and
+     custom properties inherit straight through this shadow tree, so with the
+     HA page theme dark and the panel light (or the reverse) the editor
+     followed HA instead of the panel. Same trap as the color-scheme pin on
+     :host, one level up: pin every var the element reads to panel tokens.
+     (--code-mirror-background is NOT one of them; only max-height/height in
+     the --code-mirror-* namespace are read.) */
+  --primary-text-color: var(--phx-text);
+  --secondary-text-color: var(--phx-text-2);
+  --code-editor-background-color: var(--phx-surface);
+  --card-background-color: var(--phx-surface);
+  --code-editor-gutter-color: var(--phx-surface-2);
+  --secondary-background-color: var(--phx-surface-2);
+  /* Syntax colors: HA's own light-editor palette (the defaults compiled into
+     ha-code-editor), so the code view stays the editor operators know from HA
+     itself. One deviation: comments render as --phx-text-2, because HA's own
+     comment greys sit under 4.5:1 on both of our surfaces. The dark palette
+     (HA's dark-theme set) is pinned in the two dark-scope rules below. */
+  --codemirror-keyword: #6262ff;
+  --codemirror-operator: #cda869;
+  --codemirror-variable: #07a;
+  --codemirror-atom: #f90;
+  --codemirror-number: #ca7841;
+  --codemirror-def: #8da6ce;
+  --codemirror-string: #07a;
+  --codemirror-property: #905;
+  --codemirror-qualifier: #690;
+  --codemirror-comment: var(--phx-text-2);
+  --codemirror-meta: var(--phx-text);
+}
+/* Dark-scope syntax palette; must use the same functional :host(:not(...))
+   form as the dark token blocks, for the reason documented there. */
+@media (prefers-color-scheme: dark) {
+  :host(:not(.phx-theme-light)) .yaml-editor {
+    --codemirror-keyword: #c792ea;
+    --codemirror-operator: #89ddff;
+    --codemirror-variable: #f07178;
+    --codemirror-atom: #f78c6c;
+    --codemirror-number: #ff5370;
+    --codemirror-def: #82aaff;
+    --codemirror-string: #c3e88d;
+    --codemirror-property: #c792ea;
+    --codemirror-qualifier: #decb6b;
+    --codemirror-meta: #ffcb6b;
+  }
+}
+:host(.phx-theme-dark) .yaml-editor {
+  --codemirror-keyword: #c792ea;
+  --codemirror-operator: #89ddff;
+  --codemirror-variable: #f07178;
+  --codemirror-atom: #f78c6c;
+  --codemirror-number: #ff5370;
+  --codemirror-def: #82aaff;
+  --codemirror-string: #c3e88d;
+  --codemirror-property: #c792ea;
+  --codemirror-qualifier: #decb6b;
+  --codemirror-meta: #ffcb6b;
 }
 /* Unlike the layout toggle this one stays available at every width: it changes
    how a pane renders, which a narrow viewport does not settle for you. */

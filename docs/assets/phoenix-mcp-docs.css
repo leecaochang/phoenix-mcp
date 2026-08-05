@@ -1,7 +1,7 @@
 /* ============================================================================
    Phoenix MCP documentation - stylesheet
-   "The Amber Workshop": warm amber on warm stone, built like an instrument manual.
-   Palette is the committed Phoenix MCP brand; type is Bricolage Grotesque
+   "The Quiet Panel": cool zinc neutrals with Signal Amber as the single warm
+   accent, matching the panel's design system. Type is Archivo Narrow
    (display) + Hanken Grotesk (body) + Roboto Mono (code).
    ========================================================================== */
 
@@ -10,51 +10,51 @@
    -------------------------------------------------------------------------- */
 :root {
   /* surfaces */
-  --bg:            #fdf6ec;
+  --bg:            #fafafa;
   --surface:       #ffffff;
-  --surface-2:     #faf7f2;
-  --surface-3:     #f4eede;
-  --sidebar-bg:    #fbf5ea;
+  --surface-2:     #f4f4f5;
+  --surface-3:     #e9e9eb;
+  --sidebar-bg:    #f7f7f8;
 
   /* ink */
-  --ink:           #1c1917;
-  --ink-2:         #57534e;   /* muted body text, 7:1 on cream */
-  --ink-3:         #78716c;   /* labels / decoration only */
+  --ink:           #18181b;
+  --ink-2:         #52525b;   /* muted body text, 7:1 on the page bg */
+  --ink-3:         #71717a;   /* labels / decoration only */
 
   /* amber accent */
   --accent:        #d97706;
-  --accent-deep:   #b45309;   /* inline links / text, 4.7:1 on cream */
-  --accent-hover:  #9a4a08;
-  --accent-tint:   #fef3c7;
+  --accent-deep:   #b45309;   /* inline links / text, 4.7:1 on the page bg */
+  --accent-hover:  #92400e;
+  --accent-tint:   #faf3e8;
   --accent-wash:   rgba(217, 119, 6, 0.08);
 
   /* lines */
-  --border:        #e7e5e4;
-  --border-strong: #d6d3d1;
-  --divider:       #f0ebe1;
+  --border:        #e4e4e7;
+  --border-strong: #d4d4d8;
+  --divider:       #ececee;
 
   /* signals */
   --success:       #15803d;  --success-bg: rgba(22, 163, 74, 0.12);
   --error:         #b91c1c;  --error-bg:   rgba(220, 38, 38, 0.10);
-  --info:          #1d4ed8;  --info-bg:    rgba(37, 99, 235, 0.09);
+  --info:          #52525b;  --info-bg:    rgba(113, 113, 122, 0.10);
   --warn:          #b45309;  --warn-bg:    rgba(217, 119, 6, 0.12);
 
   /* permission states (color is never the sole signal; labels always accompany) */
-  --st-grey:   #78716c;  --st-grey-bg:   rgba(120, 113, 108, 0.14);
+  --st-grey:   #71717a;  --st-grey-bg:   rgba(113, 113, 122, 0.14);
   --st-yellow: #a16207;  --st-yellow-bg: rgba(202, 138, 4, 0.16);
   --st-green:  #15803d;  --st-green-bg:  rgba(22, 163, 74, 0.14);
   --st-red:    #b91c1c;  --st-red-bg:    rgba(220, 38, 38, 0.12);
 
-  /* deep warm "oak" for the drenched hero */
-  --oak:         #2a1a0b;
-  --oak-2:       #3a2611;
-  --oak-ink:     #fdf3e3;
-  --oak-ink-2:   #d9c3a3;
+  /* deep zinc panel for the drenched hero */
+  --hero:         #131316;
+  --hero-2:       #232329;
+  --hero-ink:     #fafafa;
+  --hero-ink-2:   #a6a6b0;
 
   /* elevation - warm-tinted in light mode */
-  --shadow-sm: 0 1px 3px rgba(120, 80, 0, 0.08), 0 1px 2px rgba(120, 80, 0, 0.05);
-  --shadow-md: 0 6px 22px rgba(120, 80, 0, 0.10), 0 2px 6px rgba(120, 80, 0, 0.06);
-  --shadow-lg: 0 18px 50px rgba(90, 55, 0, 0.18);
+  --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.08), 0 1px 2px rgba(24, 24, 27, 0.05);
+  --shadow-md: 0 6px 22px rgba(24, 24, 27, 0.10), 0 2px 6px rgba(24, 24, 27, 0.06);
+  --shadow-lg: 0 18px 50px rgba(9, 9, 11, 0.18);
   --ring:      0 0 0 3px rgba(217, 119, 6, 0.30);
 
   /* geometry */
@@ -64,7 +64,7 @@
   --radius-lg: 20px;
 
   /* type */
-  --font-display: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+  --font-display: "Archivo Narrow", "Arial Narrow", "Hanken Grotesk", system-ui, sans-serif;
   --font-body:    "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono:    "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -95,15 +95,15 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg:            #1c1917;
-    --surface:       #292524;
-    --surface-2:     #211f1d;
-    --surface-3:     #322c25;
-    --sidebar-bg:    #211d19;
+    --bg:            #18181b;
+    --surface:       #27272a;
+    --surface-2:     #1e1e21;
+    --surface-3:     #2e2e33;
+    --sidebar-bg:    #1c1c1f;
 
-    --ink:           #fafaf9;
-    --ink-2:         #b3aaa1;
-    --ink-3:         #8a8279;
+    --ink:           #fafafa;
+    --ink-2:         #b0b0b8;
+    --ink-3:         #85858e;
 
     --accent:        #f59e0b;
     --accent-deep:   #fbbf24;
@@ -111,24 +111,24 @@
     --accent-tint:   #3d2806;
     --accent-wash:   rgba(245, 158, 11, 0.12);
 
-    --border:        #44403c;
-    --border-strong: #57534e;
-    --divider:       #312c27;
+    --border:        #3f3f46;
+    --border-strong: #52525b;
+    --divider:       #2c2c31;
 
     --success:       #4ade80;  --success-bg: rgba(74, 222, 128, 0.14);
     --error:         #f87171;  --error-bg:   rgba(248, 113, 113, 0.14);
-    --info:          #60a5fa;  --info-bg:    rgba(96, 165, 250, 0.14);
+    --info:          #a1a1aa;  --info-bg:    rgba(161, 161, 170, 0.14);
     --warn:          #fbbf24;  --warn-bg:    rgba(251, 191, 36, 0.14);
 
-    --st-grey:   #a8a29e;  --st-grey-bg:   rgba(168, 162, 158, 0.16);
+    --st-grey:   #a1a1aa;  --st-grey-bg:   rgba(161, 161, 170, 0.16);
     --st-yellow: #eab308;  --st-yellow-bg: rgba(234, 179, 8, 0.16);
     --st-green:  #4ade80;  --st-green-bg:  rgba(74, 222, 128, 0.15);
     --st-red:    #f87171;  --st-red-bg:    rgba(248, 113, 113, 0.15);
 
-    --oak:       #14100a;
-    --oak-2:     #221912;
-    --oak-ink:   #fdf3e3;
-    --oak-ink-2: #cdb89a;
+    --hero:       #101013;
+    --hero-2:     #1d1d21;
+    --hero-ink:   #fafafa;
+    --hero-ink-2: #9d9da6;
 
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 6px 22px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.4);
@@ -139,15 +139,15 @@
 
 /* dark - forced */
 :root[data-theme="dark"] {
-  --bg:            #1c1917;
-  --surface:       #292524;
-  --surface-2:     #211f1d;
-  --surface-3:     #322c25;
-  --sidebar-bg:    #211d19;
+  --bg:            #18181b;
+  --surface:       #27272a;
+  --surface-2:     #1e1e21;
+  --surface-3:     #2e2e33;
+  --sidebar-bg:    #1c1c1f;
 
-  --ink:           #fafaf9;
-  --ink-2:         #b3aaa1;
-  --ink-3:         #8a8279;
+  --ink:           #fafafa;
+  --ink-2:         #b0b0b8;
+  --ink-3:         #85858e;
 
   --accent:        #f59e0b;
   --accent-deep:   #fbbf24;
@@ -155,24 +155,24 @@
   --accent-tint:   #3d2806;
   --accent-wash:   rgba(245, 158, 11, 0.12);
 
-  --border:        #44403c;
-  --border-strong: #57534e;
-  --divider:       #312c27;
+  --border:        #3f3f46;
+  --border-strong: #52525b;
+  --divider:       #2c2c31;
 
   --success:       #4ade80;  --success-bg: rgba(74, 222, 128, 0.14);
   --error:         #f87171;  --error-bg:   rgba(248, 113, 113, 0.14);
-  --info:          #60a5fa;  --info-bg:    rgba(96, 165, 250, 0.14);
+  --info:          #a1a1aa;  --info-bg:    rgba(161, 161, 170, 0.14);
   --warn:          #fbbf24;  --warn-bg:    rgba(251, 191, 36, 0.14);
 
-  --st-grey:   #a8a29e;  --st-grey-bg:   rgba(168, 162, 158, 0.16);
+  --st-grey:   #a1a1aa;  --st-grey-bg:   rgba(161, 161, 170, 0.16);
   --st-yellow: #eab308;  --st-yellow-bg: rgba(234, 179, 8, 0.16);
   --st-green:  #4ade80;  --st-green-bg:  rgba(74, 222, 128, 0.15);
   --st-red:    #f87171;  --st-red-bg:    rgba(248, 113, 113, 0.15);
 
-  --oak:       #14100a;
-  --oak-2:     #221912;
-  --oak-ink:   #fdf3e3;
-  --oak-ink-2: #cdb89a;
+  --hero:       #101013;
+  --hero-2:     #1d1d21;
+  --hero-ink:   #fafafa;
+  --hero-ink-2: #9d9da6;
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 6px 22px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.4);
@@ -252,11 +252,11 @@ h1, h2, h3, h4 {
   line-height: 1.1;
   margin: 0;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.005em;
   text-wrap: balance;
 }
-h1 { font-size: var(--step-4); letter-spacing: -0.03em; }
-h2 { font-size: var(--step-3); letter-spacing: -0.025em; }
+h1 { font-size: var(--step-4); letter-spacing: -0.01em; }
+h2 { font-size: var(--step-3); letter-spacing: -0.01em; }
 h3 { font-size: var(--step-2); font-weight: 600; }
 h4 { font-size: var(--step-1); font-weight: 700; font-family: var(--font-body); letter-spacing: -0.01em; }
 
@@ -349,7 +349,7 @@ strong { font-weight: 700; color: var(--ink); }
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 1.12rem;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.005em;
   color: var(--ink);
   text-decoration: none;
 }
@@ -554,16 +554,16 @@ body[data-home] .content { max-width: 1120px; }
   position: relative;
   overflow: hidden;
   background:
-    radial-gradient(120% 120% at 85% -10%, var(--oak-2) 0%, var(--oak) 55%);
-  color: var(--oak-ink);
+    radial-gradient(120% 120% at 85% -10%, var(--hero-2) 0%, var(--hero) 55%);
+  color: var(--hero-ink);
   isolation: isolate;
 }
 .hero::before {
   content: "";
   position: absolute; inset: 0;
   background-image:
-    linear-gradient(color-mix(in srgb, var(--oak-ink) 7%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--oak-ink) 7%, transparent) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--hero-ink) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--hero-ink) 7%, transparent) 1px, transparent 1px);
   background-size: 30px 30px;
   -webkit-mask-image: radial-gradient(120% 90% at 80% 0%, #000 0%, transparent 70%);
   mask-image: radial-gradient(120% 90% at 80% 0%, #000 0%, transparent 70%);
@@ -581,14 +581,14 @@ body[data-home] .content { max-width: 1120px; }
 }
 .hero .eyebrow { color: var(--accent); }
 .hero h1 {
-  color: var(--oak-ink);
+  color: var(--hero-ink);
   font-size: var(--step-5);
-  letter-spacing: -0.035em;
+  letter-spacing: -0.015em;
   margin: 18px 0 0;
 }
 .hero h1 .amber { color: var(--accent); }
 .hero-lede {
-  color: var(--oak-ink-2);
+  color: var(--hero-ink-2);
   font-size: clamp(1.1rem, 1rem + 0.6vw, 1.4rem);
   line-height: 1.55;
   margin: 22px 0 0;
@@ -600,7 +600,7 @@ body[data-home] .content { max-width: 1120px; }
   display: flex; flex-wrap: wrap; gap: 8px 22px;
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  color: var(--oak-ink-2);
+  color: var(--hero-ink-2);
 }
 .hero-meta span { display: inline-flex; align-items: center; gap: 7px; }
 .hero-meta .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
@@ -632,11 +632,11 @@ body[data-home] .content { max-width: 1120px; }
 .btn-primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-sm); }
 .btn-primary:hover { background: var(--accent-hover); color: #fff; transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .btn-ghost {
-  background: color-mix(in srgb, var(--oak-ink) 8%, transparent);
-  color: var(--oak-ink);
-  border-color: color-mix(in srgb, var(--oak-ink) 22%, transparent);
+  background: color-mix(in srgb, var(--hero-ink) 8%, transparent);
+  color: var(--hero-ink);
+  border-color: color-mix(in srgb, var(--hero-ink) 22%, transparent);
 }
-.btn-ghost:hover { background: color-mix(in srgb, var(--oak-ink) 14%, transparent); color: var(--oak-ink); transform: translateY(-1px); }
+.btn-ghost:hover { background: color-mix(in srgb, var(--hero-ink) 14%, transparent); color: var(--hero-ink); transform: translateY(-1px); }
 .btn-outline {
   background: var(--surface);
   color: var(--accent-deep);
