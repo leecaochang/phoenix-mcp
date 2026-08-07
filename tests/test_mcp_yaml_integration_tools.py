@@ -135,6 +135,8 @@ class TestGetYamlConfigFileArg:
             "secrets.yaml",
             "SECRETS.YAML",
             "sub/secrets.yaml",
+            "esphome/device.yaml",
+            "ESPHOME/device.yaml",
             ".storage/core.entity_registry.yaml",
             "packages/.hidden/x.yaml",
             "notes.txt",
@@ -179,6 +181,17 @@ class TestGetYamlConfigFileArg:
             "get_yaml_config", {"file": "innocent.yaml"}, _token(), hass)
         assert outcome == "invalid_request"
         assert "hunter2" not in content["content"][0]["text"]
+
+    async def test_symlink_renaming_esphome_device_yaml_refused(self, hass):
+        import os
+        os.makedirs(hass.config.path("esphome"), exist_ok=True)
+        with open(hass.config.path("esphome/device.yaml"), "w", encoding="utf-8") as f:
+            f.write("wifi:\n  password: house-password\n")
+        os.symlink(hass.config.path("esphome/device.yaml"), hass.config.path("innocent.yaml"))
+        content, outcome, _ = await _call(
+            "get_yaml_config", {"file": "innocent.yaml"}, _token(), hass)
+        assert outcome == "invalid_request"
+        assert "house-password" not in content["content"][0]["text"]
 
     async def test_deny_applies_to_file_reads(self, hass):
         _, outcome, _ = await _call(

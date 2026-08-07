@@ -272,7 +272,8 @@ async def _execute_write_file(
 
 _YAML_READ_REFUSED = (
     "Only .yaml and .yml files inside the Home Assistant configuration directory can "
-    "be read; secrets.yaml and hidden directories are excluded."
+    "be read; secrets.yaml, the esphome directory, and hidden directories are excluded. "
+    "Use get_esphome_yaml for ESPHome device configuration."
 )
 
 
@@ -287,6 +288,8 @@ def _yaml_read_path_ok(rel: str) -> bool:
         return False
     if any(p.startswith(".") for p in parts):
         return False  # .storage, .cloud, and any other hidden directory
+    if parts[0].lower() == "esphome":
+        return False  # dedicated tool applies entity scope and credential masking
     name = parts[-1].lower()
     return name != yaml_includes.SECRETS_YAML and name.endswith((".yaml", ".yml"))
 

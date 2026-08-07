@@ -1856,7 +1856,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "key to return just that top-level or nested mapping key instead of the whole file. "
             "!include and !secret lines are returned as written, never resolved, so any INLINE "
             "secret is visible; keep secrets in secrets.yaml and reference them with !secret. "
-            "secrets.yaml itself and hidden directories cannot be read. content_hash is always the "
+            "secrets.yaml, hidden directories, and the esphome directory cannot be read. Use "
+            "get_esphome_yaml for ESPHome device files so credentials are masked and entity scope "
+            "is enforced. content_hash is always the "
             "hash of the WHOLE file, even when key is given; pass it to set_yaml_config as "
             "expected_hash to make a configuration.yaml write conditional on the file not having "
             "changed since this read."
@@ -1865,7 +1867,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "file": {"type": "string", "description": "Optional. Path relative to the configuration directory, e.g. 'automations.yaml' or 'packages/kitchen.yaml'. Defaults to configuration.yaml. Must be a .yaml or .yml file."},
+                "file": {"type": "string", "description": "Optional. Path relative to the configuration directory, e.g. 'automations.yaml' or 'packages/kitchen.yaml'. Defaults to configuration.yaml. Must be a .yaml or .yml file outside esphome/."},
                 "key": {"type": "string", "description": "Optional. Dotted path to one mapping key, e.g. 'http' or 'homeassistant.packages'. Returns just that fragment."},
             },
         },
