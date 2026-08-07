@@ -4,8 +4,8 @@
  * leaving the page. Lazy-loaded by inject/index.ts on first use; reuses the real
  * editor, validation, and admin API with no duplication.
  *
- * The host element is fixed and full-viewport (the shared .modal-backdrop is
- * position:absolute, so it needs a fixed container to overlay the whole page).
+ * The host element is fixed and full-viewport so the injected dialog stays
+ * independent of the native configuration page's layout and stacking context.
  */
 import { useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";

@@ -738,11 +738,10 @@ async def test_generated_entity_ids_match_the_documentation(hass, enable_custom_
     async def _fake_get_translations(language, category, integration):
         return _translations
 
-    # Patched AT the seam HA itself calls, not next to it: async_load_translations
-    # is what a real setup runs, and it is what populates the read-only
-    # platform_translations the naming path reads.
-    platform._async_get_translations = _fake_get_translations
-    await platform.async_load_translations()
+    # Patched AT the seam HA itself calls, not next to it: PlatformData now owns
+    # translation loading and the read-only dictionaries the naming path reads.
+    platform.platform_data._async_get_translations = _fake_get_translations
+    await platform.platform_data.async_load_translations()
 
     sensors = _make_sensors(token, data)
     await platform.async_add_entities(sensors)

@@ -52,6 +52,15 @@ function definedClasses(css: string): string[] {
 }
 
 describe("panel stylesheet", () => {
+  it("anchors modal backdrops to the viewport", () => {
+    expect(CSS).toMatch(/\.modal-backdrop\s*\{[^}]*position:\s*fixed;/s);
+  });
+
+  it("keeps short tab content painted through the viewport", () => {
+    expect(CSS).toMatch(/:host\s*\{[^}]*min-height:\s*100vh;[^}]*min-height:\s*100dvh;/s);
+    expect(CSS).toMatch(/\.phx-shell\s*\{[^}]*min-height:\s*100vh;[^}]*min-height:\s*100dvh;/s);
+  });
+
   it("never defines the same class in two separate blocks", () => {
     const seen = new Map<string, number>();
     for (const cls of definedClasses(CSS)) seen.set(cls, (seen.get(cls) ?? 0) + 1);

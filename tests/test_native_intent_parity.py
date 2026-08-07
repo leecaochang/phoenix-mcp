@@ -22,11 +22,12 @@ service-hint drift test works under, and it covers every intent Phoenix mirrors.
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
 import homeassistant
 import pytest
-from homeassistant.helpers import intent, llm
+from homeassistant.helpers import intent
 from homeassistant.setup import async_setup_component
 
 from custom_components.phoenix_mcp import const
@@ -54,10 +55,10 @@ _INTENT_COMPONENTS = (
     "timer",
 )
 
-# Intents the installed HA registers that Phoenix MCP does not publish as a tool,
-# each with the reason. HA's own IGNORE_INTENTS (read live below) is handled
-# separately and needs no entry here: those are intents HA itself withholds from
-# every LLM API, so mirroring that decision is not a Phoenix MCP choice.
+# Intents the installed HA registers and declares for an LLM platform that
+# Phoenix MCP does not publish as a tool, each with the reason. Intents absent
+# from HA's own LLM platform declarations are handled separately and need no
+# entry here: mirroring that decision is not a Phoenix MCP choice.
 NOT_PUBLISHED: dict[str, str] = {
     # HA exposes the timer family only when the voice device driving the request
     # supports timers. An MCP request carries no device context to make that
@@ -95,6 +96,20 @@ def _published_hass_tools() -> dict[str, str]:
             if tool_def["name"].startswith("Hass"):
                 tools[tool_def["name"]] = tool_def["description"]
     return tools
+
+
+def _ha_llm_intents() -> set[str]:
+    """Every intent the installed HA can expose through an LLM platform."""
+    published = {intent.INTENT_BROADCAST}
+    components_dir = Path(homeassistant.__file__).parent / "components"
+    for component in _INTENT_COMPONENTS:
+        if not (components_dir / component / "llm.py").is_file():
+            continue
+        module = importlib.import_module(f"homeassistant.components.{component}.llm")
+        for attr in ("LLM_INTENTS", "TIMER_INTENTS"):
+            published.update(getattr(module, attr, ()))
+    assert published, "HA LLM intent declarations look empty"
+    return published
 
 
 def _description_from_ha_source(relative_path: str, class_name: str) -> str:
@@ -165,14 +180,12 @@ async def test_source_verified_descriptions_match_ha_source():
 
 
 async def test_phoenix_publishes_nothing_ha_withholds_from_llm_apis(ha_intents):
-    # IGNORE_INTENTS is HA's own judgement about which intents are wrong to hand
-    # an LLM (deprecated cover verbs, conversation-flow no-ops like HassNevermind,
-    # reads that duplicate a state lookup). Publishing one should be a deliberate
-    # departure, not something that arrives by copying a list.
-    withheld = set(llm.AssistAPI.IGNORE_INTENTS)
-    assert withheld, "IGNORE_INTENTS is empty; HA may have moved it"
-    published = sorted(set(_published_hass_tools()) & withheld)
-    assert not published, f"publishing intents HA withholds from LLM APIs: {published}"
+    # HA 2026.8 moved intent publication from one AssistAPI ignore list to each
+    # integration's llm.py platform. Publishing outside those declarations
+    # should be a deliberate departure, not something that arrives by copying a
+    # registered intent.
+    outside_ha = sorted(set(_published_hass_tools()) - _ha_llm_intents())
+    assert not outside_ha, f"publishing intents HA withholds from LLM APIs: {outside_ha}"
 
 
 async def test_every_unpublished_ha_intent_has_a_written_reason(ha_intents):
@@ -180,11 +193,11 @@ async def test_every_unpublished_ha_intent_has_a_written_reason(ha_intents):
     # somebody decides whether Phoenix MCP should publish it. Without this, a new
     # actuator intent is simply never noticed.
     ours = set(_published_hass_tools())
-    withheld = set(llm.AssistAPI.IGNORE_INTENTS)
+    ha_llm_intents = _ha_llm_intents()
     untriaged = sorted(
         name
         for name in ha_intents
-        if name not in ours and name not in withheld and name not in NOT_PUBLISHED
+        if name in ha_llm_intents and name not in ours and name not in NOT_PUBLISHED
     )
     assert not untriaged, (
         "installed HA registers intents Phoenix MCP neither publishes nor explains; "

@@ -352,7 +352,7 @@ describe("AgentCliSettings dismissible warnings", () => {
     renderCard();
     await screen.findByLabelText("Change default model");
     expect(screen.queryByText(/no longer offers/)).toBeNull();
-    expect(screen.getByLabelText(/no longer offers gone:8b/)).toBeTruthy();
+    expect(await screen.findByLabelText(/no longer offers gone:8b/)).toBeTruthy();
   });
 
   it("a dismissal does not cover a warning about a different model", async () => {

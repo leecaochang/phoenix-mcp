@@ -60,6 +60,8 @@
 
   display: block;
   height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   touch-action: pan-y;
   background: var(--phx-bg);
@@ -180,6 +182,8 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
   background: var(--phx-bg);
 }
 
@@ -651,7 +655,7 @@ select.input {
    Modal
    ============================================================ */
 .modal-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.45);
   display: flex;
