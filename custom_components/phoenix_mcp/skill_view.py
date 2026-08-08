@@ -420,7 +420,10 @@ mode: single
 - Only rewrite a whole layout (`set_dashboard_config`) when you are genuinely
   restructuring it (new views, reordering, many cards at once). Storage-mode
   dashboards only; YAML-mode is rejected. Omit `url_path` for the default
-  dashboard.
+  dashboard. A full layout containing `<redacted>` is refused because writing a
+  lossy read back would overwrite the hidden entity reference; use the individual
+  card tools when that card contains no placeholders, or `patch_dashboard` for a
+  single value, when the read contains that placeholder.
 - A dashboard holds `views`, and each view holds `cards`. Pick the card that fits:
   `tile` and `entities` for control, `thermostat` for climate, `light` for a
   dimmer, `history-graph` or `sensor` for trends, `gauge` for a single value,

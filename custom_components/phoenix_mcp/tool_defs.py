@@ -2165,7 +2165,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "Lovelace config is not strictly validated, so a malformed layout is stored "
             "as-is. May require admin approval. Pass expected_hash (the content_hash from a "
             "prior get_dashboard_config) to make the write conditional: if the layout changed "
-            "since you read it, the write is refused instead of overwriting the other change."
+            "since you read it, the write is refused instead of overwriting the other change. "
+            "A config containing the \"<redacted>\" placeholder from a lossy dashboard read is "
+            "also refused; use patch_dashboard for one value or the individual card tools for "
+            "a card change whose payload contains no placeholders, so untouched configuration "
+            "is not resent."
         ),
         "cap": "cap_lovelace_write",
         "inputSchema": {

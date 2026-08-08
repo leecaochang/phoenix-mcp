@@ -19,10 +19,11 @@ from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.phoenix_mcp.tools import lovelace as lovelace_tools
+from custom_components.phoenix_mcp.const import REDACTION_SENTINEL
 from custom_components.phoenix_mcp.data import PhoenixData
 from custom_components.phoenix_mcp.helpers import content_hash
 from custom_components.phoenix_mcp.mcp_view import _call_tool, async_restore_version
+from custom_components.phoenix_mcp.tools import lovelace as lovelace_tools
 from custom_components.phoenix_mcp.tools.lovelace import (
     _build_diff_set_dashboard_config,
     _execute_set_dashboard_config,
@@ -125,6 +126,57 @@ class TestSetDashboardConfig:
         _, outcome, _ = await _call(
             "set_dashboard_config", {"config": "not-a-dict"}, _token(cap_lovelace_write="confirm"), h)
         assert outcome == "invalid_request"
+
+    async def test_redacted_read_cannot_be_written_back(self, hass, lovelace_env):
+        """The full-layout writer must not persist a lossy read's placeholder."""
+        h, light = lovelace_env
+        token = _token(tree=PermissionTree(domains={"light": PermissionNode(state="GREEN")}))
+        data, _versions = _data()
+        original = {
+            "views": [{"cards": [{"type": "entities", "entities": [light, "sensor.secret"]}]}]
+        }
+        await _call("set_dashboard_config", {"config": original}, token, h, data)
+        read = _json((await _call("get_dashboard_config", {}, token, h))[0])
+        assert REDACTION_SENTINEL in read["config"]["views"][0]["cards"][0]["entities"]
+
+        content, outcome, _ = await _call(
+            "set_dashboard_config",
+            {"config": read["config"], "expected_hash": read["content_hash"]},
+            token, h, data,
+        )
+
+        assert outcome == "invalid_request"
+        assert "views[0].cards[0].entities[1]" in content["content"][0]["text"]
+        assert "patch_dashboard" in content["content"][0]["text"]
+        assert "individual card tools" in content["content"][0]["text"]
+        assert await async_get_lovelace_config(h, None) == original
+
+    async def test_redaction_guard_runs_before_confirm_gate(self, hass, lovelace_env):
+        """A lossy payload must fail instead of creating a doomed approval."""
+        h, _light = lovelace_env
+        config = {"views": [{"cards": [{"entity": REDACTION_SENTINEL}]}]}
+        with patch.object(lovelace_tools, "_gate", new=AsyncMock()) as gate:
+            _, outcome, _ = await _call(
+                "set_dashboard_config", {"config": config},
+                _token(cap_lovelace_write="confirm"), h,
+            )
+        assert outcome == "invalid_request"
+        gate.assert_not_awaited()
+
+    async def test_executor_rechecks_redaction_guard(self, hass, lovelace_env):
+        """Approval-time execution must reject a sentinel introduced after gating."""
+        h, _light = lovelace_env
+        token = _token()
+        data, _versions = _data()
+        original = {"views": [{"title": "A"}]}
+        await _call("set_dashboard_config", {"config": original}, token, h, data)
+
+        _, outcome, _ = await _execute_set_dashboard_config(
+            {"config": {"views": [{"title": REDACTION_SENTINEL}]}}, token, h, data,
+        )
+
+        assert outcome == "invalid_request"
+        assert await async_get_lovelace_config(h, None) == original
 
     async def test_second_set_is_an_edit(self, hass, lovelace_env):
         h, _light = lovelace_env

@@ -371,11 +371,27 @@ async def _build_diff_set_dashboard_config(args: dict, token: TokenRecord, hass:
 def _dashboard_write_precheck(args: dict, tool_name: str) -> tuple[dict, str, str] | None:
     """Pre-gate validation for dashboard writes; None means OK to proceed.
 
-    Checks config is an object so a doomed request is rejected before a
-    pending approval is created. The executor re-validates at apply time.
+    Checks config is an object and refuses a lossy read's redaction placeholder
+    so a doomed or destructive request is rejected before a pending approval is
+    created. The executor re-validates both at apply time.
     """
-    if not isinstance(args.get("config"), dict):
+    config = args.get("config")
+    if not isinstance(config, dict):
         return _tool_error("config must be an object."), "invalid_request", tool_name
+    offender = redaction_sentinel_path(config)
+    if offender is not None:
+        where = _patch_path_label(offender) if offender else "config"
+        return (
+            _tool_error(
+                f"config contains the redaction placeholder {REDACTION_SENTINEL!r} at {where}. "
+                "get_dashboard_config substitutes that placeholder for an entity this token "
+                "cannot resolve, so writing the full layout back would replace real "
+                "configuration with it. Use patch_dashboard for a single value, or the "
+                "individual card tools for a card change whose payload contains no "
+                "redaction placeholders."
+            ),
+            "invalid_request", tool_name,
+        )
     return None
 
 
@@ -417,9 +433,10 @@ async def _tool_set_dashboard_config(
 async def _execute_set_dashboard_config(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
-    config = args.get("config")
-    if not isinstance(config, dict):
-        return _tool_error("config must be an object."), "invalid_request", "set_dashboard_config"
+    pre = _dashboard_write_precheck(args, "set_dashboard_config")
+    if pre is not None:
+        return pre
+    config = dict_arg(args.get("config"))
     url_path = str(args.get("url_path") or "").strip() or None
     resource_id = url_path or "lovelace"
     try:
