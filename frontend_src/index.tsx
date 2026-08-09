@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TokenRecord, GlobalSettings, AgentCliInstance } from "./types";
-import { AgentCliWindow } from "./components/AgentCliWindow";
+import { AgentCliWindow, focusAgentCliPopup } from "./components/AgentCliWindow";
 import { subscribeApprovalEvents } from "./utils/approval_events";
 import {
   agentCliOpenPatch,
@@ -237,6 +237,9 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
   // remount that re-reads the centered geometry.
   const openAgentCli = useCallback((tokenId?: string, preservePosition = false) => {
     if (settings?.kill_switch) return;
+    // The panel-local fallback can also be popped out. Keep its live React tree
+    // intact and use this direct button gesture to request popup focus.
+    if (tokenId === undefined && focusAgentCliPopup()) return;
     const d = getAgentCliDurable();
     patchAgentCliDurable(agentCliOpenPatch(
       d,

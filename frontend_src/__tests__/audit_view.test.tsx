@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { render, fireEvent, waitFor, within } from "@testing-library/react";
 import { AuditView } from "../views/AuditView";
 import { api } from "../api";
 import type { AuditEntry } from "../types";
@@ -86,6 +86,45 @@ describe("AuditView", () => {
     vi.advanceTimersByTime(300);
     await vi.waitFor(() =>
       expect(api.getAudit).toHaveBeenLastCalledWith(expect.objectContaining({ method: "cre" })),
+    );
+    vi.useRealTimers();
+  });
+
+  it("labels the column as Source and presents internal surfaces by friendly names", async () => {
+    vi.mocked(api.getAudit).mockResolvedValue({
+      entries: [
+        entry({ request_id: "r1", client_ip: "agentcli" }),
+        entry({ request_id: "r2", client_ip: "assist" }),
+        entry({ request_id: "r3", client_ip: "voice" }),
+        entry({ request_id: "r4", client_ip: "ai_task" }),
+      ],
+      total: 4,
+    });
+
+    const { findByText, getByRole, getByText } = render(<AuditView tokens={[]} />);
+    await findByText("Agent Chat");
+
+    expect(getByRole("columnheader", { name: /Source/ })).toBeTruthy();
+    expect(getByText("Assist Tool Provider")).toBeTruthy();
+    expect(getByText("Voice Agent")).toBeTruthy();
+    expect(getByText("AI Task")).toBeTruthy();
+    fireEvent.click(getByText("Agent Chat"));
+    expect(within(getByRole("dialog")).getByText("Source")).toBeTruthy();
+    expect(within(getByRole("dialog")).getByText("Agent Chat")).toBeTruthy();
+    expect(within(getByRole("dialog")).queryByText("agentcli")).toBeNull();
+  });
+
+  it("filters a friendly Agent Chat source name using the stored marker", async () => {
+    vi.useFakeTimers();
+    vi.mocked(api.getAudit).mockResolvedValue({ entries: [], total: 0 });
+    const { getByLabelText } = render(<AuditView tokens={[]} />);
+    await vi.waitFor(() => expect(api.getAudit).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(getByLabelText("Filter by source"), { target: { value: "Agent Chat" } });
+    vi.advanceTimersByTime(300);
+
+    await vi.waitFor(() =>
+      expect(api.getAudit).toHaveBeenLastCalledWith(expect.objectContaining({ ip: "agentcli" })),
     );
     vi.useRealTimers();
   });

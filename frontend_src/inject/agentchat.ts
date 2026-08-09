@@ -46,6 +46,10 @@ async function open(tokenId?: string): Promise<void> {
 }
 
 async function summon(tokenId?: string): Promise<void> {
+  // If the mounted chat lives in its popup, this button press is the browser
+  // user gesture that can bring that window forward. Do it synchronously before
+  // any async import boundary or durable geometry update consumes the gesture.
+  if (tokenId === undefined && winMod?.focusAgentChatPopup()) return;
   const durable = getAgentCliDurable();
   patchAgentCliDurable(agentCliOpenPatch(durable, tokenId, {
     w: window.innerWidth,

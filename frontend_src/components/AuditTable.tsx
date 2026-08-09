@@ -4,6 +4,7 @@ import { Modal } from "./Modal";
 import { YamlView, toYaml } from "./YamlView";
 import { friendlyResource } from "../utils";
 import { localeDateTime, localeDateTimeShort, t } from "../i18n";
+import { auditSourceLabel, isNamedAuditSource } from "../utils/audit_source";
 
 interface Props {
   entries: AuditEntry[];
@@ -94,7 +95,11 @@ function EntryDetailModal({ entry, tokenName, onClose }: { entry: AuditEntry; to
       <DetailRow label={t("audit.rowResource")} value={friendlyResource(entry.resource)} mono />
       <DetailRow label={t("audit.rowOutcome")} value={outcomeLabel(entry.outcome)} />
       {entry.mesa_advisory && <DetailRow label={t("audit.rowMesa")} value={t("audit.mesaAdvisory")} />}
-      <DetailRow label={t("audit.rowIp")} value={entry.client_ip} mono />
+      <DetailRow
+        label={t("audit.rowIp")}
+        value={auditSourceLabel(entry.client_ip)}
+        mono={!isNamedAuditSource(entry.client_ip)}
+      />
       <DetailRow label={t("audit.rowRequestId")} value={entry.request_id} mono />
       {prettyPayload && (
         <div className="audit-payload-section">
@@ -137,8 +142,12 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
   }
 
   const sorted = [...entries].sort((a, b) => {
-    const va = sortKey === "token_name" ? displayName(a) : (a[sortKey] ?? "");
-    const vb = sortKey === "token_name" ? displayName(b) : (b[sortKey] ?? "");
+    const va = sortKey === "token_name"
+      ? displayName(a)
+      : sortKey === "client_ip" ? auditSourceLabel(a.client_ip) : (a[sortKey] ?? "");
+    const vb = sortKey === "token_name"
+      ? displayName(b)
+      : sortKey === "client_ip" ? auditSourceLabel(b.client_ip) : (b[sortKey] ?? "");
     if (va < vb) return sortDir === "asc" ? -1 : 1;
     if (va > vb) return sortDir === "asc" ? 1 : -1;
     return 0;
@@ -168,7 +177,7 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
             {th(t("audit.rowTime"), "timestamp")}
             {th(t("audit.rowMethod"), "method")}
             {th(t("audit.rowResource"), "resource")}
-            {th("IP", "client_ip")}
+            {th(t("audit.rowIp"), "client_ip")}
           </tr>
         </thead>
         <tbody>
@@ -209,7 +218,12 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
               </td>
               <td className="audit-cell-method">{entry.method}</td>
               <td className="audit-cell-resource" title={friendlyResource(entry.resource)}>{friendlyResource(entry.resource)}</td>
-              <td className="audit-cell-ip" title={entry.client_ip}>{entry.client_ip}</td>
+              <td
+                className={`audit-cell-source${isNamedAuditSource(entry.client_ip) ? " audit-source-name" : ""}`}
+                title={auditSourceLabel(entry.client_ip)}
+              >
+                {auditSourceLabel(entry.client_ip)}
+              </td>
             </tr>
           ))}
         </tbody>

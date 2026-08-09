@@ -639,7 +639,7 @@
       "rowOutcome": "Outcome",
       "rowMesa": "MESA",
       "mesaAdvisory": "Advisory: proceeded with a warning (would require approval if enforced)",
-      "rowIp": "IP",
+      "rowIp": "Source",
       "rowRequestId": "Request ID",
       "rowPayload": "Payload",
       "empty": "No audit entries found.",
@@ -658,8 +658,8 @@
       "methodPlaceholder": "Method...",
       "filterResourceAria": "Filter by resource",
       "resourcePlaceholder": "Resource...",
-      "filterIpAria": "Filter by IP address",
-      "ipPlaceholder": "IP...",
+      "filterIpAria": "Filter by source",
+      "ipPlaceholder": "Source...",
       "refreshAria": "Refresh audit log"
     },
     "wizard": {

@@ -332,6 +332,30 @@ interface AgentCliHass {
 
 const POPUP_WINDOW_NAME = "phoenix-mcp-agent-chat";
 const POPUP_MOUNT_ID = "phx-agentchat-popout-root";
+let activePopupWindow: Window | null = null;
+
+/** Bring the live Agent Chat popup forward without remounting its React tree.
+ * Browsers may decline focus-stealing requests, but a direct button gesture is
+ * the context in which this request has the best chance of being honored. */
+export function focusAgentCliPopup(): boolean {
+  const popup = activePopupWindow;
+  if (!popup) return false;
+  try {
+    if (popup.closed) {
+      activePopupWindow = null;
+      return false;
+    }
+    popup.focus();
+  } catch {
+    // Keep the live popup mounted if browser policy refuses the focus request.
+  }
+  return true;
+}
+
+function forgetAgentCliPopup(popup: Window | null): void {
+  if (activePopupWindow === popup) activePopupWindow = null;
+}
+
 // The panel stylesheet is authored for a shadow host. A same-origin popup has
 // no shadow host, so translate those selectors to the document root while
 // preserving the exact same tokens and component rules.
@@ -636,11 +660,47 @@ export function AgentCliWindow({
     }
   }, [tokens, tokenId]);
 
-  // Autoscroll on new content.
-  useEffect(() => {
+  const scrollToLatest = useCallback(() => {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, live, minimized]);
+  }, []);
+
+  // Keep the newest message visible after both content changes and geometry
+  // changes. The second write runs after layout because browsers can reset a
+  // scroller while resizing it or moving it between the panel and popup DOMs.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    scrollToLatest();
+    const ownerWindow = el.ownerDocument.defaultView ?? window;
+    const frame = ownerWindow.requestAnimationFrame(scrollToLatest);
+    return () => ownerWindow.cancelAnimationFrame(frame);
+  }, [turns, live, mode, size, popupMount, scrollToLatest]);
+
+  // Native viewport and popup resizes do not necessarily change React state,
+  // so keep a listener on both browser windows as well.
+  useEffect(() => {
+    const popup = popupRef.current;
+    let frameWindow: Window | null = null;
+    let frame: number | null = null;
+    const handleResize = () => {
+      const ownerWindow = bodyRef.current?.ownerDocument.defaultView ?? window;
+      if (frame !== null) frameWindow?.cancelAnimationFrame(frame);
+      frameWindow = ownerWindow;
+      frame = ownerWindow.requestAnimationFrame(() => {
+        frame = null;
+        frameWindow = null;
+        scrollToLatest();
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    popup?.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      popup?.removeEventListener("resize", handleResize);
+      if (frame !== null) frameWindow?.cancelAnimationFrame(frame);
+    };
+  }, [popupMount, scrollToLatest]);
 
   const displayed = useMemo(() => [...turns.flatMap((turn) => turn.entries), ...live], [turns, live]);
 
@@ -674,7 +734,9 @@ export function AgentCliWindow({
     abortRef.current?.abort();
     abortRef.current = null;
     closingPopupRef.current = true;
-    popupRef.current?.close();
+    const popup = popupRef.current;
+    forgetAgentCliPopup(popup);
+    popup?.close();
     popupRef.current = null;
   }, []);
 
@@ -689,6 +751,7 @@ export function AgentCliWindow({
     const syncTheme = () => applyPopupTheme(popup, currentHass());
     const handlePopupClosed = () => {
       if (closingPopupRef.current) return;
+      forgetAgentCliPopup(popup);
       popupRef.current = null;
       handleClose();
     };
@@ -1219,6 +1282,7 @@ export function AgentCliWindow({
   const popIn = useCallback(() => {
     const popup = popupRef.current;
     closingPopupRef.current = true;
+    forgetAgentCliPopup(popup);
     popupRef.current = null;
     setPopupMount(null);
     setPopOutError("");
@@ -1284,6 +1348,7 @@ export function AgentCliWindow({
     doc.body.replaceChildren(mount);
 
     closingPopupRef.current = false;
+    activePopupWindow = popup;
     popupRef.current = popup;
     applyPopupTheme(popup, currentHass());
     setMode("normal");

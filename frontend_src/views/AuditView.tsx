@@ -4,6 +4,7 @@ import { api } from "../api";
 import { AuditTable } from "../components/AuditTable";
 import { RefreshIcon } from "../index";
 import { t } from "../i18n";
+import { auditSourceFilterValue } from "../utils/audit_source";
 
 interface Props {
   tokens: TokenRecord[];
@@ -60,7 +61,7 @@ export function AuditView({ tokens }: Props) {
     since: timeWindow ? new Date(Date.now() - TIME_WINDOW_MS[timeWindow]).toISOString() : undefined,
     method: debouncedMethod || undefined,
     resource: debouncedResource || undefined,
-    ip: debouncedIp || undefined,
+    ip: debouncedIp ? auditSourceFilterValue(debouncedIp) : undefined,
   }), [outcomeFilter, tokenFilter, timeWindow, debouncedMethod, debouncedResource, debouncedIp]);
 
   const load = useCallback(async (offset: number) => {
@@ -136,10 +137,10 @@ export function AuditView({ tokens }: Props) {
             value={resourceFilter}
             onChange={(e) => setResourceFilter(e.target.value)}
           />
-          {/* Grouped so mobile can put IP and Refresh on one row together
-              (see .audit-ip-row) instead of Refresh wrapping off on its own
+          {/* Grouped so mobile can put Source and Refresh on one row together
+              (see .audit-source-row) instead of Refresh wrapping off on its own
               below every other filter. */}
-          <div className="audit-ip-row">
+          <div className="audit-source-row">
             <input
               className="input"
               aria-label={t("audit.filterIpAria")}

@@ -978,15 +978,15 @@ select.input {
 .filter-row .input:not(.input-auto) { flex: 1 1 0; min-width: 80px; width: auto; }
 .filter-row .input-auto { flex: 0 0 auto; }
 .filter-row-right { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-/* Audit filters: IP input + its Refresh button, grouped as one flex item so
+/* Audit filters: Source input + its Refresh button, grouped as one flex item so
    they can be forced onto a shared row on mobile (see the 600px block)
    instead of Refresh wrapping onto its own row below every other filter. */
-.audit-ip-row { display: flex; gap: 8px; flex: 1 1 0; min-width: 80px; }
-.audit-ip-row .input { flex: 1 1 0; min-width: 0; }
+.audit-source-row { display: flex; gap: 8px; flex: 1 1 0; min-width: 80px; }
+.audit-source-row .input { flex: 1 1 0; min-width: 0; }
 /* Placed after the base rule above (not in the earlier shared 600px block)
    so this equal-specificity flex-basis override actually wins the cascade
    tie on source order, the same bug already hit once this session. */
-@media (max-width: 600px) { .audit-ip-row { flex-basis: 100%; } }
+@media (max-width: 600px) { .audit-source-row { flex-basis: 100%; } }
 
 /* ============================================================
    Section header
@@ -1112,7 +1112,8 @@ select.input {
 .audit-cell-reqid    { font-family: monospace; font-size: 11px; color: var(--phx-text-2); }
 .audit-cell-method   { font-family: monospace; font-size: 12px; }
 .audit-cell-resource { font-family: monospace; font-size: 12px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.audit-cell-ip       { font-family: monospace; font-size: 12px; }
+.audit-cell-source   { font-family: monospace; font-size: 12px; }
+.audit-cell-source.audit-source-name { font-family: inherit; }
 
 /* ============================================================
    Token list

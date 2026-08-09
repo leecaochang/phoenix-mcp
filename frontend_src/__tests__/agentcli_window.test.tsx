@@ -27,9 +27,10 @@ import {
   clampPosToViewport,
   resolveAgentCliTopMargin,
   fmtTokens,
+  focusAgentCliPopup,
   type Turn,
 } from "../components/AgentCliWindow";
-import { getDurable, patchDurable, __resetAgentCliState } from "../utils/agentcli_state";
+import { getDurable, patchDurable, setSessionTurns, __resetAgentCliState } from "../utils/agentcli_state";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
 import type { AgentCliInstance, TokenRecord } from "../types";
 import { setFormatLocale } from "../i18n";
@@ -170,6 +171,85 @@ describe("agentCLI pill remembers its own position", () => {
     expect(dialog().style.left).toBe("260px");
     expect(dialog().style.top).toBe("120px");
     expect(dialog().style.width).toBe("440px");
+  });
+});
+
+describe("AgentCliWindow latest-message scrolling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+  });
+
+  it("returns to the bottom after restore, resize, pop-out, and pop-in", async () => {
+    const scrollHeight = 1200;
+    setSessionTurns([{
+      entries: Array.from({ length: 30 }, (_, index) => ({
+        kind: "assistant",
+        text: `Reply ${index}`,
+        thinking: "",
+      })),
+      messages: [],
+      lines: 30,
+    }]);
+    patchDurable({
+      open: true,
+      minimized: true,
+      pos: { x: 8, y: 8 },
+      size: { w: 440, h: 560 },
+      pillPos: { x: 400, y: 300 },
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("agentcli-body") ? scrollHeight : 0;
+    });
+    const { popup, iframe } = createPopupWindow();
+    const PopupHTMLElement = (popup as Window & { HTMLElement: typeof HTMLElement }).HTMLElement;
+    vi.spyOn(PopupHTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("agentcli-body") ? scrollHeight : 0;
+    });
+    vi.spyOn(window, "open").mockReturnValue(popup);
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
+    const inAppBody = dialog.querySelector<HTMLElement>(".agentcli-body");
+    if (!inAppBody) throw new Error("Agent Chat transcript not found");
+    await waitFor(() => expect(inAppBody.scrollTop).toBe(scrollHeight));
+
+    inAppBody.scrollTop = 0;
+    const resizeHandle = dialog.querySelector<HTMLElement>(".agentcli-resize-se");
+    if (!resizeHandle) throw new Error("Agent Chat resize handle not found");
+    fireEvent.pointerDown(resizeHandle, { clientX: 400, clientY: 500 });
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 520 });
+    fireEvent.pointerUp(window);
+    await waitFor(() => expect(inAppBody.scrollTop).toBe(scrollHeight));
+
+    inAppBody.scrollTop = 0;
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(inAppBody.scrollTop).toBe(scrollHeight));
+
+    inAppBody.scrollTop = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Pop out to a separate window" }));
+    const popupUi = within(popup.document.body);
+    const popupBody = popupUi.getByRole("dialog", { name: "Agent Chat" })
+      .querySelector<HTMLElement>(".agentcli-body");
+    if (!popupBody) throw new Error("Popped-out Agent Chat transcript not found");
+    await waitFor(() => expect(popupBody.scrollTop).toBe(scrollHeight));
+
+    popupBody.scrollTop = 0;
+    fireEvent.click(popupUi.getByRole("button", { name: "Pop back into Home Assistant" }));
+    const restoredBody = await waitFor(() => {
+      const body = screen.getByRole("dialog", { name: "Agent Chat" })
+        .querySelector<HTMLElement>(".agentcli-body");
+      expect(body).not.toBeNull();
+      return body as HTMLElement;
+    });
+    await waitFor(() => expect(restoredBody.scrollTop).toBe(scrollHeight));
+    iframe.remove();
   });
 });
 
@@ -524,9 +604,13 @@ describe("AgentCliWindow pop-out", () => {
     expect(popupUi.queryByRole("button", { name: "Minimize" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "Agent Chat" })).toBeNull();
 
+    expect(focusAgentCliPopup()).toBe(true);
+    expect(popup.focus).toHaveBeenCalledTimes(2);
+
     fireEvent.click(popInButton);
     await waitFor(() => expect(screen.getByRole("dialog", { name: "Agent Chat" })).toBeVisible());
     expect(close).toHaveBeenCalledOnce();
+    expect(focusAgentCliPopup()).toBe(false);
     iframe.remove();
   });
 

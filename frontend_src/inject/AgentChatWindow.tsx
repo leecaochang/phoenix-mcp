@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { api, setHass } from "../api";
 import { loadTranslations, resolveLanguage, syncTranslations } from "../i18n";
-import { AgentCliWindow } from "../components/AgentCliWindow";
+import { AgentCliWindow, focusAgentCliPopup } from "../components/AgentCliWindow";
 import type { AgentCliInstance, TokenRecord } from "../types";
 import { JS_BUILD } from "../version";
 import { patchDurable as patchAgentCliDurable } from "../utils/agentcli_state";
@@ -111,6 +111,10 @@ function paintAgentChat(): void {
 
 export function isAgentChatVisible(): boolean {
   return host !== null;
+}
+
+export function focusAgentChatPopup(): boolean {
+  return focusAgentCliPopup();
 }
 
 // Same resolution order as PhoenixPanelElement._applyThemeClass: the panel's
