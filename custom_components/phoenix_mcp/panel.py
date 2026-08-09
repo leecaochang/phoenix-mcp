@@ -35,8 +35,8 @@ _INJECT_REGISTERED_URL_KEY = "phoenix_mcp_inject_registered_url"
 
 # Optional global Agent Chat window (agentcli_global). Same extra-module mechanism
 # as the MESA injector: loaded on every HA page so the chat window can float over
-# the whole HA UI. It is still opened only from the Phoenix MCP panel button, and it
-# self-disables (falling back to the panel-only window) when injection is not
+# the whole HA UI and its Shift+A shortcut works there. It self-disables (falling
+# back to the panel-only window) when injection is not
 # supported. Independent of the kill switch here; the panel gates showing it.
 _AGENTCHAT_JS_FILE = _FRONTEND_DIR / "phoenix-mcp-agentchat.js"
 _AGENTCHAT_JS_URL = f"{_PANEL_URL}/phoenix-mcp-agentchat.js"

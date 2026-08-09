@@ -222,7 +222,10 @@ describe("adoption through the translation lifecycle", () => {
     // The formatting locale is read off hass, not off the catalog, so a failed
     // request must not leave every timestamp in the browser's convention.
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("nope")));
-    const hass = { locale: { language: "zh-Hans" } };
+    const hass = {
+      locale: { language: "zh-Hans" },
+      auth: { data: { access_token: "tok-test" } },
+    };
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     return loadTranslations(hass, "zh-Hans").then(() => {
       expect(getFormatLocale()).toBe("zh-Hans");
@@ -239,6 +242,7 @@ describe("adoption through the translation lifecycle", () => {
     const hass = (timeFormat: string) => ({
       language: "en",
       locale: { language: "en", time_format: timeFormat },
+      auth: { data: { access_token: "tok-test" } },
     });
     await loadTranslations(hass("24"), "en");
     // Same language, so no refetch happens; the switch to 12-hour still has to

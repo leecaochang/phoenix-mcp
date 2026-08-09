@@ -14,7 +14,7 @@ import {
   getSessionTurns, setSessionTurns,
   getSessionDraft, setSessionDraft,
   getSessionUsage, setSessionUsage,
-  getDurable, patchDurable,
+  agentCliOpenPatch, getDurable, patchDurable,
   __resetAgentCliState, __reloadFromStorage,
 } from "../utils/agentcli_state";
 
@@ -55,6 +55,39 @@ describe("conversation survives a reload", () => {
     expect(getSessionTurns()).toEqual([]);
     expect(getDurable().size).toEqual({ w: 700, h: 500 });
     expect(getDurable().tokenId).toBe("t1");
+  });
+});
+
+describe("Agent Chat open geometry", () => {
+  it("preserves the last dragged position for a shortcut reopen", () => {
+    patchDurable({
+      open: false,
+      minimized: true,
+      pos: { x: 137, y: 246 },
+      size: { w: 620, h: 480 },
+    });
+
+    patchDurable(agentCliOpenPatch(getDurable()));
+
+    expect(getDurable()).toMatchObject({
+      open: true,
+      minimized: false,
+      pos: { x: 137, y: 246 },
+      size: { w: 620, h: 480 },
+    });
+  });
+
+  it("centers a button-driven summon in the supplied viewport", () => {
+    patchDurable({ pos: { x: 137, y: 246 }, size: { w: 620, h: 480 } });
+
+    patchDurable(agentCliOpenPatch(getDurable(), "token-2", { w: 1200, h: 900 }));
+
+    expect(getDurable()).toMatchObject({
+      open: true,
+      minimized: false,
+      pos: { x: 290, y: 210 },
+      tokenId: "token-2",
+    });
   });
 });
 

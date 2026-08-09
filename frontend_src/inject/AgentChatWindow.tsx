@@ -26,7 +26,13 @@ interface BootData {
   scrollback: number;
 }
 
-function Boot({ tokenId, onClose }: { tokenId: string; onClose: () => void }) {
+function Boot({
+  tokenId, onClose, summonVersion,
+}: {
+  tokenId: string;
+  onClose: () => void;
+  summonVersion: number;
+}) {
   const [data, setData] = useState<BootData | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -35,6 +41,10 @@ function Boot({ tokenId, onClose }: { tokenId: string; onClose: () => void }) {
     Promise.all([api.listTokens(), api.getAgentCliProviders(), api.getSettings()])
       .then(([tokens, prov, settings]) => {
         if (cancelled) return;
+        if (settings.kill_switch) {
+          onClose();
+          return;
+        }
         setData({ tokens, instances: prov.instances, scrollback: settings.agentcli_scrollback_lines });
       })
       .catch(() => { if (!cancelled) onClose(); });  // can't load (e.g. kill switch) -> close
@@ -75,6 +85,9 @@ function Boot({ tokenId, onClose }: { tokenId: string; onClose: () => void }) {
       scrollbackLines={data.scrollback}
       initialTokenId={tokenId || data.tokens[0]?.id || ""}
       onClose={onClose}
+      hass={getHass()}
+      getHass={getHass}
+      summonVersion={summonVersion}
     />
   );
 }
@@ -83,6 +96,22 @@ let host: HTMLDivElement | null = null;
 let reloadStrings: (() => void) | null = null;
 let root: Root | null = null;
 let themeObserver: MutationObserver | null = null;
+let activeTokenId = "";
+let summonVersion = 0;
+
+function paintAgentChat(): void {
+  root?.render(
+    <Boot
+      tokenId={activeTokenId}
+      onClose={hideAgentChat}
+      summonVersion={summonVersion}
+    />,
+  );
+}
+
+export function isAgentChatVisible(): boolean {
+  return host !== null;
+}
 
 // Same resolution order as PhoenixPanelElement._applyThemeClass: the panel's
 // Light/Dark/Auto setting (persisted to localStorage, readable from any HA
@@ -148,22 +177,30 @@ export function hideAgentChat(): void {
   root = null;
   host?.remove();
   host = null;
+  activeTokenId = "";
+  summonVersion = 0;
 }
 
 export function showAgentChat(tokenId?: string): void {
-  if (host) return;  // already open
+  if (tokenId !== undefined) activeTokenId = tokenId;
+  if (host) {
+    // Keep the mounted chat and its live conversation intact. A fresh render of
+    // the same Boot tree only changes this signal; AgentCliWindow uses it to
+    // unfold a visible minimized pill without restarting an in-flight turn.
+    summonVersion += 1;
+    paintAgentChat();
+    return;
+  }
   const hass = getHass();
   setHass(hass);
-  const paint = () =>
-    root?.render(<Boot tokenId={tokenId ?? ""} onClose={hideAgentChat} />);
   // This bundle loads on any HA page, so it fetches its own catalog. The window
   // opens right away and repaints a round trip later with the strings in place;
-  // paint() no-ops if it was closed before then.
-  void loadTranslations(hass, resolveLanguage(hass)).then(paint);
+  // paintAgentChat() no-ops if it was closed before then.
+  void loadTranslations(hass, resolveLanguage(hass)).then(paintAgentChat);
   // The panel's language dropdown lives in a different element and can be used
   // while this window is open, so re-fetch on its event the same way the theme
   // is re-resolved below.
-  reloadStrings = () => void loadTranslations(getHass(), resolveLanguage(getHass())).then(paint);
+  reloadStrings = () => void loadTranslations(getHass(), resolveLanguage(getHass())).then(paintAgentChat);
   window.addEventListener("phx-language-changed", reloadStrings);
   host = document.createElement("div");
   // Fixed, full-viewport, but click-through and transparent: only the window
@@ -182,5 +219,5 @@ export function showAgentChat(tokenId?: string): void {
   shadow.appendChild(mount);
   document.body.appendChild(host);
   root = createRoot(mount);
-  paint();
+  paintAgentChat();
 }

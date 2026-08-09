@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { agentCliChat, api } from "../api";
 import { renderMarkdown, flagsUnsafeContent } from "../utils/markdown";
 import {
@@ -16,8 +17,10 @@ import type {
   DeclaredModelCaps,
   TokenRecord,
 } from "../types";
-import { hasMessage, localeClock, localeCompactNumber, localeNumber, t } from "../i18n";
+import { hasMessage, localeClock, localeCompactNumber, localeNumber, resolveLanguage, t } from "../i18n";
 import { tRich } from "../i18n/rich";
+import { registerAgentChatShortcut } from "../utils/agentchat_shortcut";
+import PANEL_CSS from "../phoenix-mcp-panel.css?inline";
 
 // One rendered item in the transcript. ts (epoch ms, stamped at creation) is
 // optional: restored session entries from before the field existed lack it,
@@ -317,9 +320,45 @@ interface Props {
   scrollbackLines: number;
   initialTokenId: string;
   onClose: () => void;
+  hass?: unknown;
+  getHass?: () => unknown;
+  summonVersion?: number;
+}
+
+interface AgentCliHass {
+  enableShortcuts?: boolean;
+  themes?: { darkMode?: boolean };
+}
+
+const POPUP_WINDOW_NAME = "phoenix-mcp-agent-chat";
+const POPUP_MOUNT_ID = "phx-agentchat-popout-root";
+// The panel stylesheet is authored for a shadow host. A same-origin popup has
+// no shadow host, so translate those selectors to the document root while
+// preserving the exact same tokens and component rules.
+const POPUP_PANEL_CSS = PANEL_CSS
+  .replace(/:host\(([^)]*)\)/g, ":root$1")
+  .replaceAll(":host", ":root");
+
+function resolvePopupTheme(hass: unknown): "phx-theme-dark" | "phx-theme-light" | null {
+  const typedHass = hass as AgentCliHass | null | undefined;
+  let saved: string | null = null;
+  try { saved = localStorage.getItem("phx-theme"); } catch { /* storage blocked */ }
+  if (saved === "light") return "phx-theme-light";
+  if (saved === "dark") return "phx-theme-dark";
+  if (typedHass?.themes?.darkMode === true) return "phx-theme-dark";
+  if (typedHass?.themes?.darkMode === false) return "phx-theme-light";
+  return null;
+}
+
+function applyPopupTheme(popup: Window, hass: unknown): void {
+  const root = popup.document.documentElement;
+  root.classList.remove("phx-theme-dark", "phx-theme-light");
+  const theme = resolvePopupTheme(hass);
+  if (theme) root.classList.add(theme);
 }
 
 const RESIZE_MIN_W = 320, RESIZE_MIN_H = 280;
+const VIEWPORT_MARGIN = 8;
 // The minimized pill's footprint (CSS: 220px wide, ~44px tall titlebar), used to
 // keep a remembered pill position within the viewport.
 const PILL_SIZE = { w: 220, h: 44 };
@@ -334,6 +373,28 @@ function isNarrowViewport(): boolean {
     && window.matchMedia("(max-width: 700px)").matches;
 }
 
+/** Convert Home Assistant's resolved safe-area value into the drag boundary.
+ *  HA supplies the actual companion-app inset through --safe-area-inset-top;
+ *  the ordinary viewport margin is the only fallback when it is unavailable. */
+export function resolveAgentCliTopMargin(cssTop: string): number {
+  const parsed = Number.parseFloat(cssTop);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? Math.max(VIEWPORT_MARGIN, parsed)
+    : VIEWPORT_MARGIN;
+}
+
+/** Read the same safe top used by maximized CSS. scroll-margin-top has no visual
+ *  effect on this fixed window; it is only a computed-style bridge that lets JS
+ *  include Home Assistant's resolved safe-area inset in drag/restore geometry. */
+function agentCliTopMargin(el: HTMLElement | null): number {
+  if (!isNarrowViewport()) return VIEWPORT_MARGIN;
+  const ownerWindow = el?.ownerDocument.defaultView;
+  const cssTop = el && ownerWindow
+    ? ownerWindow.getComputedStyle(el).scrollMarginTop
+    : "";
+  return resolveAgentCliTopMargin(cssTop);
+}
+
 /** Compute a resized window rect, snapping the edge(s) being dragged to the
  *  viewport margin exactly as the drag handler snaps the whole window. The
  *  `<= SNAP` test is true both when an edge nears the boundary (snap) and when
@@ -343,8 +404,9 @@ export function snapResizeRect(
   dir: string,
   o: { x: number; y: number; w: number; h: number },
   dx: number, dy: number, vw: number, vh: number,
+  topMargin = VIEWPORT_MARGIN,
 ): { x: number; y: number; w: number; h: number } {
-  const M = 8, SNAP = 56;
+  const M = VIEWPORT_MARGIN, SNAP = 56;
   let w = o.w, h = o.h, x = o.x, y = o.y;
   const rightAnchor = o.x + o.w;   // fixed edge when dragging west
   const bottomAnchor = o.y + o.h;  // fixed edge when dragging north
@@ -364,7 +426,10 @@ export function snapResizeRect(
   if (dir.includes("n")) {
     h = Math.max(RESIZE_MIN_H, o.h - dy);
     y = bottomAnchor - h;
-    if (y <= SNAP) { h = Math.max(RESIZE_MIN_H, bottomAnchor - M); y = bottomAnchor - h; }
+    if (y - topMargin <= SNAP) {
+      y = topMargin;
+      h = Math.max(RESIZE_MIN_H, bottomAnchor - y);
+    }
   }
   return { x, y, w, h };
 }
@@ -378,16 +443,18 @@ export function clampPosToViewport(
   pos: { x: number; y: number },
   size: { w: number; h: number },
   vw: number, vh: number,
+  topMargin = VIEWPORT_MARGIN,
 ): { x: number; y: number } {
-  const M = 8;
+  const M = VIEWPORT_MARGIN;
   return {
     x: Math.min(Math.max(M, pos.x), Math.max(M, vw - size.w - M)),
-    y: Math.min(Math.max(M, pos.y), Math.max(M, vh - size.h - M)),
+    y: Math.min(Math.max(topMargin, pos.y), Math.max(topMargin, vh - size.h - M)),
   };
 }
 
 export function AgentCliWindow({
-  tokens, instances, scrollbackLines, initialTokenId, onClose,
+  tokens, instances, scrollbackLines, initialTokenId, onClose, hass = null, getHass: getLiveHass,
+  summonVersion,
 }: Props) {
   // Restore persisted window state (survives navigation away/back and reopen).
   const saved = useRef(getDurable()).current;
@@ -428,6 +495,13 @@ export function AgentCliWindow({
   // approvals, errors). Deliberately NOT the streaming transcript itself:
   // a live region over token-by-token deltas would announce every chunk.
   const [announcement, setAnnouncement] = useState("");
+  const [popupMount, setPopupMount] = useState<HTMLElement | null>(null);
+  const [popOutError, setPopOutError] = useState("");
+  const poppedOut = popupMount !== null;
+  const [narrowViewport, setNarrowViewport] = useState(isNarrowViewport);
+  const agentChatTitle = t("agentchat.title");
+  const currentHass = useCallback(() => getLiveHass?.() ?? hass, [getLiveHass, hass]);
+  const agentChatLanguage = resolveLanguage(currentHass());
 
   const [pos, setPos] = useState(() =>
     saved.pos.x >= 0 ? saved.pos : { x: Math.max(16, window.innerWidth - 480), y: 96 });
@@ -437,6 +511,8 @@ export function AgentCliWindow({
   const rootRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const popupRef = useRef<Window | null>(null);
+  const closingPopupRef = useRef(false);
   const cancelledRef = useRef(false);
   const lastQueryRef = useRef("");
   const liveRef = useRef<ChatEntry[]>([]);
@@ -453,6 +529,7 @@ export function AgentCliWindow({
   // Skip the conversation-reset effect on the initial mount so a restored
   // transcript is not wiped when the window reopens.
   const firstRun = useRef(true);
+  const lastSummonVersion = useRef(summonVersion);
 
   const instance = useMemo(() => instances.find((i) => i.id === instanceId), [instances, instanceId]);
   const kind: AgentCliProviderKind = instance?.kind ?? "claude";
@@ -484,6 +561,29 @@ export function AgentCliWindow({
   // send and /clear (which set it to ""), and the cancel path that restores the
   // last query.
   useEffect(() => { setSessionDraft(input); }, [input]);
+
+  // The global Agent Chat button can be pressed while this live component is
+  // already mounted as a minimized pill. Rehydrate the geometry that the button
+  // just wrote to durable state, then unfold without remounting the component or
+  // interrupting an active conversation. Mobile returns to its safe maximized
+  // layout; desktop returns to the ordinary windowed layout.
+  useEffect(() => {
+    if (summonVersion === undefined || summonVersion === lastSummonVersion.current) return;
+    lastSummonVersion.current = summonVersion;
+    if (mode !== "min") return;
+    const latest = getDurable();
+    setSize(latest.size);
+    setPos(latest.pos);
+    setMode(isNarrowViewport() ? "max" : "normal");
+  }, [mode, summonVersion]);
+
+  // Keep mobile-only actions in sync when a phone rotates or a desktop window
+  // crosses the panel's narrow breakpoint.
+  useEffect(() => {
+    const syncNarrowViewport = () => setNarrowViewport(isNarrowViewport());
+    window.addEventListener("resize", syncNarrowViewport);
+    return () => window.removeEventListener("resize", syncNarrowViewport);
+  }, []);
 
   // Load the model list whenever the account changes (including on mount, to
   // restore/refresh the list). Keeps the restored model if still valid.
@@ -573,7 +673,48 @@ export function AgentCliWindow({
     cancelledRef.current = true;
     abortRef.current?.abort();
     abortRef.current = null;
+    closingPopupRef.current = true;
+    popupRef.current?.close();
+    popupRef.current = null;
   }, []);
+
+  // The popup is still part of the same React tree, but it is a second browser
+  // event target. Mirror the profile-gated Shift+A listener there, keep its
+  // theme in sync with HA, and make the popup's native close equivalent to the
+  // chat header's Close action.
+  useEffect(() => {
+    const popup = popupRef.current;
+    if (!popup || !popupMount) return;
+
+    const syncTheme = () => applyPopupTheme(popup, currentHass());
+    const handlePopupClosed = () => {
+      if (closingPopupRef.current) return;
+      popupRef.current = null;
+      handleClose();
+    };
+    const unregisterShortcut = registerAgentChatShortcut(
+      () => (currentHass() as AgentCliHass | null | undefined) ?? null,
+      handleClose,
+      popup,
+    );
+    popup.addEventListener("pagehide", handlePopupClosed);
+    window.addEventListener("phx-theme-changed", syncTheme);
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
+    popup.document.title = agentChatTitle;
+    popup.document.documentElement.lang = agentChatLanguage;
+    syncTheme();
+
+    return () => {
+      unregisterShortcut();
+      popup.removeEventListener("pagehide", handlePopupClosed);
+      window.removeEventListener("phx-theme-changed", syncTheme);
+      observer.disconnect();
+    };
+  }, [popupMount, currentHass, handleClose, agentChatLanguage, agentChatTitle]);
 
   // One turn: either a new user message (mode "user") or a resume of a turn
   // that paused at the round-cap checkpoint (mode "continue", no new user
@@ -916,7 +1057,7 @@ export function AgentCliWindow({
 
   // --- drag ---
   const startDrag = useCallback((e: React.PointerEvent) => {
-    if (maximized) return;  // full screen: nothing to drag
+    if (maximized || poppedOut) return;  // full screen or popup: nothing to drag
     if ((e.target as HTMLElement).closest("button, select")) return;
     e.preventDefault();
     const startX = e.clientX, startY = e.clientY;
@@ -931,14 +1072,15 @@ export function AgentCliWindow({
     const move = (ev: PointerEvent) => {
       // Keep the whole window on screen on every side. Uses the live element size
       // (so it is correct whether minimized or full height); if the window is
-      // larger than the viewport the max clamps to 0 and it pins to the corner.
+      // larger than the usable viewport it pins to the safe top edge.
       const w = rootRef.current?.offsetWidth ?? size.w;
       const h = rootRef.current?.offsetHeight ?? size.h;
+      const topMargin = agentCliTopMargin(rootRef.current);
       const maxX = Math.max(0, window.innerWidth - w);
-      const maxY = Math.max(0, window.innerHeight - h);
+      const maxY = Math.max(topMargin, window.innerHeight - h - VIEWPORT_MARGIN);
       latest = {
         x: Math.max(0, Math.min(maxX, origin.x + ev.clientX - startX)),
-        y: Math.max(0, Math.min(maxY, origin.y + ev.clientY - startY)),
+        y: Math.max(topMargin, Math.min(maxY, origin.y + ev.clientY - startY)),
       };
       setActive(latest);
     };
@@ -951,12 +1093,13 @@ export function AgentCliWindow({
       // (the bar has no fixed height to snap the bottom edge against).
       let final = latest;
       if (!minimized) {
-        const M = 8, SNAP = 56;
+        const M = VIEWPORT_MARGIN, SNAP = 56;
+        const topMargin = agentCliTopMargin(rootRef.current);
         const { w, h } = size;
         let { x, y } = latest;
         if (x <= SNAP) x = M;
         else if (window.innerWidth - (x + w) <= SNAP) x = Math.max(M, window.innerWidth - w - M);
-        if (y <= SNAP) y = M;
+        if (y - topMargin <= SNAP) y = topMargin;
         else if (window.innerHeight - (y + h) <= SNAP) y = Math.max(M, window.innerHeight - h - M);
         final = { x, y };
         setActive(final);
@@ -965,7 +1108,7 @@ export function AgentCliWindow({
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
-  }, [pos, pillPos, size, minimized, maximized]);
+  }, [pos, pillPos, size, minimized, maximized, poppedOut]);
 
   // --- resize ---
   const startResize = useCallback((dir: string) => (e: React.PointerEvent) => {
@@ -978,7 +1121,7 @@ export function AgentCliWindow({
     const move = (ev: PointerEvent) => {
       const r = snapResizeRect(
         dir, o, ev.clientX - startX, ev.clientY - startY,
-        window.innerWidth, window.innerHeight,
+        window.innerWidth, window.innerHeight, agentCliTopMargin(rootRef.current),
       );
       latestSize = { w: r.w, h: r.h };
       latestPos = { x: r.x, y: r.y };
@@ -1003,9 +1146,15 @@ export function AgentCliWindow({
     const base = pillPos.x >= 0
       ? pillPos
       : isNarrowViewport()
-        ? { x: window.innerWidth - PILL_SIZE.w - 8, y: 8 }
+        ? {
+            x: window.innerWidth - PILL_SIZE.w - VIEWPORT_MARGIN,
+            y: VIEWPORT_MARGIN,
+          }
         : pos;
-    const np = clampPosToViewport(base, PILL_SIZE, window.innerWidth, window.innerHeight);
+    const np = clampPosToViewport(
+      base, PILL_SIZE, window.innerWidth, window.innerHeight,
+      agentCliTopMargin(rootRef.current),
+    );
     setPillPos(np);
     patchDurable({ pillPos: np });
     setMode("min");
@@ -1020,11 +1169,13 @@ export function AgentCliWindow({
   // The change-guards make in-bounds calls no-ops, so drags and resizes (which
   // already clamp to the viewport) are never fought.
   useEffect(() => {
+    if (poppedOut) return;
     const refit = () => {
-      const vw = window.innerWidth, vh = window.innerHeight, M = 8;
+      const vw = window.innerWidth, vh = window.innerHeight, M = VIEWPORT_MARGIN;
+      const topMargin = agentCliTopMargin(rootRef.current);
       if (mode === "min") {
         const base = pillPos.x >= 0 ? pillPos : pos;  // same fallback the pill renders at
-        const np = clampPosToViewport(base, PILL_SIZE, vw, vh);
+        const np = clampPosToViewport(base, PILL_SIZE, vw, vh, topMargin);
         if (np.x !== pillPos.x || np.y !== pillPos.y) {
           setPillPos(np);
           patchDurable({ pillPos: np });
@@ -1032,9 +1183,9 @@ export function AgentCliWindow({
       } else if (mode === "normal") {
         const ns = {
           w: Math.min(size.w, Math.max(RESIZE_MIN_W, vw - 2 * M)),
-          h: Math.min(size.h, Math.max(RESIZE_MIN_H, vh - 2 * M)),
+          h: Math.min(size.h, Math.max(RESIZE_MIN_H, vh - topMargin - M)),
         };
-        const np = clampPosToViewport(pos, ns, vw, vh);
+        const np = clampPosToViewport(pos, ns, vw, vh, topMargin);
         if (ns.w !== size.w || ns.h !== size.h || np.x !== pos.x || np.y !== pos.y) {
           setSize(ns);
           setPos(np);
@@ -1045,57 +1196,158 @@ export function AgentCliWindow({
     refit();
     window.addEventListener("resize", refit);
     return () => window.removeEventListener("resize", refit);
-  }, [mode, pos, size, pillPos]);
+  }, [mode, pos, size, pillPos, poppedOut]);
 
   // Back to the windowed geometry, refitted to the CURRENT viewport: both were
   // remembered under a possibly different one (a phone rotated while minimized
   // or maximized), so clamping the position alone is not enough; a size wider
   // or taller than the viewport must shrink too or it still hangs off-screen.
   const restore = useCallback(() => {
-    const vw = window.innerWidth, vh = window.innerHeight, M = 8;
+    const vw = window.innerWidth, vh = window.innerHeight, M = VIEWPORT_MARGIN;
+    const topMargin = agentCliTopMargin(rootRef.current);
     const ns = {
       w: Math.min(size.w, Math.max(RESIZE_MIN_W, vw - 2 * M)),
-      h: Math.min(size.h, Math.max(RESIZE_MIN_H, vh - 2 * M)),
+      h: Math.min(size.h, Math.max(RESIZE_MIN_H, vh - topMargin - M)),
     };
-    const np = clampPosToViewport(pos, ns, vw, vh);
+    const np = clampPosToViewport(pos, ns, vw, vh, topMargin);
     setSize(ns);
     setPos(np);
     patchDurable({ size: ns, pos: np });
     setMode("normal");
   }, [pos, size]);
 
+  const popIn = useCallback(() => {
+    const popup = popupRef.current;
+    closingPopupRef.current = true;
+    popupRef.current = null;
+    setPopupMount(null);
+    setPopOutError("");
+    // Let React detach the portal before its document goes away.
+    window.setTimeout(() => popup?.close(), 0);
+  }, []);
+
+  const popOut = useCallback(() => {
+    // Separate browser windows are unreliable on mobile and can strand the
+    // conversation behind browser chrome. The control is hidden there too,
+    // but keep the action itself guarded against stale or scripted calls.
+    if (isNarrowViewport()) return;
+    const popupWidth = Math.max(360, Math.min(size.w, window.screen.availWidth || size.w));
+    const popupHeight = Math.max(360, Math.min(size.h, window.screen.availHeight || size.h));
+    const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - popupWidth) / 2));
+    const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - popupHeight) / 2));
+    let popup: Window | null = null;
+    try {
+      popup = window.open(
+        "",
+        POPUP_WINDOW_NAME,
+        [
+          "popup=yes",
+          `width=${popupWidth}`,
+          `height=${popupHeight}`,
+          `left=${left}`,
+          `top=${top}`,
+          "toolbar=no",
+          "location=no",
+          "menubar=no",
+          "status=no",
+          "scrollbars=no",
+          "resizable=yes",
+        ].join(","),
+      );
+    } catch {
+      // Browser policy can reject window.open by returning null or throwing.
+    }
+    if (!popup) {
+      const message = t("agentchat.popOutBlocked");
+      setPopOutError(message);
+      setAnnouncement(message);
+      return;
+    }
+
+    const doc = popup.document;
+    const base = doc.createElement("base");
+    base.href = window.location.href;
+    const viewport = doc.createElement("meta");
+    viewport.name = "viewport";
+    viewport.content = "width=device-width, initial-scale=1";
+    const styleEl = doc.createElement("style");
+    styleEl.textContent = `${POPUP_PANEL_CSS}\n
+      html, body, #${POPUP_MOUNT_ID} { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body { background: var(--phx-agentcli-surface); }
+      #${POPUP_MOUNT_ID} { position: relative; }
+    `;
+    doc.head.replaceChildren(base, viewport, styleEl);
+    doc.title = agentChatTitle;
+    doc.documentElement.lang = agentChatLanguage;
+    const mount = doc.createElement("div");
+    mount.id = POPUP_MOUNT_ID;
+    doc.body.replaceChildren(mount);
+
+    closingPopupRef.current = false;
+    popupRef.current = popup;
+    applyPopupTheme(popup, currentHass());
+    setMode("normal");
+    setPopOutError("");
+    setPopupMount(mount);
+    popup.focus();
+  }, [agentChatLanguage, agentChatTitle, currentHass, size]);
+
   const noInstances = instances.length === 0;
 
   const pillXY = pillPos.x >= 0 ? pillPos : pos;  // fall back before first seed
+  const collapsed = minimized && !poppedOut;
   // Maximized geometry comes entirely from CSS (inset: 0); no inline style.
-  const style: React.CSSProperties = maximized
+  const style: React.CSSProperties = poppedOut || maximized
     ? {}
-    : minimized
+    : collapsed
       ? { left: pillXY.x, top: pillXY.y }
       : { left: pos.x, top: pos.y, width: size.w, height: size.h };
 
-  return (
-    <div ref={rootRef} className={`agentcli-window${minimized ? " agentcli-minimized" : ""}${maximized ? " agentcli-maximized" : ""}`} style={style} role="dialog" aria-label={t("agentchat.title")}>
+  const content = (
+    <div ref={rootRef} className={`agentcli-window${collapsed ? " agentcli-minimized" : ""}${maximized && !poppedOut ? " agentcli-maximized" : ""}${poppedOut ? " agentcli-popped-out" : ""}`} style={style} role="dialog" aria-label={agentChatTitle}>
       {/* Persistent polite announcer; mounted unconditionally so assistive
           tech reliably picks up updates (live regions must pre-exist). */}
       <div className="sr-only" role="status">{announcement}</div>
       <div className="agentcli-titlebar" onPointerDown={startDrag}>
-        <span className="agentcli-title"><img src={PHOENIX_ICON} className="agentcli-title-icon" alt="" />{t("agentchat.title")}</span>
+        <span className="agentcli-title"><img src={PHOENIX_ICON} className="agentcli-title-icon" alt="" />{agentChatTitle}</span>
         <div className="agentcli-titlebar-actions">
-          {!minimized && (
+          {(!narrowViewport || poppedOut) && (
+            <button
+              className="agentcli-icon-btn agentcli-pop-btn"
+              title={poppedOut ? t("agentchat.popIn") : t("agentchat.popOut")}
+              aria-label={poppedOut ? t("agentchat.popIn") : t("agentchat.popOut")}
+              onClick={poppedOut ? popIn : popOut}
+            >
+              {poppedOut ? (
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                  <path d="M19 19H5V5H12V3H5C3.89 3 3 3.9 3 5V19A2 2 0 0 0 5 21H19A2 2 0 0 0 21 19V12H19V19Z" />
+                  <path d="M8 16V10L10.59 12.59L19.59 3.59L21 5L12 14L14 16H8Z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                  <path d="M14 3V5H17.59L7.76 14.83L9.17 16.24L19 6.41V10H21V3M19 19H5V5H12V3H5C3.89 3 3 3.9 3 5V19A2 2 0 0 0 5 21H19A2 2 0 0 0 21 19V12H19V19Z" />
+                </svg>
+              )}
+            </button>
+          )}
+          {!collapsed && (
             <button className="agentcli-icon-btn agentcli-gear-btn" title={t("agentchat.options")} aria-label={t("agentchat.options")}
                     aria-expanded={gearOpen}
-                    onClick={() => setGearOpen((v) => !v)}>&#9881;</button>
+                    onClick={() => setGearOpen((v) => !v)}>
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                <path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z" />
+              </svg>
+            </button>
           )}
-          {mode !== "min" && (
+          {!poppedOut && mode !== "min" && (
             <button className="agentcli-icon-btn" title={t("agentchat.minimize")} aria-label={t("agentchat.minimize")}
-                    onClick={minimize}>–</button>
+                    onClick={minimize}>&minus;</button>
           )}
-          {mode !== "max" && (
+          {!poppedOut && mode !== "max" && (
             <button className="agentcli-icon-btn" title={t("agentchat.maximize")} aria-label={t("agentchat.maximize")}
                     onClick={maximize}>□</button>
           )}
-          {mode !== "normal" && (
+          {!poppedOut && mode !== "normal" && (
             <button className="agentcli-icon-btn" title={t("agentchat.restore")} aria-label={t("agentchat.restore")}
                     onClick={restore}>&#10064;</button>
           )}
@@ -1103,7 +1355,11 @@ export function AgentCliWindow({
         </div>
       </div>
 
-      {gearOpen && !minimized && (
+      {popOutError && (
+        <div className="agentcli-popout-error" role="alert">{popOutError}</div>
+      )}
+
+      {gearOpen && !collapsed && (
         <div className="agentcli-gear">
           {caps.thinking.length > 0 && (
             // One dropdown carries this provider's real API thinking levels.
@@ -1154,7 +1410,7 @@ export function AgentCliWindow({
         </div>
       )}
 
-      {!minimized && (
+      {!collapsed && (
         <>
           <div className="agentcli-controls">
             <label className="agentcli-control" title={t("agentchat.tokenHint")}>
@@ -1249,13 +1505,14 @@ export function AgentCliWindow({
           )}
 
           {/* resize handles: windowed mode only (full screen has no edges to drag) */}
-          {mode === "normal" && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((d) => (
+          {mode === "normal" && !poppedOut && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((d) => (
             <div key={d} className={`agentcli-resize agentcli-resize-${d}`} onPointerDown={startResize(d)} />
           ))}
         </>
       )}
     </div>
   );
+  return popupMount ? createPortal(content, popupMount) : content;
 }
 
 /** A backend notice or error in the operator's language.

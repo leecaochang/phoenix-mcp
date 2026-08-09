@@ -2113,6 +2113,10 @@ hui-card { display: block; min-width: 0; }
    agentCLI floating chat window
    --------------------------------------------------------------------------- */
 .agentcli-window {
+  /* scroll-margin-top is a non-visual bridge: drag geometry reads its resolved
+     pixel value so JS and maximized CSS share Home Assistant's safe top. */
+  --phx-agentcli-safe-top: 8px;
+  scroll-margin-top: var(--phx-agentcli-safe-top);
   position: fixed;
   z-index: var(--phx-z-agentcli);
   display: flex;
@@ -2131,8 +2135,8 @@ hui-card { display: block; min-width: 0; }
   width: 220px !important;
   min-width: 0;
 }
-/* Full screen: geometry from inset alone (the component sets no inline style
-   in this mode), so mobile browser-chrome viewport quirks never apply. */
+/* Full screen geometry comes from inset alone. Narrow viewports override the
+   top edge below so phone and browser chrome cannot cover the controls. */
 .agentcli-window.agentcli-maximized {
   inset: 0;
   width: auto;
@@ -2140,7 +2144,33 @@ hui-card { display: block; min-width: 0; }
   border: none;
   border-radius: 0;
 }
-.agentcli-window.agentcli-maximized .agentcli-titlebar { cursor: default; }
+@media (max-width: 700px) {
+  .agentcli-window {
+    /* HA resolves this from the companion app's measured inset, with the
+       standards-based browser inset as a fallback. Inherited custom properties
+       cross both the panel and global overlay shadow hosts. */
+    --phx-agentcli-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  }
+  .agentcli-window.agentcli-maximized {
+    /* Match Home Assistant's own content edge below phone status chrome. */
+    top: var(--phx-agentcli-safe-top);
+    right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+    bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+    left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  }
+}
+.agentcli-window.agentcli-popped-out {
+  inset: 0;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.agentcli-window.agentcli-maximized .agentcli-titlebar,
+.agentcli-window.agentcli-popped-out .agentcli-titlebar { cursor: default; }
 .agentcli-titlebar {
   display: flex;
   align-items: center;
@@ -2153,14 +2183,10 @@ hui-card { display: block; min-width: 0; }
   touch-action: none;
 }
 .agentcli-title { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; min-width: 0; }
-/* The titlebar's own height is set by its tallest child, the gear button
-   (~24-25px incl. padding, desktop and mobile); sized just under that so a
-   bigger icon never grows the bar. Shrunk back down in the minimized pill
-   below, where the gear button is hidden and the next-tallest sibling
-   (Restore/Close) is only ~19px. */
+/* The title art sets the titlebar's minimum content height. */
 .agentcli-title-icon { width: 22px; height: 22px; flex-shrink: 0; border-radius: 4px; }
 .agentcli-window.agentcli-minimized .agentcli-title-icon { width: 16px; height: 16px; border-radius: 3px; }
-.agentcli-titlebar-actions { display: flex; gap: 4px; }
+.agentcli-titlebar-actions { display: flex; align-items: center; gap: 4px; }
 .agentcli-icon-btn {
   border: none;
   background: transparent;
@@ -2172,12 +2198,38 @@ hui-card { display: block; min-width: 0; }
   border-radius: var(--phx-radius-xs);
 }
 .agentcli-icon-btn:hover { background: var(--phx-hover); color: var(--phx-text); }
-/* The gear glyph reads smaller than the other titlebar icons at a shared
-   font-size, so it gets its own, larger on desktop; shrunk back down on
-   mobile where it otherwise reads oversized next to the other icons. */
-.agentcli-gear-btn { font-size: 26px; padding: 2px 7px; }
-@media (max-width: 700px) {
-  .agentcli-gear-btn { font-size: 13px; padding: 4px 12px; }
+.agentcli-pop-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 6px;
+}
+.agentcli-pop-btn svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.agentcli-gear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+}
+.agentcli-gear-btn svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.agentcli-popout-error {
+  padding: 8px 10px;
+  color: var(--phx-error);
+  background: var(--phx-error-bg);
+  border-bottom: 1px solid var(--phx-border);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .agentcli-gear {

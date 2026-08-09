@@ -10,12 +10,18 @@
  *
  * Design rules (mirroring the profile injector):
  *  - Admin only: does nothing unless `hass.user.is_admin`.
- *  - The panel is the ONLY opener; there is no button anywhere else in HA.
+ *  - Shift+A toggles it when Home Assistant keyboard shortcuts are enabled.
  *  - If this never becomes ready (old HA, hass not found), the panel sees no
  *    `window.__phxAgentChat` and falls back to its own panel-only window.
  */
 
 import { JS_BUILD } from "../version";
+import { registerAgentChatShortcut } from "../utils/agentchat_shortcut";
+import {
+  agentCliOpenPatch,
+  getDurable as getAgentCliDurable,
+  patchDurable as patchAgentCliDurable,
+} from "../utils/agentcli_state";
 
 const LOG = "[Phoenix MCP agentchat]";
 
@@ -39,9 +45,33 @@ async function open(tokenId?: string): Promise<void> {
   }
 }
 
+async function summon(tokenId?: string): Promise<void> {
+  const durable = getAgentCliDurable();
+  patchAgentCliDurable(agentCliOpenPatch(durable, tokenId, {
+    w: window.innerWidth,
+    h: window.innerHeight,
+  }));
+  await open(tokenId);
+}
+
+async function restore(): Promise<void> {
+  // Shift+A is a visibility toggle, so reopening restores the last dragged
+  // location instead of behaving like the header button's centered summon.
+  patchAgentCliDurable(agentCliOpenPatch(getAgentCliDurable()));
+  await open();
+}
+
 function close(): void {
   // If the window module was never loaded, there is nothing open to close.
   winMod?.hideAgentChat();
+}
+
+async function toggle(): Promise<void> {
+  if (winMod?.isAgentChatVisible()) {
+    close();
+    return;
+  }
+  await restore();
 }
 
 let attempts = 0;
@@ -53,7 +83,8 @@ function start(): void {
     return;
   }
   if (!hass.user?.is_admin) return; // non-admins get nothing
-  (window as any).__phxAgentChat = { ready: true, open, close };
+  (window as any).__phxAgentChat = { ready: true, open: summon, close, toggle };
+  registerAgentChatShortcut(getHass, toggle);
   // Opportunistic card-catalog harvest, same reasoning as the profile injector:
   // this loads on every HA page, so it catches dashboards where the Lovelace
   // resources are already imported. DYNAMICALLY imported and deferred so the

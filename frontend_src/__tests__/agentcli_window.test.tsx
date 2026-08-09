@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 // Mock the API module: agentCliChat drives the window's event handling, and the
 // admin api methods back the model list + approval buttons.
@@ -25,6 +25,7 @@ import {
   modelCaps,
   snapResizeRect,
   clampPosToViewport,
+  resolveAgentCliTopMargin,
   fmtTokens,
   type Turn,
 } from "../components/AgentCliWindow";
@@ -33,6 +34,11 @@ import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/appro
 import type { AgentCliInstance, TokenRecord } from "../types";
 import { setFormatLocale } from "../i18n";
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
 const TOKENS = [
   { id: "t1", name: "alpha" } as TokenRecord,
   { id: "t2", name: "beta" } as TokenRecord,
@@ -40,6 +46,15 @@ const TOKENS = [
 const INSTANCES: AgentCliInstance[] = [
   { id: "i-claude", kind: "claude", name: "Claude", model: "claude-opus-4-8" },
 ];
+
+function createPopupWindow(): { popup: Window; iframe: HTMLIFrameElement } {
+  const iframe = document.createElement("iframe");
+  document.body.appendChild(iframe);
+  const popup = iframe.contentWindow;
+  if (!popup) throw new Error("iframe popup window unavailable");
+  vi.spyOn(popup, "focus").mockImplementation(() => {});
+  return { popup, iframe };
+}
 
 function mkTurn(lines: number, msgs: unknown[]): Turn {
   return { entries: [], messages: msgs, lines };
@@ -128,6 +143,34 @@ describe("agentCLI pill remembers its own position", () => {
     expect(el.style.top).toBe("300px");
     expect(el.style.width).toBe("");  // pill: no inline width, CSS drives it
   });
+
+  it("restores the live minimized window when the Agent Chat button summons it", async () => {
+    patchDurable({
+      open: true,
+      minimized: true,
+      pos: { x: 8, y: 8 },
+      size: { w: 440, h: 560 },
+      pillPos: { x: 400, y: 300 },
+    });
+    const view = render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} summonVersion={0} />,
+    );
+    expect(dialog()).toHaveClass("agentcli-minimized");
+
+    // Button-driven opening writes its requested geometry first. The injected
+    // host then bumps the signal on the already-mounted component.
+    patchDurable({ minimized: false, pos: { x: 260, y: 120 } });
+    view.rerender(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} summonVersion={1} />,
+    );
+
+    await waitFor(() => expect(dialog()).not.toHaveClass("agentcli-minimized"));
+    expect(dialog().style.left).toBe("260px");
+    expect(dialog().style.top).toBe("120px");
+    expect(dialog().style.width).toBe("440px");
+  });
 });
 
 describe("agentCLI restore repositioning (clampPosToViewport)", () => {
@@ -152,6 +195,20 @@ describe("agentCLI restore repositioning (clampPosToViewport)", () => {
     const size = { w: 400, h: 300 };
     const np = clampPosToViewport({ x: 120, y: 90 }, size, VW, VH);
     expect(np).toEqual({ x: 120, y: 90 });
+  });
+
+  it("uses a larger safe top when mobile browser chrome occupies the viewport", () => {
+    const mobileTop = 76;
+    const size = { w: 400, h: 300 };
+    expect(clampPosToViewport({ x: 120, y: 0 }, size, VW, VH, mobileTop))
+      .toEqual({ x: 120, y: mobileTop });
+  });
+
+  it("uses Home Assistant's exact safe top without an arbitrary mobile floor", () => {
+    expect(resolveAgentCliTopMargin("47px")).toBe(47);
+    expect(resolveAgentCliTopMargin("20px")).toBe(20);
+    expect(resolveAgentCliTopMargin("0px")).toBe(8);
+    expect(resolveAgentCliTopMargin("")).toBe(8);
   });
 });
 
@@ -357,6 +414,207 @@ describe("agentCLI token formatting (fmtTokens)", () => {
     expect(fmtTokens(48_200)).toBe("48.2K");
     expect(fmtTokens(482_000)).toBe("482K");
     expect(fmtTokens(1_234_000)).toBe("1.2M");
+  });
+});
+
+describe("AgentCliWindow pop-out", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentCliState();
+    getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
+  });
+
+  it("keeps narrow mobile viewports in-app with reachable maximized controls", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+
+    await waitFor(() => expect((screen.getByLabelText("Model") as HTMLSelectElement).value)
+      .toBe("claude-opus-4-8"));
+    expect(screen.getByRole("dialog", { name: "Agent Chat" })).toHaveClass("agentcli-maximized");
+    expect(screen.queryByRole("button", { name: "Pop out to a separate window" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Options" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Minimize" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close" })).toBeVisible();
+  });
+
+  it("keeps normal and minimized title bars below mobile browser chrome", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
+    const getComputedStyle = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+      const style = getComputedStyle(element);
+      Object.defineProperty(style, "scrollMarginTop", {
+        configurable: true,
+        value: "47px",
+      });
+      return style;
+    });
+    patchDurable({
+      maximized: false,
+      minimized: false,
+      pos: { x: 20, y: 120 },
+      pillPos: { x: -1, y: -1 },
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    const safeTop = 47;
+    const chat = screen.getByRole("dialog", { name: "Agent Chat" });
+    const titlebar = chat.querySelector(".agentcli-titlebar");
+    if (!titlebar) throw new Error("Agent Chat title bar not found");
+
+    fireEvent.pointerDown(titlebar, { clientX: 100, clientY: 120 });
+    fireEvent.pointerMove(window, { clientX: 100, clientY: -500 });
+    fireEvent.pointerUp(window);
+    expect(chat.style.top).toBe(`${safeTop}px`);
+
+    fireEvent.click(screen.getByRole("button", { name: "Minimize" }));
+    await waitFor(() => expect(chat).toHaveClass("agentcli-minimized"));
+    expect(chat.style.top).toBe(`${safeTop}px`);
+
+    fireEvent.pointerDown(titlebar, { clientX: 100, clientY: safeTop });
+    fireEvent.pointerMove(window, { clientX: 100, clientY: -500 });
+    fireEvent.pointerUp(window);
+    expect(chat.style.top).toBe(`${safeTop}px`);
+  });
+
+  it("moves the live chat into a minimal popup and back into Home Assistant", async () => {
+    const { popup, iframe } = createPopupWindow();
+    const open = vi.spyOn(window, "open").mockReturnValue(popup);
+    const close = vi.spyOn(popup, "close");
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}}
+                      hass={{ enableShortcuts: true, language: "zh-Hans" }} />,
+    );
+
+    const popOutButton = screen.getByRole("button", { name: "Pop out to a separate window" });
+    const popOutIcon = popOutButton.querySelector("svg");
+    expect(popOutIcon).toHaveAttribute("fill", "currentColor");
+    expect(popOutIcon?.querySelector("path")).toHaveAttribute(
+      "d",
+      "M14 3V5H17.59L7.76 14.83L9.17 16.24L19 6.41V10H21V3M19 19H5V5H12V3H5C3.89 3 3 3.9 3 5V19A2 2 0 0 0 5 21H19A2 2 0 0 0 21 19V12H19V19Z",
+    );
+    const inAppGearPath = screen.getByRole("button", { name: "Options" })
+      .querySelector("svg path")?.getAttribute("d");
+    expect(inAppGearPath).toBeTruthy();
+    fireEvent.click(popOutButton);
+
+    expect(open).toHaveBeenCalledWith(
+      "",
+      "phoenix-mcp-agent-chat",
+      expect.stringContaining("popup=yes"),
+    );
+    const popupUi = within(popup.document.body);
+    expect(popup.document.documentElement.lang).toBe("zh-Hans");
+    expect(popup.document.querySelector('meta[name="viewport"]')).toHaveAttribute(
+      "content", "width=device-width, initial-scale=1",
+    );
+    expect(popupUi.getByRole("dialog", { name: "Agent Chat" })).toHaveClass("agentcli-popped-out");
+    const popInButton = popupUi.getByRole("button", { name: "Pop back into Home Assistant" });
+    expect(popInButton).toBeVisible();
+    expect(popInButton.querySelector("svg")).toHaveAttribute("fill", "currentColor");
+    expect(popInButton.querySelectorAll("svg path")).toHaveLength(2);
+    const popOutGear = popupUi.getByRole("button", { name: "Options" });
+    expect(popOutGear.querySelector("svg")).toHaveAttribute("viewBox", "0 0 24 24");
+    expect(popOutGear.querySelector("svg path")?.getAttribute("d")).toBe(inAppGearPath);
+    expect(popupUi.queryByRole("button", { name: "Minimize" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Agent Chat" })).toBeNull();
+
+    fireEvent.click(popInButton);
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Agent Chat" })).toBeVisible());
+    expect(close).toHaveBeenCalledOnce();
+    iframe.remove();
+  });
+
+  it("honors the profile-gated Shift+A toggle while the popup has focus", () => {
+    const { popup, iframe } = createPopupWindow();
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    const onClose = vi.fn();
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={onClose} hass={{ enableShortcuts: true }} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Pop out to a separate window" }));
+
+    const PopupKeyboardEvent = (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent;
+    popup.dispatchEvent(new PopupKeyboardEvent("keydown", {
+      key: "A", code: "KeyA", shiftKey: true, bubbles: true,
+    }));
+    expect(onClose).toHaveBeenCalledOnce();
+    iframe.remove();
+  });
+
+  it("reads the live shortcut profile setting in the popup", () => {
+    const { popup, iframe } = createPopupWindow();
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    const onClose = vi.fn();
+    let shortcutsEnabled = false;
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={onClose}
+                      getHass={() => ({ enableShortcuts: shortcutsEnabled })} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Pop out to a separate window" }));
+
+    const PopupKeyboardEvent = (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent;
+    const pressShortcut = () => popup.dispatchEvent(new PopupKeyboardEvent("keydown", {
+      key: "A", code: "KeyA", shiftKey: true, bubbles: true,
+    }));
+    pressShortcut();
+    expect(onClose).not.toHaveBeenCalled();
+
+    shortcutsEnabled = true;
+    pressShortcut();
+    expect(onClose).toHaveBeenCalledOnce();
+    iframe.remove();
+  });
+
+  it("does not abort an in-flight turn while moving between hosts", async () => {
+    const { popup, iframe } = createPopupWindow();
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    let requestSignal: AbortSignal | undefined;
+    agentCliChat.mockImplementation((...args: unknown[]) => {
+      requestSignal = args[2] as AbortSignal;
+      return new Promise(() => {});
+    });
+    const view = render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} hass={{ enableShortcuts: true }} />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message Agent Chat" }), {
+      target: { value: "keep working" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(requestSignal).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: "Pop out to a separate window" }));
+    expect(requestSignal?.aborted).toBe(false);
+    fireEvent.click(within(popup.document.body).getByRole("button", {
+      name: "Pop back into Home Assistant",
+    }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Agent Chat" })).toBeVisible());
+    expect(requestSignal?.aborted).toBe(false);
+
+    view.unmount();
+    iframe.remove();
+  });
+
+  it("shows recovery guidance when the browser blocks the popup", () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} hass={{ enableShortcuts: true }} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Pop out to a separate window" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Your browser blocked the pop-out. Allow pop-ups for Home Assistant, then try again.",
+    );
   });
 });
 

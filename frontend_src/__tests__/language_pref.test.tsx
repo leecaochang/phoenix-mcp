@@ -120,7 +120,10 @@ describe("syncTranslations", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  const fakeHass = (language: string) => ({ language });
+  const fakeHass = (language: string) => ({
+    language,
+    auth: { data: { access_token: "tok-test" } },
+  });
   const requestedLanguages = () =>
     fetchMock.mock.calls.map(([url]) => String(url).split("/").pop());
 

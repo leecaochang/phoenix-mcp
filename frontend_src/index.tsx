@@ -3,7 +3,11 @@ import { createRoot, type Root } from "react-dom/client";
 import type { TokenRecord, GlobalSettings, AgentCliInstance } from "./types";
 import { AgentCliWindow } from "./components/AgentCliWindow";
 import { subscribeApprovalEvents } from "./utils/approval_events";
-import { getDurable as getAgentCliDurable, patchDurable as patchAgentCliDurable } from "./utils/agentcli_state";
+import {
+  agentCliOpenPatch,
+  getDurable as getAgentCliDurable,
+  patchDurable as patchAgentCliDurable,
+} from "./utils/agentcli_state";
 import { TokenListView } from "./views/TokenList";
 import { TokenDetailView } from "./views/TokenDetail";
 import { AuditView } from "./views/AuditView";
@@ -14,6 +18,7 @@ import { ChangesView } from "./views/ChangesView";
 import { OnboardingWizard } from "./views/OnboardingWizard";
 import { api, setHass } from "./api";
 import { syncCardCatalog } from "./utils/card_harvest";
+import { registerAgentChatShortcut } from "./utils/agentchat_shortcut";
 import {
   getLanguagePreference,
   isI18nReady,
@@ -230,12 +235,14 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
   // window (floats over all of HA); otherwise render the panel-only window (also
   // the fallback when global injection is unsupported). The key bump forces a
   // remount that re-reads the centered geometry.
-  const openAgentCli = useCallback((tokenId?: string) => {
+  const openAgentCli = useCallback((tokenId?: string, preservePosition = false) => {
     if (settings?.kill_switch) return;
     const d = getAgentCliDurable();
-    const x = Math.max(8, Math.round((window.innerWidth - d.size.w) / 2));
-    const y = Math.max(8, Math.round((window.innerHeight - d.size.h) / 2));
-    patchAgentCliDurable({ ...(tokenId ? { tokenId } : {}), open: true, minimized: false, pos: { x, y } });
+    patchAgentCliDurable(agentCliOpenPatch(
+      d,
+      tokenId,
+      preservePosition ? undefined : { w: window.innerWidth, h: window.innerHeight },
+    ));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const g = (window as any).__phxAgentChat;
     if (settings?.agentcli_global && g?.ready) {
@@ -245,6 +252,30 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
     setAgentCliKey((k) => k + 1);
     setAgentCliOpen(true);
   }, [settings]);
+  const closeAgentCli = useCallback(() => {
+    patchAgentCliDurable({ open: false });
+    setAgentCliOpen(false);
+  }, []);
+
+  // The panel registers the same shortcut as the global bootstrap so Shift+A
+  // also works when the admin chose the panel-only Agent Chat mode. The helper
+  // follows HA's profile opt-in and input/selection guards.
+  useEffect(() => {
+    if (!settings || settings.kill_switch) return;
+    return registerAgentChatShortcut(() => hass as { enableShortcuts?: boolean }, () => {
+      // The injected listener normally handles global mode first. This branch
+      // keeps the toggle correct if the panel listener happened to register first.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const globalChat = (window as any).__phxAgentChat;
+      if (settings.agentcli_global && globalChat?.ready && globalChat.toggle) {
+        void globalChat.toggle();
+      } else if (agentCliOpen) {
+        closeAgentCli();
+      } else {
+        openAgentCli(undefined, true);
+      }
+    });
+  }, [agentCliOpen, closeAgentCli, hass, openAgentCli, settings]);
 
   // Keep the ref the phx-open-agentcli listener calls pointing at the current
   // openAgentCli, so an open request always routes against loaded settings.
@@ -283,11 +314,6 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
       (window as any).__phxAgentChat?.close?.();
     }
   }, [settings?.kill_switch]);
-  const closeAgentCli = useCallback(() => {
-    patchAgentCliDurable({ open: false });
-    setAgentCliOpen(false);
-  }, []);
-
   // While the user is actually looking at Pending, treat the current count as
   // "seen" so a later click while on History can tell a genuinely new arrival
   // apart from a count that was already nonzero.
@@ -589,6 +615,7 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
           scrollbackLines={settings.agentcli_scrollback_lines}
           initialTokenId={tokens[0]?.id ?? ""}
           onClose={closeAgentCli}
+          hass={hass}
         />
       )}
     </div>

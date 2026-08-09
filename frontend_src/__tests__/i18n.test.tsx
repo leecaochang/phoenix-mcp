@@ -143,6 +143,9 @@ describe("loadTranslations", () => {
     vi.stubGlobal("fetch", fn);
     return fn;
   };
+  const authenticatedHass = (token = "tok-test") => ({
+    auth: { data: { access_token: token } },
+  });
 
   afterEach(() => vi.unstubAllGlobals());
 
@@ -159,7 +162,7 @@ describe("loadTranslations", () => {
 
   it("installs the served resources, which are already dotted and unprefixed", async () => {
     mockFetch({ resources: { "tokens.revoke": "Revoke" } });
-    await loadTranslations({}, "en");
+    await loadTranslations(authenticatedHass(), "en");
     expect(t("tokens.revoke")).toBe("Revoke");
     expect(isI18nReady()).toBe(true);
   });
@@ -167,7 +170,7 @@ describe("loadTranslations", () => {
   it("ignores a non-string value rather than rendering it", async () => {
     primeTranslations({ tokens: { revoke: "Revoke" } });
     mockFetch({ resources: { "tokens.revoke": "撤销", "tokens.bad": { nested: 1 } } });
-    await loadTranslations({}, "zh-Hans");
+    await loadTranslations(authenticatedHass(), "zh-Hans");
     expect(t("tokens.revoke")).toBe("撤销");
     expect(t("tokens.bad")).toBe("tokens.bad");
   });
@@ -175,7 +178,7 @@ describe("loadTranslations", () => {
   it("keeps the existing catalog when a fetch returns nothing", async () => {
     primeTranslations({ tokens: { revoke: "Revoke" } });
     mockFetch({ resources: {} });
-    await loadTranslations({}, "en");
+    await loadTranslations(authenticatedHass(), "en");
     expect(t("tokens.revoke")).toBe("Revoke");
   });
 
@@ -201,17 +204,63 @@ describe("loadTranslations", () => {
     expect(t("a")).toBe("A");
   });
 
+  it("refreshes an expiring token before the first request", async () => {
+    const hass = {
+      auth: {
+        data: { access_token: "stale", expires: Date.now() + 10_000 },
+        refreshAccessToken: vi.fn(async () => {
+          hass.auth.data.access_token = "fresh";
+          hass.auth.data.expires = Date.now() + 300_000;
+        }),
+      },
+    };
+    const fetchMock = mockFetch({ resources: { a: "A" } });
+
+    await loadTranslations(hass, "en");
+
+    expect(hass.auth.refreshAccessToken).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/phoenix-mcp/admin/catalog/en",
+      { headers: { Authorization: "Bearer fresh" } },
+    );
+  });
+
+  it("uses the current Home Assistant root when the captured hass is unavailable", async () => {
+    const homeAssistant = document.createElement("home-assistant") as HTMLElement & {
+      hass: ReturnType<typeof authenticatedHass>;
+    };
+    homeAssistant.hass = authenticatedHass("live-token");
+    document.body.appendChild(homeAssistant);
+    const fetchMock = mockFetch({ resources: { a: "A" } });
+
+    await loadTranslations(null, "en");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/phoenix-mcp/admin/catalog/en",
+      { headers: { Authorization: "Bearer live-token" } },
+    );
+    homeAssistant.remove();
+  });
+
+  it("does not probe the admin catalog when no access token is available", async () => {
+    const fetchMock = mockFetch({ resources: { a: "A" } });
+    await loadTranslations({}, "en");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(isI18nReady()).toBe(true);
+  });
+
   it("keeps the existing catalog when the request fails", async () => {
     primeTranslations({ tokens: { revoke: "Revoke" } });
     mockFetch(null, false);
-    await loadTranslations({}, "en");
+    await loadTranslations(authenticatedHass(), "en");
     expect(t("tokens.revoke")).toBe("Revoke");
     expect(isI18nReady()).toBe(true);
   });
 
   it("survives a rejected request and still reports ready", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
-    await loadTranslations({}, "en");
+    await loadTranslations(authenticatedHass(), "en");
     expect(isI18nReady()).toBe(true);
   });
 });

@@ -73,6 +73,32 @@ export function getDurable(): AgentCliDurable {
   }
 }
 
+/**
+ * Build the durable-state change for opening Agent Chat.
+ *
+ * Button-driven opens pass a viewport so the window is summoned in the center.
+ * Shortcut-driven reopens omit it, leaving the user's last dragged position
+ * untouched while still restoring a minimized window to its full form.
+ */
+export function agentCliOpenPatch(
+  durable: AgentCliDurable,
+  tokenId?: string,
+  viewport?: { w: number; h: number },
+): Partial<AgentCliDurable> {
+  const patch: Partial<AgentCliDurable> = {
+    ...(tokenId ? { tokenId } : {}),
+    open: true,
+    minimized: false,
+  };
+  if (viewport) {
+    patch.pos = {
+      x: Math.max(8, Math.round((viewport.w - durable.size.w) / 2)),
+      y: Math.max(8, Math.round((viewport.h - durable.size.h) / 2)),
+    };
+  }
+  return patch;
+}
+
 export function patchDurable(patch: Partial<AgentCliDurable>): void {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({ ...getDurable(), ...patch }));
