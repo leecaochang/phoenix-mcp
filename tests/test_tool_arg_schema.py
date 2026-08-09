@@ -76,6 +76,22 @@ def _tool_defs() -> dict[str, dict]:
     return {d["name"]: d for d in (*_ENTITY_TOOL_DEFS, *_NATIVE_TOOL_DEFS, *_SYSTEM_TOOL_DEFS)}
 
 
+def test_set_entity_exposes_only_validated_registry_reference_fields():
+    """A new registry reference needs pre-gate and apply-time validation."""
+    schema = _tool_defs()["set_entity"]["inputSchema"]
+    properties = set(schema["properties"])
+    registry_references = {
+        "area_id",
+        "category_id",
+        "categories",
+        "device_id",
+        "floor_id",
+        "label_id",
+        "labels",
+    }
+    assert properties & registry_references == {"area_id"}
+
+
 def _modules() -> list[pathlib.Path]:
     return [PACKAGE / "mcp_view.py", *sorted((PACKAGE / "tools").glob("*.py"))]
 

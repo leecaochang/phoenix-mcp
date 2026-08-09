@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -556,9 +556,130 @@ class TestEntityRegistryWrite:
     async def test_set_entity_unknown_area_rejected(self, hass, env):
         eid, _area = env
         data, _ = _data()
-        _, outcome, _ = await _call_tool(
+        before = er.async_get(hass).async_get(eid).area_id
+        content, outcome, _ = await _call_tool(
             "set_entity", {"entity_id": eid, "area_id": "no_such_area"}, self._token_rw(), hass, data)
         assert outcome == "invalid_request"
+        assert "Unknown area_id" in content["content"][0]["text"]
+        assert er.async_get(hass).async_get(eid).area_id == before
+
+    @pytest.mark.parametrize(
+        "area_id,message",
+        [
+            ("no_such_area", "Unknown area_id"),
+            (["office"], "area_id must be a string"),
+            ({"area": "office"}, "area_id must be a string"),
+            (True, "area_id must be a string"),
+        ],
+    )
+    async def test_set_entity_invalid_area_rejected_before_pending(
+        self, hass, env, area_id, message
+    ):
+        """Rule 29: invalid registry IDs fail before an approval exists."""
+        eid, _area = env
+        data, _ = _data()
+        gate = AsyncMock(return_value=({}, "pending_approval", "approval"))
+        with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
+            content, outcome, _ = await _call_tool(
+                "set_entity",
+                {"entity_id": eid, "area_id": area_id},
+                _token(
+                    tree=PermissionTree(domains={"light": PermissionNode(state="GREEN")}),
+                    cap_registry_write="confirm",
+                ),
+                hass,
+                data,
+            )
+
+        assert outcome == "invalid_request"
+        assert message in content["content"][0]["text"]
+        gate.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "unsupported",
+        [
+            {"label_id": "kitchen"},
+            {"labels": ["kitchen"]},
+            {"floor_id": "ground_floor"},
+            {"device_id": "device-1"},
+            {"category_id": "category-1"},
+            {"categories": {"scope": "category-1"}},
+            {"area_ids": ["office"]},
+        ],
+    )
+    async def test_set_entity_unknown_only_arguments_rejected_before_pending(
+        self, hass, env, unsupported
+    ):
+        """Unknown-only requests must not become no-op approvals."""
+        eid, _area = env
+        data, _ = _data()
+        gate = AsyncMock(return_value=({}, "pending_approval", "approval"))
+        with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
+            content, outcome, _ = await _call_tool(
+                "set_entity",
+                {"entity_id": eid, **unsupported},
+                _token(
+                    tree=PermissionTree(domains={"light": PermissionNode(state="GREEN")}),
+                    cap_registry_write="confirm",
+                ),
+                hass,
+                data,
+            )
+
+        assert outcome == "invalid_request"
+        assert "Provide at least one of" in content["content"][0]["text"]
+        gate.assert_not_awaited()
+
+    async def test_set_entity_unknown_only_argument_revalidated_at_apply_time(self, hass, env):
+        """Persisted approval arguments receive the same no-op check."""
+        from custom_components.phoenix_mcp.mcp_view import _execute_set_entity
+
+        eid, _area = env
+        data, _ = _data()
+        content, outcome, _ = await _execute_set_entity(
+            {"entity_id": eid, "label_id": "kitchen"},
+            self._token_rw(),
+            hass,
+            data,
+        )
+
+        assert outcome == "invalid_request"
+        assert "Provide at least one of" in content["content"][0]["text"]
+
+    async def test_set_entity_unknown_argument_is_ignored_with_supported_edit(self, hass, env):
+        """Stray fields do not block a valid supported update."""
+        eid, _area = env
+        data, _ = _data()
+        content, outcome, _ = await _call_tool(
+            "set_entity",
+            {"entity_id": eid, "name": "Desk Lamp", "label_id": "kitchen"},
+            self._token_rw(),
+            hass,
+            data,
+        )
+
+        assert outcome == "allowed"
+        assert json.loads(content["content"][0]["text"])["updated"]["name"] == "Desk Lamp"
+        assert er.async_get(hass).async_get(eid).name == "Desk Lamp"
+
+    async def test_set_entity_area_revalidated_after_precheck(self, hass, env):
+        """An area deleted during an approval window is not written back."""
+        from custom_components.phoenix_mcp.mcp_view import (
+            _execute_set_entity,
+            _registry_write_precheck,
+        )
+
+        eid, area_id = env
+        token = self._token_rw()
+        args = {"entity_id": eid, "area_id": area_id}
+        assert _registry_write_precheck(args, token, hass, "set_entity") is None
+
+        ar.async_get(hass).async_delete(area_id)
+        data, _ = _data()
+        _, outcome, _ = await _execute_set_entity(args, token, hass, data)
+
+        assert outcome == "invalid_request"
+        assert er.async_get(hass).async_get(eid).area_id is None
 
     async def test_delete_entity_removes_and_versions(self, hass, env):
         eid, _area = env

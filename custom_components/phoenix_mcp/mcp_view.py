@@ -1364,18 +1364,68 @@ def _registry_write_perm_error(perm: Any, entity_id: str) -> tuple[dict, str, st
     return _tool_error("Entity not found."), "denied", entity_id
 
 
+def _registry_area_id_error(
+    args: dict, hass: HomeAssistant, entity_id: str
+) -> tuple[dict, str, str] | None:
+    """Validate set_entity's optional area reference; None means valid."""
+    if "area_id" not in args:
+        return None
+    area_id = args["area_id"]
+    if area_id is not None and not isinstance(area_id, str):
+        return _tool_error("area_id must be a string."), "invalid_request", entity_id
+    if area_id and ar.async_get(hass).async_get_area(area_id) is None:
+        return _tool_error("Unknown area_id."), "invalid_request", entity_id
+    return None
+
+
+_SET_ENTITY_UPDATE_ARGUMENTS = frozenset(
+    {"name", "icon", "area_id", "add_aliases", "remove_aliases"}
+)
+
+
+def _set_entity_args_error(
+    args: dict,
+    hass: HomeAssistant,
+    entity_id: str,
+    *,
+    allow_restore_aliases: bool = False,
+) -> tuple[dict, str, str] | None:
+    """Validate supported fields and reject requests with no registry update."""
+    area_error = _registry_area_id_error(args, hass, entity_id)
+    if area_error is not None:
+        return area_error
+    update_arguments = _SET_ENTITY_UPDATE_ARGUMENTS | (
+        {"aliases"} if allow_restore_aliases else set()
+    )
+    if not any(field in args for field in update_arguments):
+        return (
+            _tool_error(
+                "Provide at least one of name, icon, area_id, add_aliases, "
+                "remove_aliases."
+            ),
+            "invalid_request",
+            entity_id,
+        )
+    return None
+
+
 def _registry_write_precheck(
     args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str
 ) -> tuple[dict, str, str] | None:
     """Pre-gate validation for registry writes; None means OK to proceed.
 
-    Checks entity_id presence and write scope so a doomed request is rejected
-    before a pending approval is created. The executor re-validates at apply time.
+    Checks entity_id presence, write scope, and registry references so a doomed
+    request is rejected before approval. The executor re-validates at apply time.
     """
     entity_id = str(args.get("entity_id") or "").strip()
     if not entity_id:
         return _tool_error("entity_id is required."), "invalid_request", tool_name
-    return _registry_write_perm_error(resolve(entity_id, token, hass), entity_id)
+    perm_error = _registry_write_perm_error(resolve(entity_id, token, hass), entity_id)
+    if perm_error is not None:
+        return perm_error
+    if tool_name == "set_entity":
+        return _set_entity_args_error(args, hass, entity_id)
+    return None
 
 
 async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
@@ -1444,9 +1494,8 @@ async def _tool_set_entity(
     # work, so the tool can never be a scope/existence oracle when the cap is off.
     if effective_cap(token, "cap_registry_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_entity"
-    # Then validate entity scope before gating so an out-of-scope or typo'd target
-    # is rejected up front instead of creating a pending approval that can only
-    # fail after the admin approves it. The executor re-validates at approval time.
+    # Then validate entity scope and registry references before gating so a doomed
+    # request cannot create a pending approval. The executor re-validates at apply time.
     pre = _registry_write_precheck(args, token, hass, "set_entity")
     if pre is not None:
         return pre
@@ -1473,6 +1522,12 @@ async def _execute_set_entity(
     entry = reg.async_get(entity_id)
     if entry is None:
         return _tool_error("Entity has no registry entry to edit."), "invalid_request", entity_id
+    restoring = _restore_ctx.get() is not None
+    args_error = _set_entity_args_error(
+        args, hass, entity_id, allow_restore_aliases=restoring
+    )
+    if args_error is not None:
+        return args_error
 
     updates: dict = {}
     if "name" in args:
@@ -1481,8 +1536,6 @@ async def _execute_set_entity(
         updates["icon"] = args["icon"] or None
     if "area_id" in args:
         area_id = args["area_id"]
-        if area_id and ar.async_get(hass).async_get_area(area_id) is None:
-            return _tool_error("Unknown area_id."), "invalid_request", entity_id
         updates["area_id"] = area_id or None
     alias_add: list[str] = []
     alias_remove: list[str] = []
@@ -1507,7 +1560,7 @@ async def _execute_set_entity(
     # removal guard, and the raw wire form carries the sentinel and the order
     # back unchanged. _restore_ctx is read here in the event loop, not passed by
     # the caller, so no agent-reachable path can set it.
-    if "aliases" in args and _restore_ctx.get() is not None:
+    if "aliases" in args and restoring:
         updates["aliases"] = _alias_unwire(args["aliases"])
     if not updates:
         return (
