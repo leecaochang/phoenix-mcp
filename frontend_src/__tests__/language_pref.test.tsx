@@ -123,6 +123,7 @@ describe("syncTranslations", () => {
   const fakeHass = (language: string) => ({
     language,
     auth: { data: { access_token: "tok-test" } },
+    fetchWithAuth: (path: string, init?: RequestInit) => fetch(path, init),
   });
   const requestedLanguages = () =>
     fetchMock.mock.calls.map(([url]) => String(url).split("/").pop());

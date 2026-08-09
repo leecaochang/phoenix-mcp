@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { deleteProfile, EDITOR_SCOPES, loadProfile, saveProfile } from "../views/MesaView";
 import { parseQuickAddScope, QUICK_ADD_SCOPES } from "../inject/QuickAdd";
+import { setHass } from "../api";
 import type { MesaProfileScope } from "../types";
 
 // The API path segment each scope must address. Entity profiles live under
@@ -32,6 +33,9 @@ let requests: { method: string; url: string }[];
 
 beforeEach(() => {
   requests = [];
+  setHass({
+    fetchWithAuth: (path: string, init?: RequestInit) => fetch(path, init),
+  });
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     requests.push({ method: init?.method ?? "GET", url: String(url) });
     return {
@@ -44,6 +48,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setHass(null);
   vi.unstubAllGlobals();
 });
 

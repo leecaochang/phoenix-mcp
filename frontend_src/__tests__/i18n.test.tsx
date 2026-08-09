@@ -145,18 +145,22 @@ describe("loadTranslations", () => {
   };
   const authenticatedHass = (token = "tok-test") => ({
     auth: { data: { access_token: token } },
+    fetchWithAuth: vi.fn((path: string, init?: RequestInit) => fetch(path, init)),
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    document.querySelectorAll("home-assistant").forEach((element) => element.remove());
+    vi.unstubAllGlobals();
+  });
 
-  it("requests the catalog for the language, with the admin bearer token", async () => {
+  it("requests the catalog through Home Assistant's authenticated fetch", async () => {
     // The panel's only wire contract with the backend. Nothing else in the
     // suite covers it, because setup.ts primes the catalog rather than fetching.
-    const fetchMock = mockFetch({ resources: {} });
-    await loadTranslations({ auth: { data: { access_token: "tok-123" } } }, "zh-Hans");
-    expect(fetchMock).toHaveBeenCalledWith(
+    mockFetch({ resources: {} });
+    const hass = authenticatedHass("tok-123");
+    await loadTranslations(hass, "zh-Hans");
+    expect(hass.fetchWithAuth).toHaveBeenCalledWith(
       "/api/phoenix-mcp/admin/catalog/zh-Hans",
-      { headers: { Authorization: "Bearer tok-123" } },
     );
   });
 
@@ -182,48 +186,21 @@ describe("loadTranslations", () => {
     expect(t("tokens.revoke")).toBe("Revoke");
   });
 
-  it("refreshes the token once and retries on a 401", async () => {
-    // An expired access token is otherwise a panel full of raw keys until the
-    // next full page load, plus a ban-log warning from HA.
-    const refreshAccessToken = vi.fn(async () => {
-      hass.auth.data.access_token = "fresh";
-    });
-    const hass = { auth: { data: { access_token: "stale" }, refreshAccessToken } };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({ status: 401, ok: false, json: async () => null })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ resources: { a: "A" } }) });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await loadTranslations(hass, "en");
-
-    expect(refreshAccessToken).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[1][1]).toEqual({
-      headers: { Authorization: "Bearer fresh" },
-    });
-    expect(t("a")).toBe("A");
-  });
-
-  it("refreshes an expiring token before the first request", async () => {
+  it("never refreshes Home Assistant authentication directly", async () => {
+    const refreshAccessToken = vi.fn();
     const hass = {
+      fetchWithAuth: vi.fn((path: string, init?: RequestInit) => fetch(path, init)),
       auth: {
         data: { access_token: "stale", expires: Date.now() + 10_000 },
-        refreshAccessToken: vi.fn(async () => {
-          hass.auth.data.access_token = "fresh";
-          hass.auth.data.expires = Date.now() + 300_000;
-        }),
+        refreshAccessToken,
       },
     };
-    const fetchMock = mockFetch({ resources: { a: "A" } });
+    mockFetch({ resources: { a: "A" } });
 
     await loadTranslations(hass, "en");
 
-    expect(hass.auth.refreshAccessToken).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/phoenix-mcp/admin/catalog/en",
-      { headers: { Authorization: "Bearer fresh" } },
-    );
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+    expect(hass.fetchWithAuth).toHaveBeenCalledOnce();
   });
 
   it("uses the current Home Assistant root when the captured hass is unavailable", async () => {
@@ -232,20 +209,19 @@ describe("loadTranslations", () => {
     };
     homeAssistant.hass = authenticatedHass("live-token");
     document.body.appendChild(homeAssistant);
-    const fetchMock = mockFetch({ resources: { a: "A" } });
+    mockFetch({ resources: { a: "A" } });
 
     await loadTranslations(null, "en");
 
-    expect(fetchMock).toHaveBeenCalledWith(
+    expect(homeAssistant.hass.fetchWithAuth).toHaveBeenCalledWith(
       "/api/phoenix-mcp/admin/catalog/en",
-      { headers: { Authorization: "Bearer live-token" } },
     );
     homeAssistant.remove();
   });
 
-  it("does not probe the admin catalog when no access token is available", async () => {
+  it("does not probe the admin catalog when no authenticated fetch is available", async () => {
     const fetchMock = mockFetch({ resources: { a: "A" } });
-    await loadTranslations({}, "en");
+    await loadTranslations({ auth: { data: { access_token: "stale" } } }, "en");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(isI18nReady()).toBe(true);
   });

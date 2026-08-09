@@ -11,7 +11,9 @@ function mockFetchResponse(status: number, body: unknown = {}) {
 }
 
 beforeEach(() => {
-  setHass(null);
+  setHass({
+    fetchWithAuth: (path: string, init?: RequestInit) => fetch(path, init),
+  });
 });
 
 describe("api.listTokens", () => {
@@ -359,24 +361,27 @@ describe("error handling", () => {
   });
 });
 
-describe("auth header", () => {
-  it("includes Authorization header when hass has an access token", async () => {
-    setHass({
-      auth: { data: { access_token: "ha-token-123", expires: Date.now() + 300_000 } },
-    });
+describe("Home Assistant authentication", () => {
+  it("delegates authenticated requests to Home Assistant", async () => {
+    const fetchWithAuth = vi.fn((path: string, init?: RequestInit) => fetch(path, init));
+    const refreshAccessToken = vi.fn();
+    setHass({ fetchWithAuth, auth: { refreshAccessToken } });
     globalThis.fetch = mockFetchResponse(200, []);
 
     await api.listTokens();
-    const [, opts] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.headers["Authorization"]).toBe("Bearer ha-token-123");
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      "/api/phoenix-mcp/admin/tokens",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(refreshAccessToken).not.toHaveBeenCalled();
   });
 
-  it("omits Authorization header when no hass is set", async () => {
+  it("does not probe an admin endpoint when no HA session is available", async () => {
+    setHass(null);
     globalThis.fetch = mockFetchResponse(200, []);
 
-    await api.listTokens();
-    const [, opts] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.headers["Authorization"]).toBeUndefined();
+    await expect(api.listTokens()).rejects.toThrow(ApiError);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

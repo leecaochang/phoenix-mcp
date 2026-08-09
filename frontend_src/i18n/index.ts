@@ -97,13 +97,13 @@ let loaded: string | null = null;
 
 // The injected bundles can outlive one <home-assistant> root while HA replaces
 // it during navigation or a frontend reload. Prefer the current root whenever
-// it has authentication, then fall back to the object the caller captured.
+// it exposes HA's authenticated fetch, then fall back to the captured object.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function catalogHass(fallback: any): any {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const live = (document.querySelector("home-assistant") as any)?.hass;
-    if (live?.auth?.data?.access_token) return live;
+    if (typeof live?.fetchWithAuth === "function") return live;
   } catch { /* use the caller's object */ }
   return fallback;
 }
@@ -146,40 +146,13 @@ export async function loadTranslations(hass: any, language: string): Promise<voi
   // still leave dates in the language the panel is about to render in.
   setFormatLocale(hass, language);
   try {
-    // Deliberately a bare fetch rather than the api.ts request helper: this
-    // module must not import api.ts (see the file header), so the two things
-    // that call would have done are done here instead.
+    // This module must not import api.ts (see the file header), but it can use
+    // HA's own authenticated fetch directly. HA alone owns token refresh.
     const url = `${CATALOG_URL}${encodeURIComponent(language || "en")}`;
-    let requestHass = catalogHass(hass);
-    const auth = requestHass?.auth;
-    const expires: number | undefined = auth?.data?.expires;
-    // Match api.ts: refresh before an access token expires instead of knowingly
-    // sending one request that HA will reject and record as an invalid login.
-    if (expires !== undefined && Date.now() > expires - 60_000
-        && typeof auth?.refreshAccessToken === "function") {
-      await auth.refreshAccessToken();
-      requestHass = catalogHass(requestHass);
-    }
-    const send = () => {
-      requestHass = catalogHass(requestHass);
-      const token: string | undefined = requestHass?.auth?.data?.access_token;
-      // An admin endpoint must never be probed anonymously. HA can briefly have
-      // no live hass object while replacing its root; keeping the current catalog
-      // is preferable to manufacturing an invalid-login warning and ban count.
-      if (!token) return null;
-      return fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    };
-    let res = await send();
-    if (!res) return;
-    // Refresh once on an unexpected 401 and retry. The expiry preflight above
-    // handles the normal lifecycle; this covers a token rotated between that
-    // check and the request.
-    if (res.status === 401
-        && typeof requestHass?.auth?.refreshAccessToken === "function") {
-      await requestHass.auth.refreshAccessToken();
-      res = await send();
-      if (!res) return;
-    }
+    const requestHass = catalogHass(hass);
+    // Never probe an admin endpoint anonymously while HA is replacing its root.
+    if (typeof requestHass?.fetchWithAuth !== "function") return;
+    const res = await requestHass.fetchWithAuth(url);
     const body = res.ok ? await res.json() : null;
     const next: Record<string, string> = {};
     for (const [key, value] of Object.entries(body?.resources ?? {})) {

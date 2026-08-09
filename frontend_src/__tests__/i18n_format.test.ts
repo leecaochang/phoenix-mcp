@@ -225,6 +225,7 @@ describe("adoption through the translation lifecycle", () => {
     const hass = {
       locale: { language: "zh-Hans" },
       auth: { data: { access_token: "tok-test" } },
+      fetchWithAuth: (path: string, init?: RequestInit) => fetch(path, init),
     };
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     return loadTranslations(hass, "zh-Hans").then(() => {
@@ -243,6 +244,7 @@ describe("adoption through the translation lifecycle", () => {
       language: "en",
       locale: { language: "en", time_format: timeFormat },
       auth: { data: { access_token: "tok-test" } },
+      fetchWithAuth: (path: string, init?: RequestInit) => fetch(path, init),
     });
     await loadTranslations(hass("24"), "en");
     // Same language, so no refetch happens; the switch to 12-hour still has to

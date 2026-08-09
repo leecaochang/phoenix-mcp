@@ -78,15 +78,16 @@ async function toggle(): Promise<void> {
   await restore();
 }
 
-let attempts = 0;
 function start(): void {
   const hass = getHass();
-  if (!hass) {
-    // <home-assistant> not ready yet; retry briefly, then give up.
-    if (attempts++ < 40) window.setTimeout(start, 250);
+  if (!hass?.user) {
+    // The root and its partial hass object can exist before browser
+    // authentication finishes. Wait for the user instead of permanently
+    // falling back to the panel after an arbitrary startup deadline.
+    window.setTimeout(start, 250);
     return;
   }
-  if (!hass.user?.is_admin) return; // non-admins get nothing
+  if (!hass.user.is_admin) return; // non-admins get nothing
   (window as any).__phxAgentChat = { ready: true, open: summon, close, toggle };
   registerAgentChatShortcut(getHass, toggle);
   // Opportunistic card-catalog harvest, same reasoning as the profile injector:

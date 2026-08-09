@@ -57,13 +57,12 @@ export function setHass(hass: any) {
 // it. Harmless for the panel, which reads the same object.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function authHass(): any {
-  if (hassInstance) return hassInstance;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (document.querySelector("home-assistant") as any)?.hass ?? null;
-  } catch {
-    return null;
-  }
+    const live = (document.querySelector("home-assistant") as any)?.hass;
+    if (typeof live?.fetchWithAuth === "function") return live;
+  } catch { /* use the object most recently supplied by the panel */ }
+  return hassInstance;
 }
 
 // The live hass object, for components that hand it to an HA custom element
@@ -87,28 +86,18 @@ class ApiError extends Error {
   }
 }
 
-async function _doReq<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+async function _doReq<T>(method: string, path: string, body?: unknown): Promise<T> {
   const hass = authHass();
-  // Proactively refresh if the token is expired or within 60s of expiry, avoiding a
-  // guaranteed 401 that HA would log as a ban warning.
-  if (!retried && hass?.auth) {
-    const expires: number | undefined = hass.auth.data?.expires;
-    if (expires !== undefined && Date.now() > expires - 60_000) {
-      await hass.auth.refreshAccessToken();
-    }
+  if (typeof hass?.fetchWithAuth !== "function") {
+    throw new ApiError(401, "unauthorized", t("common.noSession"));
   }
-  const token: string | undefined = hass?.auth?.data?.access_token;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
   const opts: RequestInit = { method, headers };
   if (body !== undefined) opts.body = JSON.stringify(body);
 
-  const res = await fetch(`${BASE}${path}`, opts);
-
-  if (res.status === 401 && !retried && hass?.auth) {
-    await hass.auth.refreshAccessToken();
-    return _doReq<T>(method, path, body, true);
-  }
+  // HA owns access-token refresh and request authentication. Calling
+  // refreshAccessToken here races its WebSocket/session lifecycle in browsers.
+  const res = await hass.fetchWithAuth(`${BASE}${path}`, opts);
 
   if (res.status === 204) return undefined as T;
   const json = await res.json().catch(() => ({ error: "parse_error", message: res.statusText }));
@@ -398,17 +387,13 @@ export async function agentCliChat(
   signal?: AbortSignal,
 ): Promise<void> {
   const hass = authHass();
-  if (!hass?.auth) throw new ApiError(401, "unauthorized", t("common.noSession"));
-  const expires: number | undefined = hass.auth.data?.expires;
-  if (expires !== undefined && Date.now() > expires - 60_000) {
-    await hass.auth.refreshAccessToken();
+  if (typeof hass?.fetchWithAuth !== "function") {
+    throw new ApiError(401, "unauthorized", t("common.noSession"));
   }
-  const token: string | undefined = hass.auth.data?.access_token;
-  const res = await fetch("/api/phoenix-mcp/agentcli/chat", {
+  const res = await hass.fetchWithAuth("/api/phoenix-mcp/agentcli/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),
     signal,
