@@ -988,18 +988,32 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "list_devices",
         "description": (
-            "List Home Assistant devices that have at least one entity this token can access. "
-            "Each device includes manufacturer, model, area, and a count of accessible entities. "
-            "Devices with no accessible entities are not returned."
+            "List Home Assistant device-registry entries this token can access. By default this returns "
+            "enabled devices; set registry_state to disabled or all to include disabled entries. A device "
+            "is visible through an explicit device grant or an accessible attached entity. Rows include "
+            "effective/original/user names, area, disabled state, labels, manufacturer/model, accessible "
+            "entity count, owner count, and the visible parent device id. Sensitive device identity is omitted."
         ),
         "cap": "cap_registry_read",
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry_state": {
+                    "type": "string",
+                    "enum": ["enabled", "disabled", "all"],
+                    "default": "enabled",
+                    "description": "Filter by device-registry disabled state.",
+                },
+            },
+        },
     },
     {
         "name": "get_device",
         "description": (
-            "Get details for a single device, including the list of its entities this token can access. "
-            "Returns 'not found' if the device does not exist or has no accessible entities."
+            "Get a safe device-registry projection: list_devices metadata plus model id, hardware/software "
+            "versions, accessible entities, visible parent/children, and allowlisted owning config-entry "
+            "summaries. Identifiers, connections, serial numbers, configuration URLs, unique IDs, config-entry "
+            "data/options, and credentials are never returned. Missing and inaccessible devices are identical."
         ),
         "cap": "cap_registry_read",
         "inputSchema": {

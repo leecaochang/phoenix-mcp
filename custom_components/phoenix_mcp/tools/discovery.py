@@ -58,7 +58,7 @@ from .authoring import _AUTOMATION_YAML, _SCRIPT_CONFIG_PATH, _read_automations_
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
 from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
-from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
+from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_device_registry_access, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
 from ..token_store import TokenRecord
 from .. import yaml_includes
 
@@ -609,31 +609,30 @@ async def _tool_list_zones(
 async def _tool_list_devices(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
-    """MCP tool: list devices with at least one accessible entity."""
+    """MCP tool: list accessible device-registry entries."""
     if effective_cap(token, "cap_registry_read") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "list_devices"
 
-    registry = er.async_get(hass)
-    dev_reg = dr.async_get(hass)
-    counts: dict[str, int] = {}
-    for eid in _accessible_entity_ids(token, hass):
-        entry = registry.async_get(eid)
-        if entry is not None and entry.device_id:
-            counts[entry.device_id] = counts.get(entry.device_id, 0) + 1
+    registry_state = str(args.get("registry_state") or "enabled").strip().lower()
+    if registry_state not in {"enabled", "disabled", "all"}:
+        return (
+            _tool_error("registry_state must be one of: enabled, disabled, all."),
+            "invalid_request",
+            "list_devices",
+        )
 
+    dev_reg = dr.async_get(hass)
     devices: list[dict] = []
-    for device_id, count in counts.items():
-        device = dev_reg.async_get(device_id)
-        if device is None:
+    for device in dev_reg.devices.values():
+        if registry_state == "enabled" and device.disabled_by is not None:
             continue
-        devices.append({
-            "device_id": device.id,
-            "name": device.name_by_user or device.name,
-            "manufacturer": device.manufacturer,
-            "model": device.model,
-            "area_id": device.area_id,
-            "accessible_entity_count": count,
-        })
+        if registry_state == "disabled" and device.disabled_by is None:
+            continue
+        if resolve_device_registry_access(
+            device.id, token, hass
+        ) not in (Permission.READ, Permission.WRITE):
+            continue
+        devices.append(_device_list_projection(device, token, hass))
     devices.sort(key=lambda d: ((d["name"] or d["device_id"]).lower()))
     return _tool_success(json.dumps({"count": len(devices), "devices": devices}, default=str)), "allowed", "list_devices"
 
@@ -653,25 +652,91 @@ async def _tool_get_device(
     if not device_id:
         return _tool_error("Missing required argument: device_id"), "invalid_request", "get_device"
 
-    registry = er.async_get(hass)
     dev_reg = dr.async_get(hass)
     device = dev_reg.async_get(device_id)
-    device_entities = sorted(
-        eid for eid in _accessible_entity_ids(token, hass)
-        if (entry := registry.async_get(eid)) is not None and entry.device_id == device_id
-    )
-    if device is None or not device_entities:
+    permission = resolve_device_registry_access(device_id, token, hass)
+    if device is None or permission not in (Permission.READ, Permission.WRITE):
         return _tool_error("Device not found."), "not_found", device_id
 
-    return _tool_success(json.dumps({
+    body = _device_list_projection(device, token, hass)
+    body.update({
+        "model_id": device.model_id,
+        "sw_version": device.sw_version,
+        "hw_version": device.hw_version,
+        "entities": _accessible_device_entity_ids(device.id, token, hass),
+        "child_device_ids": sorted(
+            child.id
+            for child in dev_reg.devices.values()
+            if child.via_device_id == device.id
+            and resolve_device_registry_access(
+                child.id, token, hass
+            ) in (Permission.READ, Permission.WRITE)
+        ),
+        "config_entries": _device_config_entry_summaries(device, hass),
+    })
+    return _tool_success(json.dumps(body, default=str)), "allowed", device_id
+
+
+def _accessible_device_entity_ids(
+    device_id: str, token: TokenRecord, hass: HomeAssistant
+) -> list[str]:
+    """Registry entities on a device that this token may read."""
+    expose = assist_expose_check(token, hass)
+    device = dr.async_get(hass).async_get(device_id)
+    force_registry_only = device is not None and device.disabled_by is not None
+    return [
+        entity_id
+        for entity_id in device_registry_entity_ids(hass, device_id)
+        if resolve_registry_access(
+            entity_id, token, hass, force_registry_only=force_registry_only
+        )
+        in (Permission.READ, Permission.WRITE)
+        and (expose is None or expose(entity_id))
+    ]
+
+
+def _device_list_projection(
+    device: Any, token: TokenRecord, hass: HomeAssistant
+) -> dict[str, Any]:
+    """Safe compact projection shared by list_devices and get_device."""
+    parent_id = device.via_device_id
+    if parent_id is not None and resolve_device_registry_access(
+        parent_id, token, hass
+    ) not in (Permission.READ, Permission.WRITE):
+        parent_id = None
+    return {
         "device_id": device.id,
         "name": device.name_by_user or device.name,
+        "original_name": device.name,
+        "name_by_user": device.name_by_user,
         "manufacturer": device.manufacturer,
         "model": device.model,
-        "sw_version": device.sw_version,
         "area_id": device.area_id,
-        "entities": device_entities,
-    }, default=str)), "allowed", device_id
+        "disabled_by": _registry_value(device.disabled_by),
+        "labels": sorted(device.labels),
+        "accessible_entity_count": len(
+            _accessible_device_entity_ids(device.id, token, hass)
+        ),
+        "owner_count": len(device_config_entry_ids(device)),
+        "via_device_id": parent_id,
+    }
+
+
+def _device_config_entry_summaries(device: Any, hass: HomeAssistant) -> list[dict]:
+    """Allowlisted, non-secret summaries of a device's owners."""
+    summaries: list[dict] = []
+    for entry_id in device_config_entry_ids(device):
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None:
+            continue
+        summaries.append({
+            "entry_id": entry.entry_id,
+            "domain": entry.domain,
+            "title": entry.title,
+            "disabled_by": _registry_value(entry.disabled_by),
+            "supports_remove_device": entry.supports_remove_device,
+        })
+    return summaries
 
 
 def _area_name_for_entity(eid: str, registry: Any, dev_reg: Any, area_reg: Any) -> str | None:

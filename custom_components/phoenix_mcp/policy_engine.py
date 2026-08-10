@@ -187,6 +187,97 @@ def resolve_registry_access(
     return Permission.READ
 
 
+def device_config_entry_ids(device: Any) -> list[str]:
+    """Return a device's owning config-entry ids across supported HA versions."""
+    config_entries = getattr(device, "config_entries", None)
+    if config_entries is not None:
+        return sorted(
+            entry_id for entry_id in config_entries if isinstance(entry_id, str)
+        )
+    config_entry_id = getattr(device, "config_entry_id", None)
+    return [config_entry_id] if isinstance(config_entry_id, str) else []
+
+
+def device_registry_entity_ids(hass: HomeAssistant, device_id: str) -> list[str]:
+    """Return every registry entity currently attached to a device."""
+    return sorted(
+        entry.entity_id
+        for entry in er.async_get(hass).entities.values()
+        if entry.device_id == device_id
+    )
+
+
+def _phoenix_owned_device(device: Any, hass: HomeAssistant) -> bool:
+    """Whether a device belongs to Phoenix MCP and must remain unreachable."""
+    for config_entry_id in device_config_entry_ids(device):
+        config_entry = hass.config_entries.async_get_entry(config_entry_id)
+        if config_entry is not None and config_entry.domain == DOMAIN:
+            return True
+    registry = er.async_get(hass)
+    return any(
+        (entry := registry.async_get(entity_id)) is not None
+        and entry.platform == DOMAIN
+        for entity_id in device_registry_entity_ids(hass, device.id)
+    )
+
+
+def resolve_device_registry_access(
+    device_id: str, token: TokenRecord, hass: HomeAssistant
+) -> Permission:
+    """Resolve read access to a device-registry entry.
+
+    An explicit device node authorizes the device even when it has no entities.
+    Otherwise one attached entity must pass the ordinary registry-aware entity
+    resolver. Pass-through tokens retain their Assist-exposure filter: a device
+    with no exposed attached entity is not an alternate enumeration path.
+    """
+    if not isinstance(device_id, str):
+        return Permission.NOT_FOUND
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
+        return Permission.NOT_FOUND
+    if _phoenix_owned_device(device, hass):
+        return Permission.NO_ACCESS
+
+    entity_ids = device_registry_entity_ids(hass, device_id)
+    if token.pass_through:
+        expose = assist_expose_check(token, hass)
+        if expose is not None and not any(
+            expose(entity_id)
+            and resolve_registry_access(entity_id, token, hass)
+            in (Permission.READ, Permission.WRITE)
+            for entity_id in entity_ids
+        ):
+            return Permission.NO_ACCESS
+        return Permission.WRITE
+
+    device_node = token.permissions.devices.get(device_id)
+    if device_node is not None:
+        if device_node.state == "RED":
+            return Permission.DENY
+        if device_node.state == "GREEN":
+            return Permission.WRITE
+        if device_node.state == "YELLOW":
+            return Permission.READ
+
+    inherited = [
+        resolve_registry_access(
+            entity_id,
+            token,
+            hass,
+            force_registry_only=device.disabled_by is not None,
+        )
+        for entity_id in entity_ids
+    ]
+    if Permission.WRITE in inherited:
+        return Permission.WRITE
+    if Permission.READ in inherited:
+        return Permission.READ
+    if Permission.DENY in inherited:
+        return Permission.DENY
+    return Permission.NO_ACCESS
+
+
 def is_sensitive_key(key: Any) -> bool:
     """Whether an attribute/response key name marks its value as sensitive.
 

@@ -231,7 +231,7 @@
 
           <article class="tool" data-cap="discovery" data-search="list_areas list_floors list_zones list_devices get_device registry enumeration">
             <div class="tool-head"><span class="tool-name">list_areas</span><span class="tool-name">list_floors</span><span class="tool-name">list_zones</span><span class="tool-name">list_devices</span><span class="tool-name">get_device</span><span class="badge badge-cap">Registry read</span></div>
-            <p class="tool-desc">Registry enumeration restricted to areas, floors, zones, and devices that contain at least one accessible entity. <code>get_device</code> returns one device plus its accessible entities; it takes <code>device_id</code> (required), the list tools take none.</p>
+            <p class="tool-desc">Permission-scoped registry enumeration. Areas and floors require an accessible entity; devices are visible through an explicit device grant or an accessible attached entity. <code>list_devices</code> defaults to enabled entries and accepts <code>registry_state</code> (<code>enabled</code>, <code>disabled</code>, or <code>all</code>). Its safe rows include names, area, disabled state, labels, manufacturer/model, accessible-entity and owner counts, and a visible parent. <code>get_device</code> takes <code>device_id</code> and adds hardware/software versions, accessible entities, visible relationships, and allowlisted owner summaries. Sensitive identifiers and config-entry data are omitted.</p>
           </article>
 
           <article class="tool" data-cap="discovery" data-search="list_scenes list_helpers list_automations list_scripts">

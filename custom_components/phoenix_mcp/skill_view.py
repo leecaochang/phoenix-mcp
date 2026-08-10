@@ -57,8 +57,10 @@ grain of the model gives the smoothest results and avoids dead ends.
   entity's nature/role), not by name. Reach for it when you care about what an
   entity is, not what it is called.
 - `list_areas`, `list_floors`, `list_zones`, `list_devices`, `get_device`:
-  registry enumeration. Only areas and devices with at least one accessible
-  entity are returned.
+  registry enumeration. Areas require an accessible entity. Devices may instead
+  be reached by an explicit device grant; `list_devices` defaults to enabled
+  entries and accepts `registry_state: disabled|all`. `get_device` returns only
+  accessible children and allowlisted owner and hardware metadata.
 - `describe_entity`: one entity's state when available, its safe registry
   metadata (including disabled/hidden state, labels, categories and overrides),
   the services that act on it, its MESA profile and `control_mode`, what

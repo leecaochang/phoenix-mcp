@@ -1,8 +1,9 @@
 """Tests for the registry-read MCP tools (list_areas/floors/zones/devices, get_device).
 
-These tools gate on cap_registry_read and are scoped to entities the token can
-read: areas/devices with no accessible entities never appear, and get_device
-returns an identical not_found for a missing device and an inaccessible one.
+These tools gate on cap_registry_read. Area/floor reads are scoped to accessible
+entities; device reads additionally accept explicit device grants, including for
+disabled and entity-less registry entries. get_device returns an identical
+not_found for a missing device and an inaccessible one.
 """
 
 from __future__ import annotations
@@ -192,6 +193,145 @@ class TestListDevices:
         assert ids == {reg_env["hub"].id}  # Sensor Hub has no accessible entity
         assert body["devices"][0]["manufacturer"] == "Acme"
 
+    async def test_registry_state_filters_disabled_devices(self, hass, reg_env):
+        device = reg_env["sensor_hub"]
+        dr.async_get(hass).async_update_device(
+            device.id, disabled_by=dr.DeviceEntryDisabler.USER
+        )
+        token = _token(permissions=PermissionTree(
+            devices={device.id: PermissionNode(state="YELLOW")}
+        ))
+
+        enabled, _, _ = await _call("list_devices", {}, token, hass)
+        disabled, _, _ = await _call(
+            "list_devices", {"registry_state": "disabled"}, token, hass
+        )
+        all_devices, _, _ = await _call(
+            "list_devices", {"registry_state": "all"}, token, hass
+        )
+        assert _result_json(enabled)["devices"] == []
+        assert [row["device_id"] for row in _result_json(disabled)["devices"]] == [
+            device.id
+        ]
+        assert [row["device_id"] for row in _result_json(all_devices)["devices"]] == [
+            device.id
+        ]
+
+    async def test_invalid_registry_state_is_refused(self, hass, reg_env):
+        content, outcome, _ = await _call(
+            "list_devices", {"registry_state": "orphaned"}, _token(), hass
+        )
+        assert outcome == "invalid_request"
+        assert "enabled, disabled, all" in content["content"][0]["text"]
+
+    async def test_explicit_grant_reaches_entityless_device(self, hass, reg_env):
+        device = dr.async_get(hass).async_get_or_create(
+            config_entry_id="e1",
+            identifiers={("test_integration", "entityless")},
+            name="Entityless",
+        )
+        token = _token(permissions=PermissionTree(
+            devices={device.id: PermissionNode(state="YELLOW")}
+        ))
+        content, outcome, _ = await _call("list_devices", {}, token, hass)
+        assert outcome == "allowed"
+        row = _result_json(content)["devices"][0]
+        assert row["device_id"] == device.id
+        assert row["accessible_entity_count"] == 0
+
+    async def test_entity_only_grant_cannot_reach_registry_only_child(
+        self, hass, reg_env
+    ):
+        entity_id = reg_env["light_kitchen"]
+        er.async_get(hass).async_update_entity(
+            entity_id, disabled_by=er.RegistryEntryDisabler.DEVICE
+        )
+        token = _token(permissions=PermissionTree(
+            entities={entity_id: PermissionNode(state="GREEN")}
+        ))
+        content, _, _ = await _call(
+            "list_devices", {"registry_state": "all"}, token, hass
+        )
+        assert _result_json(content)["devices"] == []
+
+    async def test_entity_only_grant_cannot_reach_disabled_device_with_stale_state(
+        self, hass, reg_env
+    ):
+        device = reg_env["hub"]
+        entity_id = reg_env["light_kitchen"]
+        dr.async_get(hass).async_update_device(
+            device.id, disabled_by=dr.DeviceEntryDisabler.USER
+        )
+        token = _token(permissions=PermissionTree(
+            entities={entity_id: PermissionNode(state="GREEN")}
+        ))
+        content, _, _ = await _call(
+            "list_devices", {"registry_state": "all"}, token, hass
+        )
+        assert _result_json(content)["devices"] == []
+
+    async def test_domain_inheritance_reaches_registry_only_child(
+        self, hass, reg_env
+    ):
+        device = reg_env["sensor_hub"]
+        entity_id = "sensor.garage"
+        er.async_get(hass).async_update_entity(
+            entity_id, disabled_by=er.RegistryEntryDisabler.DEVICE
+        )
+        token = _token(permissions=PermissionTree(
+            domains={"sensor": PermissionNode(state="YELLOW")}
+        ))
+        content, _, _ = await _call(
+            "list_devices", {"registry_state": "all"}, token, hass
+        )
+        assert [row["device_id"] for row in _result_json(content)["devices"]] == [
+            device.id
+        ]
+
+    async def test_device_red_overrides_attached_domain_grant(self, hass, reg_env):
+        device = reg_env["hub"]
+        token = _token(permissions=PermissionTree(
+            domains={"light": PermissionNode(state="GREEN")},
+            devices={device.id: PermissionNode(state="RED")},
+        ))
+        content, _, _ = await _call("list_devices", {}, token, hass)
+        assert _result_json(content)["devices"] == []
+
+    async def test_assist_exposure_does_not_leak_other_devices(self, hass, reg_env):
+        token = _token(
+            permissions=PermissionTree(),
+            pass_through=True,
+            use_assist_exposure=True,
+        )
+        exposed = lambda entity_id: entity_id == reg_env["light_kitchen"]
+        with patch(
+            "custom_components.phoenix_mcp.policy_engine.assist_expose_check",
+            return_value=exposed,
+        ), patch(
+            "custom_components.phoenix_mcp.tools.discovery.assist_expose_check",
+            return_value=exposed,
+        ):
+            content, _, _ = await _call("list_devices", {}, token, hass)
+        assert [row["device_id"] for row in _result_json(content)["devices"]] == [
+            reg_env["hub"].id
+        ]
+
+    async def test_phoenix_owned_device_is_never_visible(self, hass, reg_env):
+        entry = MockConfigEntry(domain="phoenix_mcp", entry_id="phoenix-device")
+        entry.add_to_hass(hass)
+        device = dr.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={("phoenix_mcp", "internal")},
+            name="Internal",
+        )
+        token = _token(permissions=PermissionTree(
+            devices={device.id: PermissionNode(state="GREEN")}
+        ))
+        content, _, _ = await _call(
+            "list_devices", {"registry_state": "all"}, token, hass
+        )
+        assert _result_json(content)["devices"] == []
+
 
 class TestGetDevice:
     async def test_accessible_device(self, hass, reg_env):
@@ -200,6 +340,79 @@ class TestGetDevice:
         body = _result_json(content)
         assert body["entities"] == [reg_env["light_kitchen"]]
         assert body["model"] == "H1"
+
+    async def test_more_specific_entity_restrictions_filter_children(
+        self, hass, reg_env
+    ):
+        device = reg_env["hub"]
+        token = _token(permissions=PermissionTree(
+            devices={device.id: PermissionNode(state="GREEN")},
+            entities={
+                reg_env["light_kitchen"]: PermissionNode(state="RED"),
+                reg_env["lock_front"]: PermissionNode(state="YELLOW"),
+            },
+        ))
+        content, outcome, _ = await _call(
+            "get_device", {"device_id": device.id}, token, hass
+        )
+        assert outcome == "allowed"
+        body = _result_json(content)
+        assert body["entities"] == [reg_env["lock_front"]]
+        assert body["accessible_entity_count"] == 1
+
+    async def test_parent_and_children_are_permission_filtered(self, hass, reg_env):
+        parent = dr.async_get(hass).async_get_or_create(
+            config_entry_id="e1",
+            identifiers={("test_integration", "parent")},
+            name="Parent",
+        )
+        child = reg_env["hub"]
+        dr.async_get(hass).async_update_device(child.id, via_device_id=parent.id)
+
+        child_only, _, _ = await _call(
+            "get_device", {"device_id": child.id}, _token(), hass
+        )
+        assert _result_json(child_only)["via_device_id"] is None
+
+        token = _token(permissions=PermissionTree(devices={
+            parent.id: PermissionNode(state="YELLOW"),
+            child.id: PermissionNode(state="YELLOW"),
+        }))
+        child_result, _, _ = await _call(
+            "get_device", {"device_id": child.id}, token, hass
+        )
+        parent_result, _, _ = await _call(
+            "get_device", {"device_id": parent.id}, token, hass
+        )
+        assert _result_json(child_result)["via_device_id"] == parent.id
+        assert _result_json(parent_result)["child_device_ids"] == [child.id]
+
+    async def test_safe_projection_omits_sensitive_device_identity(self, hass, reg_env):
+        device = reg_env["hub"]
+        dr.async_get(hass).async_update_device(
+            device.id,
+            configuration_url="https://secret-device.invalid/settings",
+            serial_number="SERIAL-SECRET-123",
+        )
+        content, outcome, _ = await _call(
+            "get_device", {"device_id": device.id}, _token(), hass
+        )
+        assert outcome == "allowed"
+        body = _result_json(content)
+        encoded = json.dumps(body)
+        assert "configuration_url" not in body
+        assert "serial_number" not in body
+        assert "identifiers" not in body
+        assert "connections" not in body
+        assert "SERIAL-SECRET-123" not in encoded
+        assert body["original_name"] == "Living Hub"
+        assert body["config_entries"] == [{
+            "entry_id": "e1",
+            "domain": "test_integration",
+            "title": "Mock Title",
+            "disabled_by": None,
+            "supports_remove_device": None,
+        }]
 
     async def test_missing_device_not_found(self, hass, reg_env):
         content, outcome, _ = await _call("get_device", {"device_id": "does_not_exist"}, _token(), hass)
