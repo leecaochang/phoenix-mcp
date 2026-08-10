@@ -2119,10 +2119,31 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "set_integration",
+        "description": (
+            "Update reversible config-entry metadata by entry_id: title, whether newly discovered entities "
+            "start disabled, and whether polling is disabled. Requires complete WRITE coverage of every owned "
+            "entity and device and may require one merged capability/MESA approval. No-op updates do not create "
+            "an approval or version."
+        ),
+        "cap": "cap_integration_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "The config entry id (from list_integrations)."},
+                "title": {"type": "string", "minLength": 1},
+                "pref_disable_new_entities": {"type": "boolean"},
+                "pref_disable_polling": {"type": "boolean"},
+            },
+            "required": ["entry_id"],
+        },
+    },
+    {
         "name": "set_integration_enabled",
         "description": (
-            "Enable or disable an integration (config entry) by its entry_id. May require admin approval. "
-            "Disabling unloads the integration and its entities."
+            "Enable or disable a user-controlled integration by entry_id. Requires complete WRITE coverage and "
+            "may require one merged capability/MESA approval. Disabling proves registry-only authorization first; "
+            "the result truthfully reports reload success and whether a restart is needed."
         ),
         "cap": "cap_integration_write",
         "inputSchema": {
@@ -2132,6 +2153,22 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 "enabled": {"type": "boolean"},
             },
             "required": ["entry_id", "enabled"],
+        },
+    },
+    {
+        "name": "reload_integration",
+        "description": (
+            "Reload an enabled, recoverable config entry by entry_id. Requires complete WRITE coverage and may "
+            "require one merged capability/MESA approval. Unsupported and non-recoverable entries are refused. "
+            "A reload creates no configuration version."
+        ),
+        "cap": "cap_integration_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "The config entry id (from list_integrations)."},
+            },
+            "required": ["entry_id"],
         },
     },
     {
@@ -2902,6 +2939,8 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "write_file": _annot(False, True, True),
     "set_yaml_config": _annot(False, True, True),
     "set_integration_enabled": _annot(False, True, True),
+    "set_integration": _annot(False, True, True),
+    "reload_integration": _annot(False, True, True),
     "create_backup": _annot(False, False, False),
     "create_blueprint": _annot(False, False, False),
     "edit_blueprint": _annot(False, True, True),

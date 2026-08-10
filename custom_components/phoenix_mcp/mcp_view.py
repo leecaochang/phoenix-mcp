@@ -172,7 +172,7 @@ from .tool_defs import (
 )
 from .audit import Outcome
 from .tool_common import _CAP_FORBIDDEN_MESSAGE, _resolve_area_id, _ProgressBus, _approved_exec_ctx, _approval_resource, _gate, _mesa_advisory_ctx, _mesa_confirm_annotation, _operator_accepted_result, _pending_or_inline, _progress_ctx, _record_version, _restore_ctx, _set_progress_status, _tool_error, _tool_success
-from .policy_engine import (EntityCreationNotPermitted, Permission, assist_expose_check, call_needs_physical_gate, config_entry_registry_context, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_config_entry_registry_access, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
+from .policy_engine import (EntityCreationNotPermitted, Permission, assist_expose_check, call_needs_physical_gate, config_entry_registry_context, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_config_entry_registry_access, resolve_config_entry_registry_write, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
 from .rate_limiter import RateLimitResult
 from .token_store import TokenRecord
 from . import yaml_includes
@@ -1726,6 +1726,7 @@ async def _create_registry_mesa_approval(
     diff: dict[str, Any],
     request_id: str,
     client_ip: str | None,
+    cap_name: str = "cap_registry_write",
 ) -> tuple[dict, str, str]:
     """Create the normal registry approval when only MESA requires confirm."""
     from .approvals import (  # noqa: PLC0415
@@ -1740,7 +1741,7 @@ async def _create_registry_mesa_approval(
             token_id=token.id,
             token_name=token.name,
             tool_name=tool_name,
-            cap_name="cap_registry_write",
+            cap_name=cap_name,
             args=args,
             diff=diff,
             request_id=request_id,
@@ -4079,6 +4080,20 @@ async def async_restore_version(
                 token, hass, data,
             )
         if resource_type == "config_entry":
+            if target.get("snapshot_type") == _CONFIG_ENTRY_METADATA_SNAPSHOT:
+                fields = {
+                    key: target[key]
+                    for key in (
+                        "title",
+                        "pref_disable_new_entities",
+                        "pref_disable_polling",
+                        "disabled_by",
+                    )
+                    if key in target
+                }
+                return await _execute_set_integration(
+                    {"entry_id": resource_id, **fields}, token, hass, data
+                )
             # Re-runs the helper's own options flow with the snapshot, so HA
             # validates the restored settings exactly as it validated the write.
             # No expected_hash: a restore deliberately overwrites whatever is
@@ -4491,8 +4506,24 @@ async def _tool_watch_entity(
 
 
 # ---------------------------------------------------------------------------
-# Integration enable/disable (cap_integration_write)
+# Integration registry lifecycle (cap_integration_write)
 # ---------------------------------------------------------------------------
+
+
+_CONFIG_ENTRY_CONTEXT_FINGERPRINT = "_config_entry_context_fingerprint"
+_CONFIG_ENTRY_METADATA_SNAPSHOT = "phoenix.config_entry.metadata.v1"
+
+
+@dataclasses.dataclass
+class _ConfigEntryActionDecision:
+    """Aggregate one config-entry action over its exact entity membership."""
+
+    decision: str
+    actions: list[str]
+    entities: list[dict[str, Any]]
+    warnings: list[str]
+    fingerprint: str
+    blocked: list[tuple[str, str, str]]
 
 
 def _config_entry_value(value: Any) -> str | None:
@@ -4548,6 +4579,246 @@ async def _config_entry_support(
     except Exception:
         supports_reload = None
     return supports_reload, supports_unload, supports_options, supports_reconfigure
+
+
+def _config_entry_metadata_snapshot(entry: Any) -> dict[str, Any]:
+    """Safe, discriminated config-entry metadata for version restoration."""
+    return {
+        "snapshot_type": _CONFIG_ENTRY_METADATA_SNAPSHOT,
+        "title": entry.title,
+        "pref_disable_new_entities": bool(entry.pref_disable_new_entities),
+        "pref_disable_polling": bool(entry.pref_disable_polling),
+        "disabled_by": _config_entry_value(entry.disabled_by),
+    }
+
+
+def _config_entry_write_error(
+    entry_id: str,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    force_registry_only: bool = False,
+) -> tuple[dict, str, str] | None:
+    """Require complete entry coverage without revealing hidden entries."""
+    permission = resolve_config_entry_registry_write(
+        entry_id, token, hass, force_registry_only=force_registry_only
+    )
+    if permission == Permission.WRITE:
+        return None
+    return _tool_error("Integration not found."), "not_found", entry_id
+
+
+def _config_entry_action_decision(
+    data: PhoenixData,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    entry: Any,
+    *,
+    actions: list[str],
+    service_data: dict[str, Any],
+    session_id: str,
+) -> _ConfigEntryActionDecision | tuple[dict, str, str]:
+    """Resolve MESA and pin entry state plus exact resource membership."""
+    context = config_entry_registry_context(entry.entry_id, hass)
+    if context is None:
+        return _tool_error("Integration not found."), "not_found", entry.entry_id
+    mesa_active = (
+        data.mesa is not None
+        and data.store.get_settings().mesa_mode != MESA_MODE_OFF
+    )
+    entity_ids = sorted(context.entity_ids)
+    if mesa_active and actions and not entity_ids:
+        reason = (
+            "MESA is active and this integration has no registry entity from "
+            "which mesa-core can resolve a complete config-entry context."
+        )
+        blocked = [(entry.entry_id, "mesa:unresolved_config_entry_context", reason)]
+        entities: list[dict[str, Any]] = []
+        decision_name = "deny"
+        warnings: list[str] = []
+    else:
+        entities = []
+        blocked = []
+        warnings = []
+        has_confirm = False
+        try:
+            for action in actions:
+                for entity_id in entity_ids:
+                    decision = evaluate_registry_action(
+                        data,
+                        token,
+                        entity_id,
+                        action=action,
+                        registry_domain="config_entry",
+                        service_data=service_data,
+                        session_id=session_id,
+                    )
+                    explanation = None
+                    if mesa_active and data.mesa is not None:
+                        explanation = data.mesa.resolver.explain(entity_id).to_dict()
+                    entities.append({
+                        "entity_id": entity_id,
+                        "action": action,
+                        "decision": decision.decision,
+                        "rule": decision.rule,
+                        "reason": decision.reason,
+                        "warnings": decision.warnings,
+                        "effective_rule": decision.effective_rule,
+                        "explanation": explanation,
+                    })
+                    for warning in decision.warnings:
+                        if warning not in warnings:
+                            warnings.append(warning)
+                    if decision.decision == "deny":
+                        blocked.append((entity_id, decision.rule, decision.reason))
+                    elif decision.decision == "confirm":
+                        has_confirm = True
+        except Exception:  # noqa: BLE001 - safety resolution must fail closed
+            _LOGGER.exception(
+                "MESA config-entry evaluation failed for %s", entry.entry_id
+            )
+            return (
+                _tool_error(
+                    "MESA safety evaluation failed; no integration change was made."
+                ),
+                "denied",
+                entry.entry_id,
+            )
+        decision_name = "deny" if blocked else "confirm" if has_confirm else "allow"
+
+    fingerprint_doc = {
+        "entry_id": entry.entry_id,
+        "entry": _config_entry_metadata_snapshot(entry),
+        "state": _config_entry_value(entry.state),
+        "entity_ids": entity_ids,
+        "device_ids": sorted(context.device_ids),
+        "actions": actions,
+        "entities": entities,
+        "blocked": blocked,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_doc,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+    return _ConfigEntryActionDecision(
+        decision=decision_name,
+        actions=actions,
+        entities=entities,
+        warnings=warnings,
+        fingerprint=fingerprint,
+        blocked=blocked,
+    )
+
+
+def _config_entry_mesa_preview(
+    decision: _ConfigEntryActionDecision,
+) -> dict[str, Any]:
+    return {
+        "decision": decision.decision,
+        "actions": decision.actions,
+        "entities": decision.entities,
+        "warnings": decision.warnings,
+        "fingerprint": decision.fingerprint[:16],
+    }
+
+
+def _config_entry_mesa_error(
+    entry_id: str, decision: _ConfigEntryActionDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(json.dumps({
+            "error": "MESA blocked the integration action.",
+            "entry_id": entry_id,
+            "mesa": _config_entry_mesa_preview(decision),
+            "blocked": [
+                {"entity_id": eid, "rule": rule, "reason": reason}
+                for eid, rule, reason in decision.blocked
+            ],
+        }, default=str)),
+        "denied",
+        entry_id,
+    )
+
+
+def _config_entry_context_changed_error(
+    entry_id: str, decision: _ConfigEntryActionDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(json.dumps({
+            "error": (
+                "The integration's state, resource membership, permissions, or "
+                "effective MESA profile changed after approval. Review it again."
+            ),
+            "entry_id": entry_id,
+            "mesa": _config_entry_mesa_preview(decision),
+        }, default=str)),
+        "denied",
+        entry_id,
+    )
+
+
+async def _integration_gate(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    entry: Any,
+    actions: list[str],
+    service_data: dict[str, Any],
+    request_id: str,
+    client_ip: str | None,
+    diff: Any,
+) -> tuple[dict, str, str] | None:
+    """Merge capability and MESA confirmation into one pending approval."""
+    resolved = _config_entry_action_decision(
+        data,
+        token,
+        hass,
+        entry,
+        actions=actions,
+        service_data=service_data,
+        session_id=request_id or tool_name,
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    if resolved.decision == "deny":
+        if resolved.blocked:
+            fire_mesa_blocked_event(hass, token, resolved.blocked)
+        return _config_entry_mesa_error(entry.entry_id, resolved)
+    approval_args = dict(args)
+    approval_args[_CONFIG_ENTRY_CONTEXT_FINGERPRINT] = resolved.fingerprint
+    blocked = await _gate(
+        "cap_integration_write",
+        token,
+        hass,
+        data,
+        tool_name=tool_name,
+        args=approval_args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda: diff(resolved),
+    )
+    if blocked is not None:
+        return blocked
+    if resolved.decision == "confirm":
+        return await _create_registry_mesa_approval(
+            hass,
+            data,
+            token,
+            tool_name=tool_name,
+            args=approval_args,
+            diff=await diff(resolved),
+            request_id=request_id,
+            client_ip=client_ip,
+            cap_name="cap_integration_write",
+        )
+    return None
 
 
 async def _tool_list_integrations(
@@ -4614,11 +4885,52 @@ async def _tool_set_integration_enabled(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
     request_id: str = "", client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
-    """MCP tool: enable/disable an integration (Confirm-gated)."""
-    blocked = await _gate(
-        "cap_integration_write", token, hass, data,
-        tool_name="set_integration_enabled", args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_set_integration_enabled(args, token, hass),
+    """MCP tool: enable/disable an integration with complete coverage."""
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_integration_enabled"
+    entry_id = str(args.get("entry_id") or "").strip()
+    enabled = args.get("enabled")
+    if not entry_id:
+        return _tool_error("entry_id is required."), "invalid_request", "set_integration_enabled"
+    if not isinstance(enabled, bool):
+        return _tool_error("enabled must be a boolean."), "invalid_request", "set_integration_enabled"
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(
+        entry_id, token, hass, force_registry_only=not enabled
+    )
+    if perm_error is not None:
+        return perm_error
+    if entry.disabled_by not in (None, ConfigEntryDisabler.USER):
+        return (
+            _tool_error(
+                f"This integration is disabled by {_config_entry_value(entry.disabled_by)}, not by the user."
+            ),
+            "denied",
+            entry_id,
+        )
+    if (entry.disabled_by is None) == enabled:
+        return _tool_success(json.dumps({
+            "entry_id": entry_id,
+            "enabled": enabled,
+            "changed": False,
+        })), "allowed", f"integration:{entry_id}"
+    action = "enable" if enabled else "disable"
+    blocked = await _integration_gate(
+        tool_name="set_integration_enabled",
+        args=args,
+        token=token,
+        hass=hass,
+        data=data,
+        entry=entry,
+        actions=[action],
+        service_data={"enabled": enabled},
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda decision: _build_diff_set_integration_enabled(
+            args, token, hass, decision
+        ),
     )
     if blocked is not None:
         return blocked
@@ -4638,17 +4950,400 @@ async def _execute_set_integration_enabled(
     # Phoenix MCP's own entry is never a valid target (no self-lockout); treat as not found.
     if entry is None or entry.domain == DOMAIN:
         return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(
+        entry_id, token, hass, force_registry_only=not enabled
+    )
+    if perm_error is not None:
+        return perm_error
+    if entry.disabled_by not in (None, ConfigEntryDisabler.USER):
+        return (
+            _tool_error(
+                f"This integration is disabled by {_config_entry_value(entry.disabled_by)}, not by the user."
+            ),
+            "denied",
+            entry_id,
+        )
+    if (entry.disabled_by is None) == enabled:
+        return _tool_success(json.dumps({
+            "entry_id": entry_id,
+            "enabled": enabled,
+            "changed": False,
+        })), "allowed", f"integration:{entry_id}"
+
+    action = "enable" if enabled else "disable"
+    resolved = _config_entry_action_decision(
+        data,
+        token,
+        hass,
+        entry,
+        actions=[action],
+        service_data={"enabled": enabled},
+        session_id="set_integration_enabled_execute",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    saved_fingerprint = args.get(_CONFIG_ENTRY_CONTEXT_FINGERPRINT)
+    approved_same = (
+        _approved_exec_ctx.get()
+        and isinstance(saved_fingerprint, str)
+        and saved_fingerprint == resolved.fingerprint
+    )
+    if _approved_exec_ctx.get() and isinstance(saved_fingerprint, str) and not approved_same:
+        return _config_entry_context_changed_error(entry_id, resolved)
+    if resolved.decision == "deny" or (
+        resolved.decision == "confirm" and not approved_same
+    ):
+        if resolved.blocked:
+            fire_mesa_blocked_event(hass, token, resolved.blocked)
+        return _config_entry_mesa_error(entry_id, resolved)
+    before = _config_entry_metadata_snapshot(entry)
     try:
-        await hass.config_entries.async_set_disabled_by(
+        reload_succeeded = await hass.config_entries.async_set_disabled_by(
             entry_id, None if enabled else ConfigEntryDisabler.USER
         )
     except Exception as exc:  # noqa: BLE001 - OperationNotAllowed etc. -> clean error
         _LOGGER.error("set_integration_enabled failed: %s", exc)
         return _tool_error("Failed to change integration state."), "denied", entry_id
-    return (
-        _tool_success(json.dumps({"entry_id": entry_id, "domain": entry.domain, "enabled": enabled})),
-        "allowed", f"integration:{entry_id}",
+    updated = hass.config_entries.async_get_entry(entry_id)
+    if updated is None:
+        return _tool_error("Integration not found after state change."), "denied", entry_id
+    after = _config_entry_metadata_snapshot(updated)
+    changed = before != after
+    if changed:
+        await _record_version(
+            data,
+            token,
+            resource_type="config_entry",
+            resource_id=entry_id,
+            action="edit",
+            before=before,
+            after=after,
+            alias=redact_diagnostics(updated.title),
+        )
+    body: dict[str, Any] = {
+        "entry_id": entry_id,
+        "domain": updated.domain,
+        "requested_enabled": enabled,
+        "enabled": updated.disabled_by is None,
+        "changed": changed,
+        "reload_succeeded": bool(reload_succeeded),
+        "requires_restart": not bool(reload_succeeded),
+    }
+    if resolved.warnings:
+        body["mesa_advisory"] = resolved.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body, default=str)), "allowed", f"integration:{entry_id}"
+
+
+def _set_integration_args_error(args: dict[str, Any]) -> str | None:
+    provided = [
+        field
+        for field in ("title", "pref_disable_new_entities", "pref_disable_polling")
+        if field in args
+    ]
+    if not provided:
+        return "Provide at least one integration metadata update."
+    if "title" in args and not isinstance(args["title"], str):
+        return "title must be a string."
+    if isinstance(args.get("title"), str) and not args["title"].strip():
+        return "title must not be empty."
+    for field in ("pref_disable_new_entities", "pref_disable_polling"):
+        if field in args and not isinstance(args[field], bool):
+            return f"{field} must be a boolean."
+    return None
+
+
+def _set_integration_changes(entry: Any, args: dict[str, Any]) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    if "title" in args and args["title"] != entry.title:
+        changes["title"] = args["title"]
+    for field in ("pref_disable_new_entities", "pref_disable_polling"):
+        if field in args and args[field] != bool(getattr(entry, field)):
+            changes[field] = args[field]
+    return changes
+
+
+async def _tool_set_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_integration"
+    entry_id = str(args.get("entry_id") or "").strip()
+    if not entry_id:
+        return _tool_error("entry_id is required."), "invalid_request", "set_integration"
+    value_error = _set_integration_args_error(args)
+    if value_error is not None:
+        return _tool_error(value_error), "invalid_request", entry_id
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    changes = _set_integration_changes(entry, args)
+    if not changes:
+        return _tool_success(json.dumps({
+            "entry_id": entry_id,
+            "changed": False,
+        })), "allowed", f"integration:{entry_id}"
+    actions = ["rename"] if "title" in changes else []
+    blocked = await _integration_gate(
+        tool_name="set_integration",
+        args=args,
+        token=token,
+        hass=hass,
+        data=data,
+        entry=entry,
+        actions=actions,
+        service_data={key: value for key, value in changes.items() if key == "title"},
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda decision: _build_diff_set_integration(args, token, hass, decision),
     )
+    if blocked is not None:
+        return blocked
+    return await _execute_set_integration(args, token, hass, data)
+
+
+async def _execute_set_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    restoring = _restore_ctx.get() is not None
+    if not restoring:
+        value_error = _set_integration_args_error(args)
+        if value_error is not None:
+            return _tool_error(value_error), "invalid_request", entry_id
+    changes = _set_integration_changes(entry, args)
+    if restoring and "disabled_by" in args:
+        stored_disabled_by = args["disabled_by"]
+        if stored_disabled_by not in (None, ConfigEntryDisabler.USER.value):
+            return _tool_error("Stored disabled state is not user-controlled."), "denied", entry_id
+        desired_enabled = stored_disabled_by is None
+        if (entry.disabled_by is None) != desired_enabled:
+            changes["disabled_by"] = stored_disabled_by
+    if not changes:
+        return _tool_success(json.dumps({
+            "entry_id": entry_id,
+            "changed": False,
+        })), "allowed", f"integration:{entry_id}"
+
+    actions: list[str] = []
+    if "title" in changes:
+        actions.append("rename")
+    if "disabled_by" in changes:
+        actions.append("enable" if changes["disabled_by"] is None else "disable")
+    resolved = _config_entry_action_decision(
+        data,
+        token,
+        hass,
+        entry,
+        actions=actions,
+        service_data={key: value for key, value in changes.items() if key in ("title", "disabled_by")},
+        session_id="set_integration_execute",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    saved_fingerprint = args.get(_CONFIG_ENTRY_CONTEXT_FINGERPRINT)
+    approved_same = (
+        _approved_exec_ctx.get()
+        and isinstance(saved_fingerprint, str)
+        and saved_fingerprint == resolved.fingerprint
+    )
+    if _approved_exec_ctx.get() and isinstance(saved_fingerprint, str) and not approved_same:
+        return _config_entry_context_changed_error(entry_id, resolved)
+    # The Changes-tab restore is itself an explicit, authenticated admin
+    # confirmation and runs synchronously after this fresh MESA resolution.
+    # It may satisfy only `confirm`; deny verdicts (including read_only and
+    # enforced prohibited) still fail below.  Normal MCP execution continues to
+    # require the exact approval fingerprint captured in its preview.
+    mesa_confirmed = approved_same or restoring
+    if resolved.decision == "deny" or (
+        resolved.decision == "confirm" and not mesa_confirmed
+    ):
+        return _config_entry_mesa_error(entry_id, resolved)
+
+    before = _config_entry_metadata_snapshot(entry)
+    update_values = {
+        key: changes[key]
+        for key in ("title", "pref_disable_new_entities", "pref_disable_polling")
+        if key in changes
+    }
+    try:
+        if update_values:
+            hass.config_entries.async_update_entry(entry, **update_values)
+        reload_attempted = False
+        reload_succeeded: bool | None = None
+        if "disabled_by" in changes:
+            reload_attempted = True
+            reload_succeeded = await hass.config_entries.async_set_disabled_by(
+                entry_id,
+                None if changes["disabled_by"] is None else ConfigEntryDisabler.USER,
+            )
+        elif "pref_disable_polling" in changes and entry.state is ConfigEntryState.LOADED:
+            reload_attempted = True
+            reload_succeeded = await hass.config_entries.async_reload(entry_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.error("set_integration failed for %s: %s", entry_id, exc)
+        return _tool_error("Failed to update integration."), "denied", entry_id
+    updated = hass.config_entries.async_get_entry(entry_id)
+    if updated is None:
+        return _tool_error("Integration not found after update."), "denied", entry_id
+    after = _config_entry_metadata_snapshot(updated)
+    await _record_version(
+        data,
+        token,
+        resource_type="config_entry",
+        resource_id=entry_id,
+        action="edit",
+        before=before,
+        after=after,
+        alias=redact_diagnostics(updated.title),
+    )
+    body: dict[str, Any] = {
+        "entry_id": entry_id,
+        "changed": before != after,
+        "updated": {
+            "title": redact_diagnostics(updated.title),
+            "pref_disable_new_entities": bool(updated.pref_disable_new_entities),
+            "pref_disable_polling": bool(updated.pref_disable_polling),
+            "enabled": updated.disabled_by is None,
+        },
+        "reload_attempted": reload_attempted,
+        "reload_succeeded": reload_succeeded,
+        "requires_restart": reload_attempted and reload_succeeded is False,
+    }
+    if resolved.warnings:
+        body["mesa_advisory"] = resolved.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body, default=str)), "allowed", f"integration:{entry_id}"
+
+
+async def _tool_reload_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "reload_integration"
+    entry_id = str(args.get("entry_id") or "").strip()
+    if not entry_id:
+        return _tool_error("entry_id is required."), "invalid_request", "reload_integration"
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    support_error = await _reload_integration_support_error(entry, hass)
+    if support_error is not None:
+        return _tool_error(support_error), "denied", entry_id
+    blocked = await _integration_gate(
+        tool_name="reload_integration",
+        args=args,
+        token=token,
+        hass=hass,
+        data=data,
+        entry=entry,
+        actions=["reload"],
+        service_data={},
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda decision: _build_diff_reload_integration(args, token, hass, decision),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_reload_integration(args, token, hass, data)
+
+
+async def _reload_integration_support_error(entry: Any, hass: HomeAssistant) -> str | None:
+    if entry.disabled_by is not None:
+        return "Disabled integrations cannot be reloaded."
+    if entry.state in (
+        ConfigEntryState.MIGRATION_ERROR,
+        ConfigEntryState.SETUP_IN_PROGRESS,
+        ConfigEntryState.UNLOAD_IN_PROGRESS,
+    ):
+        return f"Integration state {_config_entry_value(entry.state)} is not reloadable."
+    supports_reload, _unload, _options, _reconfigure = await _config_entry_support(entry, hass)
+    if supports_reload is not True:
+        return "This integration does not currently support reload."
+    return None
+
+
+async def _execute_reload_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    support_error = await _reload_integration_support_error(entry, hass)
+    if support_error is not None:
+        return _tool_error(support_error), "denied", entry_id
+    resolved = _config_entry_action_decision(
+        data,
+        token,
+        hass,
+        entry,
+        actions=["reload"],
+        service_data={},
+        session_id="reload_integration_execute",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    saved_fingerprint = args.get(_CONFIG_ENTRY_CONTEXT_FINGERPRINT)
+    approved_same = (
+        _approved_exec_ctx.get()
+        and isinstance(saved_fingerprint, str)
+        and saved_fingerprint == resolved.fingerprint
+    )
+    if _approved_exec_ctx.get() and isinstance(saved_fingerprint, str) and not approved_same:
+        return _config_entry_context_changed_error(entry_id, resolved)
+    if resolved.decision == "deny" or (
+        resolved.decision == "confirm" and not approved_same
+    ):
+        return _config_entry_mesa_error(entry_id, resolved)
+    try:
+        reloaded = await hass.config_entries.async_reload(entry_id)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.error("reload_integration failed for %s: %s", entry_id, exc)
+        return _tool_error("Failed to reload integration."), "denied", entry_id
+    body: dict[str, Any] = {
+        "entry_id": entry_id,
+        "reloaded": bool(reloaded),
+        "requires_restart": not bool(reloaded),
+        "state": _config_entry_value(
+            getattr(hass.config_entries.async_get_entry(entry_id), "state", None)
+        ),
+    }
+    if resolved.warnings:
+        body["mesa_advisory"] = resolved.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body, default=str)), "allowed", f"integration:{entry_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -6092,20 +6787,92 @@ def _build_diff_call_service(args: dict, token: TokenRecord, hass: HomeAssistant
     }
 
 
-def _build_diff_set_integration_enabled(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
+async def _build_diff_set_integration_enabled(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: _ConfigEntryActionDecision | None = None,
+) -> dict:
     entry_id = str(args.get("entry_id") or "").strip()
     enabled = bool(args.get("enabled"))
     entry = hass.config_entries.async_get_entry(entry_id)
-    label = f"{entry.domain} ({entry.title})" if entry is not None else entry_id
+    label = (
+        f"{entry.domain} ({redact_diagnostics(entry.title)})"
+        if entry is not None
+        else entry_id
+    )
+    preview: dict[str, Any] = {
+        "domain": entry.domain if entry is not None else None,
+        "enabled": enabled,
+        "warning": None if enabled else "Disabling unloads the integration and its entities.",
+    }
+    if mesa_decision is not None:
+        preview["mesa"] = _config_entry_mesa_preview(mesa_decision)
     return {
         "kind": "system_action",
         **_summary("integration.enable" if enabled else "integration.disable", label=label),
         "target": {"type": "integration", "id": entry_id, "label": label},
-        "preview": {
-            "domain": entry.domain if entry is not None else None,
-            "enabled": enabled,
-            "warning": None if enabled else "Disabling unloads the integration and its entities.",
-        },
+        "preview": preview,
+    }
+
+
+async def _build_diff_set_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: _ConfigEntryActionDecision | None = None,
+) -> dict[str, Any]:
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    label = (
+        f"{entry.domain} ({redact_diagnostics(entry.title)})"
+        if entry is not None
+        else entry_id
+    )
+    preview: dict[str, Any] = {}
+    if entry is not None:
+        for field in ("title", "pref_disable_new_entities", "pref_disable_polling"):
+            if field in args:
+                before = getattr(entry, field)
+                preview[field] = {
+                    "before": redact_diagnostics(before) if field == "title" else before,
+                    "after": redact_diagnostics(args[field]) if field == "title" else args[field],
+                }
+    if mesa_decision is not None:
+        preview["mesa"] = _config_entry_mesa_preview(mesa_decision)
+    return {
+        "kind": "system_action",
+        **_summary("integration.update", label=label),
+        "target": {"type": "integration", "id": entry_id, "label": label},
+        "preview": preview,
+    }
+
+
+async def _build_diff_reload_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: _ConfigEntryActionDecision | None = None,
+) -> dict[str, Any]:
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    label = (
+        f"{entry.domain} ({redact_diagnostics(entry.title)})"
+        if entry is not None
+        else entry_id
+    )
+    preview: dict[str, Any] = {
+        "domain": entry.domain if entry is not None else None,
+        "state": _config_entry_value(entry.state) if entry is not None else None,
+        "warning": "Reload temporarily unloads and sets up the integration again.",
+    }
+    if mesa_decision is not None:
+        preview["mesa"] = _config_entry_mesa_preview(mesa_decision)
+    return {
+        "kind": "system_action",
+        **_summary("integration.reload", label=label),
+        "target": {"type": "integration", "id": entry_id, "label": label},
+        "preview": preview,
     }
 
 
@@ -6151,6 +6918,8 @@ _register_executor("delete_esphome_yaml", _execute_delete_esphome_yaml)
 _register_executor("rename_esphome_device", _execute_rename_esphome_device)
 _register_executor("install_esphome_firmware", _execute_install_esphome_firmware)
 _register_executor("set_integration_enabled", _execute_set_integration_enabled)
+_register_executor("set_integration", _execute_set_integration)
+_register_executor("reload_integration", _execute_reload_integration)
 _register_executor("create_backup", _execute_create_backup)
 _register_executor("create_dashboard", _execute_create_dashboard)
 _register_executor("edit_dashboard", _execute_edit_dashboard)
@@ -6307,6 +7076,8 @@ _register_tool("get_config_entry_options", _tool_get_config_entry_options)
 _register_tool("set_config_entry_options", _tool_set_config_entry_options)
 _register_tool("list_integrations", _tool_list_integrations)
 _register_tool("set_integration_enabled", _tool_set_integration_enabled)
+_register_tool("set_integration", _tool_set_integration)
+_register_tool("reload_integration", _tool_reload_integration)
 _register_tool("list_backups", _tool_list_backups)
 _register_tool("create_backup", _tool_create_backup)
 _register_tool("list_dashboards", _tool_list_dashboards)

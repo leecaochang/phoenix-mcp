@@ -547,7 +547,7 @@
       "colType": "类型",
       "colWhen": "时间",
       "confirmRestore": "确认还原{side}的配置",
-      "empty": "尚无智能体配置变更。对自动化、脚本、场景、辅助元素和仪表盘的更改将显示在这里。",
+      "empty": "尚无智能体配置变更。对自动化、脚本、场景、集成、辅助元素和仪表盘的更改将显示在这里。",
       "hintCode": "带语法高亮和行号。此视图不会标记变更的行。",
       "hintCurrent": "这是 <strong>{name}</strong> 的当前配置，没有可还原的内容。",
       "hintDiff": "删除的行以红色标记，新增的行以绿色标记。",
@@ -599,7 +599,7 @@
       "typeYamlConfig": "YAML 配置",
       "typeEsphomeYaml": "ESPHome YAML",
       "typeFile": "文件",
-      "typeConfigEntry": "助手设置",
+      "typeConfigEntry": "集成/助手设置",
       "typeEnergy": "能源仪表盘"
     },
     "perms": {
@@ -738,6 +738,8 @@
       "install_esphome_firmware.jump": "将 ESPHome 固件刷写到 {label}（ESPHome 版本变更：{jump}）",
       "integration.disable": "禁用集成 {label}",
       "integration.enable": "启用集成 {label}",
+      "integration.reload": "重新加载集成 {label}",
+      "integration.update": "更新集成 {label}",
       "mesa_service": "{domain}.{service} 的 MESA 确认",
       "rename_esphome_device": "将 ESPHome 设备 {device} 重命名为 {new_name}。此操作会编译并刷写该设备。",
       "rename_esphome_device.services": "将 ESPHome 设备 {device} 重命名为 {new_name}，同时重命名 {count} 个动作服务。此操作会编译并刷写该设备。",

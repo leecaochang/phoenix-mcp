@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 118 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 120 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 118 of its own, 141 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 120 of its own, 143 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 141 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 143 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -337,11 +337,12 @@
             <dl><dt>params</dt><dd><code>path</code> (required for read/write; relative to the allowed directories), <code>content</code> (required for write), <code>expected_hash</code> (write, optional)</dd></dl>
           </article>
 
-          <article class="tool" data-cap="system" data-search="list_integrations set_integration_enabled enable disable">
-            <div class="tool-head"><span class="tool-name">list_integrations</span><span class="tool-name">set_integration_enabled</span><span class="badge badge-cap">Integration management</span></div>
+          <article class="tool" data-cap="system" data-search="list_integrations set_integration set_integration_enabled reload_integration rename preferences polling enable disable reload mesa">
+            <div class="tool-head"><span class="tool-name">list_integrations</span><span class="tool-name">set_integration</span><span class="tool-name">set_integration_enabled</span><span class="tool-name">reload_integration</span><span class="badge badge-cap">Integration management</span></div>
             <p class="tool-desc"><code>list_integrations</code> returns only config entries visible through an accessible owned entity or device (pass-through tokens may also see resource-less entries). Its allowlisted projection includes exact entry ID, domain, title, source, normalized state, enabled/disabled reason, a scrubbed setup-failure reason, safely probed reload/unload/options/reconfigure support, new-entity and polling preferences, and accessible entity/device counts. An inconclusive support probe is <code>null</code>, not a false negative. Config-entry data/options, unique and discovery identity, URLs, credentials, and network identity are never returned. Phoenix MCP's own entry is always excluded.</p>
-            <p class="tool-desc"><code>set_integration_enabled</code> enables or disables an entry and is Confirm-eligible. Its complete inherited-write and MESA lifecycle hardening is part of the next integration-management stage.</p>
-            <dl><dt>params</dt><dd><code>set_integration_enabled</code>: <code>entry_id</code> (required; from <code>list_integrations</code>), <code>enabled</code> (required; boolean)</dd></dl>
+            <p class="tool-desc">All three write tools require <code>cap_integration_write</code>, WRITE on every owned entity, and an explicit WRITE grant on every owned device; scoped resource-less entries fail closed. <code>set_integration</code> changes the title and the two safe config-entry preferences. A polling-preference change reloads a loaded entry, while a title-only or new-entity-preference update does not. <code>set_integration_enabled</code> changes only user-controlled enabled state and proves registry-only authorization before disabling. <code>reload_integration</code> refuses disabled, non-recoverable, or unsupported entries. Results distinguish a successful reload from a change that needs a Home Assistant restart. No-op metadata or enabled-state requests create neither an approval nor a version; reload itself creates no version.</p>
+            <p class="tool-desc">Rename, reload, enable, and disable are evaluated against every owned entity's fully inherited MESA profile, so entity, device, area, integration, and domain restrictions all contribute. Any denial blocks the whole entry; an enforced confirmation merges into the ordinary capability approval. Entry state, exact entity/device membership, permissions, and every resolved MESA explanation are fingerprinted and checked again immediately before approved execution. Metadata and enabled-state versions are restorable from the Changes tab.</p>
+            <dl><dt>params</dt><dd><code>set_integration</code>: <code>entry_id</code> plus at least one of <code>title</code>, <code>pref_disable_new_entities</code>, or <code>pref_disable_polling</code>; <code>set_integration_enabled</code>: <code>entry_id</code> and boolean <code>enabled</code>; <code>reload_integration</code>: <code>entry_id</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="system" data-search="set_entity delete_entity rename registry enabled disabled hidden labels categories device class area icon orphan mesa">

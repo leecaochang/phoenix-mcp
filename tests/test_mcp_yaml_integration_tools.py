@@ -47,14 +47,16 @@ def _json(content: dict) -> dict:
     return json.loads(content["content"][0]["text"])
 
 
-async def _call(name, args, token, hass):
-    return await _call_tool(name, args, token, hass, MagicMock())
+async def _call(name, args, token, hass, data=None):
+    return await _call_tool(name, args, token, hass, data or MagicMock())
 
 
 class TestExecutorRegistration:
     def test_registered(self):
         assert "set_yaml_config" in _EXECUTOR_REGISTRY
         assert "set_integration_enabled" in _EXECUTOR_REGISTRY
+        assert "set_integration" in _EXECUTOR_REGISTRY
+        assert "reload_integration" in _EXECUTOR_REGISTRY
 
 
 class TestYamlConfig:
@@ -788,19 +790,33 @@ class TestIntegrations:
     async def test_disable_calls_ha(self, hass):
         entry = MockConfigEntry(domain="test_integration", entry_id="e2")
         entry.add_to_hass(hass)
+        token = _token()
+        token.pass_through = True
+        data = MagicMock()
+        data.mesa = None
+        data.store.get_settings.return_value.mesa_mode = "off"
         with patch_set_disabled(hass) as mock:
             content, outcome, _ = await _call(
-                "set_integration_enabled", {"entry_id": "e2", "enabled": False}, _token(), hass)
+                "set_integration_enabled", {"entry_id": "e2", "enabled": False}, token, hass, data)
         assert outcome == "allowed"
         mock.assert_awaited_once()
         assert mock.await_args.args[1] == ConfigEntryDisabler.USER
 
     async def test_enable_passes_none(self, hass):
-        entry = MockConfigEntry(domain="test_integration", entry_id="e3")
+        entry = MockConfigEntry(
+            domain="test_integration",
+            entry_id="e3",
+            disabled_by=ConfigEntryDisabler.USER,
+        )
         entry.add_to_hass(hass)
+        token = _token()
+        token.pass_through = True
+        data = MagicMock()
+        data.mesa = None
+        data.store.get_settings.return_value.mesa_mode = "off"
         with patch_set_disabled(hass) as mock:
             _, outcome, _ = await _call(
-                "set_integration_enabled", {"entry_id": "e3", "enabled": True}, _token(), hass)
+                "set_integration_enabled", {"entry_id": "e3", "enabled": True}, token, hass, data)
         assert outcome == "allowed"
         assert mock.await_args.args[1] is None
 

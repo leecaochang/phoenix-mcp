@@ -1171,6 +1171,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "write_file": "Write file '{path}'",
     "integration.enable": "Enable integration {label}",
     "integration.disable": "Disable integration {label}",
+    "integration.update": "Update integration {label}",
+    "integration.reload": "Reload integration {label}",
     "create_backup": "Create backup",
     "create_backup.named": 'Create backup "{name}"',
     # ESPHome.

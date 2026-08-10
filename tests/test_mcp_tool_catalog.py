@@ -359,12 +359,12 @@ def test_every_published_parameter_declares_a_type():
 
 
 def _handler_calls_gate(fn) -> bool:
-    """True when a tool handler's own body calls the capability gate."""
+    """True when a handler calls a capability gate or its centralized wrapper."""
     for node in ast.walk(ast.parse(inspect.getsource(fn))):
         if isinstance(node, ast.Call):
             func = node.func
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if name in ("_gate", "_pending_or_inline"):
+            if name in ("_gate", "_integration_gate", "_pending_or_inline"):
                 return True
     return False
 
