@@ -131,6 +131,58 @@ def resolve(entity_id: str, token: TokenRecord, hass: HomeAssistant) -> Permissi
     return Permission.NO_ACCESS
 
 
+def resolve_registry_access(
+    entity_id: str, token: TokenRecord, hass: HomeAssistant
+) -> Permission:
+    """Resolve access to an entity, requiring inherited scope when registry-only.
+
+    A disabled entry, or an entry whose integration currently publishes no
+    State, is manageable only through its owning device or domain.  An explicit
+    entity grant may still *restrict* that inherited access (RED and YELLOW are
+    preserved by the ordinary resolver), but it cannot create positive access
+    after the entity has disappeared from the live permission tree.
+
+    Live, enabled entities retain the existing resolve() semantics.  Pass-through
+    tokens also retain WRITE after the ordinary blocklist/ghost checks; Assist
+    exposure remains the caller's shared enumeration filter.
+    """
+    ordinary = resolve(entity_id, token, hass)
+    if ordinary not in (Permission.READ, Permission.WRITE):
+        return ordinary
+
+    registry = er.async_get(hass)
+    entry = registry.async_get(entity_id)
+    canonical_id = entry.entity_id if entry is not None else entity_id
+    if entry is None or (
+        entry.disabled_by is None and hass.states.get(canonical_id) is not None
+    ):
+        return ordinary
+    if token.pass_through:
+        return ordinary
+
+    permissions = token.permissions
+    domain = canonical_id.split(".", 1)[0]
+    device_node = permissions.devices.get(entry.device_id) if entry.device_id else None
+    domain_node = permissions.domains.get(domain)
+
+    inherited = Permission.NO_ACCESS
+    for node in (device_node, domain_node):
+        if node is None:
+            continue
+        if node.state == "GREEN":
+            inherited = Permission.WRITE
+            break
+        if node.state == "YELLOW":
+            inherited = Permission.READ
+            break
+
+    if inherited == Permission.NO_ACCESS:
+        return Permission.NO_ACCESS
+    if ordinary == Permission.WRITE and inherited == Permission.WRITE:
+        return Permission.WRITE
+    return Permission.READ
+
+
 def is_sensitive_key(key: Any) -> bool:
     """Whether an attribute/response key name marks its value as sensitive.
 

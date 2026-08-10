@@ -392,6 +392,182 @@ class TestSearchEntities:
         assert body["entities"] == []
         assert "fuzzy_fallback" not in body
 
+    async def test_default_search_does_not_add_registry_only_entries(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "uid_disabled_default",
+            suggested_object_id="disabled_default", original_name="Disabled Default",
+        )
+        ent_reg.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        content, _, _ = await _call("search_entities", {}, _token(), hass)
+        ids = {row["entity_id"] for row in _result_json(content)["entities"]}
+        assert entry.entity_id not in ids
+
+    async def test_disabled_search_returns_inherited_domain_entry(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "uid_disabled_search",
+            suggested_object_id="disabled_search", original_name="Disabled Search",
+        )
+        ent_reg.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        content, outcome, _ = await _call(
+            "search_entities", {"registry_state": "disabled", "query": "disabled search"},
+            _token(), hass,
+        )
+        assert outcome == "allowed"
+        rows = _result_json(content)["entities"]
+        assert [row["entity_id"] for row in rows] == [entry.entity_id]
+        assert rows[0]["state"] is None
+        assert rows[0]["registry_state"] == "disabled"
+        assert rows[0]["state_available"] is False
+        assert rows[0]["friendly_name"] == "Disabled Search"
+
+    async def test_disabled_flag_wins_while_a_live_state_lingers(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "uid_disabled_lingering",
+            suggested_object_id="disabled_lingering",
+        )
+        hass.states.async_set(entry.entity_id, "on", {"friendly_name": "Lingering"})
+        ent_reg.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        enabled, _, _ = await _call("search_entities", {}, _token(), hass)
+        disabled, _, _ = await _call(
+            "search_entities", {"registry_state": "disabled"}, _token(), hass
+        )
+        assert entry.entity_id not in {
+            row["entity_id"] for row in _result_json(enabled)["entities"]
+        }
+        row = next(
+            row for row in _result_json(disabled)["entities"]
+            if row["entity_id"] == entry.entity_id
+        )
+        assert row["state"] == "on"
+        assert row["registry_state"] == "disabled"
+        assert row["state_available"] is True
+
+    async def test_disabled_search_accepts_device_grant(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "sensor", "test_integration", "uid_device_disabled",
+            device_id=reg_env["sensor_hub"].id,
+            suggested_object_id="device_disabled", original_name="Device Disabled",
+        )
+        ent_reg.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        token = _token(permissions=PermissionTree(devices={
+            reg_env["sensor_hub"].id: PermissionNode(state="YELLOW")
+        }))
+        content, _, _ = await _call(
+            "search_entities", {"registry_state": "disabled"}, token, hass
+        )
+        assert [row["entity_id"] for row in _result_json(content)["entities"]] == [
+            entry.entity_id
+        ]
+
+    async def test_entity_only_grant_cannot_find_disabled_entry(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "uid_entity_only_disabled",
+            suggested_object_id="entity_only_disabled",
+        )
+        ent_reg.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        token = _token(permissions=PermissionTree(entities={
+            entry.entity_id: PermissionNode(state="GREEN")
+        }))
+        content, _, _ = await _call(
+            "search_entities", {"registry_state": "disabled"}, token, hass
+        )
+        assert _result_json(content)["entities"] == []
+
+    async def test_all_includes_enabled_registry_entry_without_state(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "uid_missing_state",
+            suggested_object_id="missing_state", original_name="Missing State",
+        )
+        content, _, _ = await _call(
+            "search_entities", {"registry_state": "all", "query": "missing state"},
+            _token(), hass,
+        )
+        row = _result_json(content)["entities"][0]
+        assert row["entity_id"] == entry.entity_id
+        assert row["registry_state"] == "enabled"
+        assert row["state_available"] is False
+
+    async def test_invalid_registry_state_is_rejected(self, hass, reg_env):
+        _, outcome, _ = await _call(
+            "search_entities", {"registry_state": "everything"}, _token(), hass
+        )
+        assert outcome == "invalid_request"
+
+
+class TestDescribeRegistryOnlyEntity:
+    async def test_describe_disabled_entry_returns_allowlisted_registry_data(
+        self, hass, reg_env
+    ):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "secret-unique-id",
+            device_id=reg_env["hub"].id, suggested_object_id="disabled_describe",
+            original_name="Disabled Describe", original_device_class="outlet",
+        )
+        entry = ent_reg.async_update_entity(
+            entry.entity_id,
+            disabled_by=er.RegistryEntryDisabler.USER,
+            hidden_by=er.RegistryEntryHider.USER,
+            labels={"safe-label"},
+            categories={"scope": "safe-category"},
+        )
+        content, outcome, _ = await _call(
+            "describe_entity", {"entity_id": entry.entity_id}, _token(), hass
+        )
+        assert outcome == "allowed"
+        body = _result_json(content)
+        assert body["state"] is None
+        assert body["attributes"] == {}
+        assert body["writable"] is True
+        assert body["registry"]["disabled_by"] == "user"
+        assert body["registry"]["hidden_by"] == "user"
+        assert body["registry"]["device_id"] == reg_env["hub"].id
+        assert body["registry"]["labels"] == ["safe-label"]
+        assert body["registry"]["categories"] == {"scope": "safe-category"}
+        assert set(body["registry"]) == {
+            "platform", "name", "original_name", "icon", "original_icon",
+            "area_id", "device_id", "device_class", "original_device_class",
+            "entity_category", "disabled_by", "hidden_by", "labels",
+            "categories", "has_entity_name",
+        }
+        wire = json.dumps(body)
+        assert "secret-unique-id" not in wire
+        assert "config_entry_id" not in wire
+        assert "options" not in wire
+
+    async def test_entity_only_grant_cannot_describe_disabled_entry(self, hass, reg_env):
+        ent_reg = er.async_get(hass)
+        entry = ent_reg.async_get_or_create(
+            "light", "test_integration", "uid_describe_entity_only",
+            suggested_object_id="describe_entity_only",
+        )
+        ent_reg.async_update_entity(
+            entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        token = _token(permissions=PermissionTree(entities={
+            entry.entity_id: PermissionNode(state="GREEN")
+        }))
+        _, outcome, _ = await _call(
+            "describe_entity", {"entity_id": entry.entity_id}, token, hass
+        )
+        assert outcome == "not_found"
+
 
 class TestGetOverview:
     async def test_deny_without_cap(self, hass, reg_env):

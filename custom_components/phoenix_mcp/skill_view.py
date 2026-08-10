@@ -48,16 +48,21 @@ grain of the model gives the smoothest results and avoids dead ends.
 ### 2. Discover (read-only; results are always scoped to your token)
 - `get_overview`: a compact home summary to get your bearings.
 - `search_entities`: find entities by name, state, `device_class`, area, or
-  filters like unavailable or "stale > N". This is keyword/attribute search.
+  filters like unavailable or "stale > N". It defaults to live enabled
+  entities; pass `registry_state: disabled` for disabled registry entries or
+  `registry_state: all` to include registry entries with no live state. Those
+  registry-only rows require inherited device/domain permission. This is
+  keyword/attribute search.
 - `mesa_query_profiles`: a different search, by MESA's semantic profile (an
   entity's nature/role), not by name. Reach for it when you care about what an
   entity is, not what it is called.
 - `list_areas`, `list_floors`, `list_zones`, `list_devices`, `get_device`:
   registry enumeration. Only areas and devices with at least one accessible
   entity are returned.
-- `describe_entity`: one entity's state, the services that act on it, its MESA
-  profile and `control_mode`, what references it, and the spoken names Assist
-  matches it by (`aliases`).
+- `describe_entity`: one entity's state when available, its safe registry
+  metadata (including disabled/hidden state, labels, categories and overrides),
+  the services that act on it, its MESA profile and `control_mode`, what
+  references it, and the spoken names Assist matches it by (`aliases`).
 - `describe_area`: a registry, state, and MESA rollup for one area.
 - `find_available_actions`: the services you may actually invoke on an entity or
   area, already filtered by your capabilities and MESA's control mode.

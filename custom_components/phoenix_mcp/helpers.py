@@ -46,6 +46,7 @@ from .policy_engine import (
     is_sensitive_key,
     parse_relative_time,
     resolve,
+    resolve_registry_access,
     template_blocklist_vars,
 )
 from .token_store import token_name_slug
@@ -102,7 +103,7 @@ def build_permitted_entity_ids(token: TokenRecord, hass: HomeAssistant) -> set:
     expose = assist_expose_check(token, hass)
     return {
         eid for eid in candidate_ids
-        if resolve(eid, token, hass) in (Permission.READ, Permission.WRITE)
+        if resolve_registry_access(eid, token, hass) in (Permission.READ, Permission.WRITE)
         and (expose is None or expose(eid))
     }
 

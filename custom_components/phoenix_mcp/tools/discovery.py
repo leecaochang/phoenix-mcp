@@ -58,7 +58,7 @@ from .authoring import _AUTOMATION_YAML, _SCRIPT_CONFIG_PATH, _read_automations_
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
 from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
-from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_esphome_user_service, resolve_service_targets, scrub_sensitive_attributes
+from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
 from ..token_store import TokenRecord
 from .. import yaml_includes
 
@@ -735,6 +735,7 @@ class _SearchFilters:
     want_unavailable: bool
     stale_threshold: float | None
     limit: int
+    registry_state: str
 
 
 def _parse_search_args(args: dict) -> _SearchFilters:
@@ -776,7 +777,69 @@ def _parse_search_args(args: dict) -> _SearchFilters:
         want_unavailable=bool(args.get("unavailable")),
         stale_threshold=stale_threshold,
         limit=max(1, min(limit, 500)),
+        registry_state=str(args.get("registry_state") or "enabled").strip().lower(),
     )
+
+
+def _registry_value(value: Any) -> Any:
+    """Return an enum's JSON value while preserving ordinary scalars and None."""
+    return getattr(value, "value", value)
+
+
+def _registry_projection(entry: er.RegistryEntry) -> dict[str, Any]:
+    """Agent-safe, explicit projection of one entity-registry entry.
+
+    Identity and integration-private fields (unique_id, config-entry ids,
+    options and capabilities) are deliberately absent.  Keep this allowlist
+    local to the read tool so adding a field to HA's RegistryEntry can never
+    expand the MCP response implicitly.
+    """
+    return {
+        "platform": entry.platform,
+        "name": entry.name,
+        "original_name": entry.original_name,
+        "icon": entry.icon,
+        "original_icon": entry.original_icon,
+        "area_id": entry.area_id,
+        "device_id": entry.device_id,
+        "device_class": entry.device_class,
+        "original_device_class": entry.original_device_class,
+        "entity_category": _registry_value(entry.entity_category),
+        "disabled_by": _registry_value(entry.disabled_by),
+        "hidden_by": _registry_value(entry.hidden_by),
+        "labels": sorted(entry.labels),
+        "categories": dict(sorted(entry.categories.items())),
+        "has_entity_name": entry.has_entity_name,
+    }
+
+
+def _search_candidate_ids(
+    registry_state: str, hass: HomeAssistant, registry: er.EntityRegistry
+) -> list[str]:
+    """Return the candidate pool for one search registry-state selector.
+
+    enabled intentionally starts from live states for backward compatibility.
+    all adds every registry row, including enabled entries whose integration is
+    currently absent; disabled is based on the registry flag even if a stale
+    live State briefly remains during teardown.
+    """
+    live_ids = [state.entity_id for state in hass.states.async_all()]
+    if registry_state == "enabled":
+        return [
+            eid for eid in live_ids
+            if (entry := registry.async_get(eid)) is None or entry.disabled_by is None
+        ]
+    if registry_state == "disabled":
+        return [
+            entry.entity_id for entry in registry.entities.values()
+            if entry.disabled_by is not None
+        ]
+
+    seen = set(live_ids)
+    return [
+        *live_ids,
+        *(entry.entity_id for entry in registry.entities.values() if entry.entity_id not in seen),
+    ]
 
 
 def _annotate_search_rows(
@@ -812,21 +875,43 @@ async def _tool_search_entities(
         return _tool_error("Forbidden."), "denied", "search_entities"
 
     f = _parse_search_args(args)
+    if f.registry_state not in {"enabled", "disabled", "all"}:
+        return _tool_error(
+            "registry_state must be one of: enabled, disabled, all."
+        ), "invalid_request", "search_entities"
 
     registry = er.async_get(hass)
     dev_reg = dr.async_get(hass)
     area_reg = ar.async_get(hass)
     now = utcnow()
 
+    expose = assist_expose_check(token, hass)
     matches: list[dict] = []
-    for e in filter_entities_for_token(hass.states.async_all(), token, hass):
-        eid = e["entity_id"]
+    for eid in _search_candidate_ids(f.registry_state, hass, registry):
+        perm = resolve_registry_access(eid, token, hass)
+        if perm not in (Permission.READ, Permission.WRITE):
+            continue
+        if expose is not None and not expose(eid):
+            continue
+
+        state = hass.states.get(eid)
+        entry = registry.async_get(eid)
+        e = scrub_sensitive_attributes(state) if state is not None else {
+            "entity_id": eid,
+            "state": None,
+            "attributes": {},
+        }
         domain = eid.split(".")[0]
         if f.domains is not None and domain not in f.domains:
             continue
         attrs = e.get("attributes", {})
-        fname = attrs.get("friendly_name") or ""
-        if f.device_class is not None and attrs.get("device_class") != f.device_class:
+        fname = attrs.get("friendly_name") or (
+            (entry.name or entry.original_name) if entry is not None else ""
+        )
+        device_class = attrs.get("device_class") or (
+            (entry.device_class or entry.original_device_class) if entry is not None else None
+        )
+        if f.device_class is not None and device_class != f.device_class:
             continue
         state_val = e.get("state")
         if f.state is not None and state_val != f.state:
@@ -847,14 +932,20 @@ async def _tool_search_entities(
             last_changed = parse_datetime(e.get("last_changed") or "")
             if last_changed is None or (now - last_changed).total_seconds() < f.stale_threshold * 3600:
                 continue
-        matches.append({
+        row = {
             "entity_id": eid,
             "state": state_val,
             "friendly_name": fname or None,
             "domain": domain,
             "area": area_name,
-            "device_class": attrs.get("device_class"),
-        })
+            "device_class": device_class,
+        }
+        if entry is not None and (entry.disabled_by is not None or state is None):
+            row["registry_state"] = (
+                "disabled" if entry.disabled_by is not None else "enabled"
+            )
+            row["state_available"] = state is not None
+        matches.append(row)
 
     fuzzy_fallback = False
     if f.query:
@@ -1383,21 +1474,27 @@ async def _tool_describe_entity(
     if not entity_id:
         return _tool_error("Missing required argument: entity_id"), "invalid_request", "describe_entity"
 
-    perm = resolve(entity_id, token, hass)
+    registry = er.async_get(hass)
+    entry = registry.async_get(entity_id)
+    if entry is not None:
+        entity_id = entry.entity_id
+
+    perm = resolve_registry_access(entity_id, token, hass)
     if perm not in (Permission.READ, Permission.WRITE):
         return _tool_error("Entity not found."), "not_found", entity_id
     state = hass.states.get(entity_id)
-    if state is None:
-        return _tool_error("Entity not found."), "not_found", entity_id
 
     domain = entity_id.split(".")[0]
-    scrubbed = scrub_sensitive_attributes(state)
+    scrubbed = scrub_sensitive_attributes(state) if state is not None else {
+        "state": None,
+        "attributes": {},
+    }
     body: dict = {
         "entity_id": entity_id,
         "domain": domain,
         "state": scrubbed.get("state"),
         "attributes": scrubbed.get("attributes"),
-        "area": _area_name_for_entity(entity_id, er.async_get(hass), dr.async_get(hass), ar.async_get(hass)),
+        "area": _area_name_for_entity(entity_id, registry, dr.async_get(hass), ar.async_get(hass)),
         "writable": token.pass_through or perm == Permission.WRITE,
         "domain_services": sorted(hass.services.async_services().get(domain, {}).keys()),
         "referenced_by": await hass.async_add_executor_job(_references_for_entity, hass, entity_id),
@@ -1418,9 +1515,12 @@ async def _tool_describe_entity(
     # entity_category (config/diagnostic) when set: tells the agent this is a
     # setup/health entity, not a primary control. Bulk device/area service calls
     # exclude these; describe_entity keeps them visible and just labels them.
-    entry = er.async_get(hass).async_get(entity_id)
+    entry = registry.async_get(entity_id)
     if entry is not None and entry.entity_category is not None:
         body["entity_category"] = entry.entity_category.value
+
+    if entry is not None:
+        body["registry"] = _registry_projection(entry)
 
     # The spoken names Home Assistant matches this entity by, RESOLVED: the
     # entity's own name appears as the name itself rather than as the sentinel

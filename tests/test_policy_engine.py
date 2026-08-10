@@ -23,6 +23,7 @@ from custom_components.phoenix_mcp.policy_engine import (
     filter_service_response,
     parse_relative_time,
     resolve,
+    resolve_registry_access,
     resolve_intent_entities,
     resolve_service_targets,
     scrub_sensitive_attributes,
@@ -353,6 +354,89 @@ class TestResolveDeviceLevel:
             devices={env["device"].id: "GREEN"},
         )
         assert resolve(env["light_main"].entity_id, token, hass) == Permission.DENY
+
+
+class TestResolveRegistryAccess:
+    async def test_live_entity_keeps_entity_level_write(self, hass, registered_env):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        token = _make_token(entities={entity_id: "GREEN"})
+        assert resolve_registry_access(entity_id, token, hass) == Permission.WRITE
+
+    async def test_registry_only_entity_grant_cannot_create_access(
+        self, hass, registered_env
+    ):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        hass.states.async_remove(entity_id)
+        token = _make_token(entities={entity_id: "GREEN"})
+        assert resolve_registry_access(entity_id, token, hass) == Permission.NO_ACCESS
+
+    async def test_registry_only_deviceless_entity_inherits_domain_write(
+        self, hass, registered_env
+    ):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        hass.states.async_remove(entity_id)
+        token = _make_token(domains={"light": "GREEN"})
+        assert resolve_registry_access(entity_id, token, hass) == Permission.WRITE
+
+    async def test_registry_only_entity_inherits_device_before_domain(
+        self, hass, device_env
+    ):
+        entity_id = device_env["light_main"].entity_id
+        hass.states.async_remove(entity_id)
+        token = _make_token(
+            domains={"light": "GREEN"},
+            devices={device_env["device"].id: "YELLOW"},
+        )
+        assert resolve_registry_access(entity_id, token, hass) == Permission.READ
+
+    async def test_entity_yellow_still_restricts_inherited_domain_write(
+        self, hass, registered_env
+    ):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        hass.states.async_remove(entity_id)
+        token = _make_token(
+            domains={"light": "GREEN"}, entities={entity_id: "YELLOW"}
+        )
+        assert resolve_registry_access(entity_id, token, hass) == Permission.READ
+
+    async def test_red_still_denies_inherited_device_write(self, hass, device_env):
+        entity_id = device_env["light_main"].entity_id
+        hass.states.async_remove(entity_id)
+        token = _make_token(
+            devices={device_env["device"].id: "GREEN"},
+            entities={entity_id: "RED"},
+        )
+        assert resolve_registry_access(entity_id, token, hass) == Permission.DENY
+
+    async def test_disabled_flag_uses_inherited_scope_even_if_state_lingers(
+        self, hass, registered_env, entity_reg
+    ):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        entity_reg.async_update_entity(
+            entity_id, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        token = _make_token(entities={entity_id: "GREEN"})
+        assert resolve_registry_access(entity_id, token, hass) == Permission.NO_ACCESS
+
+    async def test_pass_through_keeps_registry_write(self, hass, registered_env):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        hass.states.async_remove(entity_id)
+        assert (
+            resolve_registry_access(entity_id, _make_token(pass_through=True), hass)
+            == Permission.WRITE
+        )
+
+    async def test_recorder_entity_ids_use_the_same_registry_scope(
+        self, hass, registered_env
+    ):
+        from custom_components.phoenix_mcp.helpers import build_permitted_entity_ids
+
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        hass.states.async_remove(entity_id)
+        entity_only = _make_token(entities={entity_id: "GREEN"})
+        domain_read = _make_token(domains={"light": "YELLOW"})
+        assert entity_id not in build_permitted_entity_ids(entity_only, hass)
+        assert entity_id in build_permitted_entity_ids(domain_read, hass)
 
 
 class TestResolveGhostAndBlocklist:

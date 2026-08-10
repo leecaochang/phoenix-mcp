@@ -999,6 +999,10 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "search_entities",
         "description": (
             "Search the entities this token can access by name, domain, area, device_class, or state. "
+            "By default this searches live enabled entities. Set registry_state to disabled to find "
+            "explicitly disabled registry entries, or all to also include enabled registry entries "
+            "whose integration currently publishes no state. Registry-only access is inherited from "
+            "the entity's device or domain. "
             "For semantic/profile-based discovery (tags, classification, control mode) use mesa_query_profiles instead. "
             "A multi-word query matches entities containing all the words (in entity_id or friendly_name), and "
             "results are ranked by relevance so the best matches lead. Filters combine with AND. Returns a compact "
@@ -1021,6 +1025,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 "state": {"type": "string", "description": "Exact current state value, e.g. on, off, home."},
                 "unavailable": {"type": "boolean", "description": "If true, only entities in state unavailable or unknown."},
                 "stale_hours": {"type": "number", "description": "Only entities unchanged for at least this many hours."},
+                "registry_state": {
+                    "type": "string",
+                    "enum": ["enabled", "disabled", "all"],
+                    "default": "enabled",
+                    "description": "enabled searches live enabled entities; disabled searches explicitly disabled registry entries; all includes both plus enabled registry entries with no live state.",
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
             },
         },
@@ -1517,8 +1527,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "describe_entity",
         "description": (
-            "A comprehensive summary of one accessible entity: its state, area, the services in its "
-            "domain, what references it, and its MESA control_mode when MESA is active. For full "
+            "A comprehensive summary of one accessible entity, including disabled and registry-only "
+            "entries when access is inherited from their device or domain: its state when available, "
+            "an allowlisted registry projection, area, domain services, references, and MESA control_mode. For full "
             "semantic profile data use mesa_get_profile (requires cap_config_read). 'not found' if not accessible."
         ),
         "cap": "cap_search",
