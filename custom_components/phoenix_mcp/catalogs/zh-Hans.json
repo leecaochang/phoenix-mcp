@@ -83,7 +83,7 @@
       },
       "cap_integration_write": {
         "label": "集成管理",
-        "description": "启用或禁用 Home Assistant 集成。"
+        "description": "列出、更新、重新加载、启用、禁用和移除可访问的 Home Assistant 集成。"
       },
       "cap_log_read": {
         "label": "读取系统日志",
@@ -678,6 +678,7 @@
       "card.edited": "编辑了 {subject}（{where}）",
       "cards": "{count} 个卡片",
       "cards.was": "{count} 个卡片（原为 {before} 个）",
+      "config_entry.removed": "集成已移除",
       "entity.changed": "已更改：{fields}",
       "entity.removed": "注册表条目已移除",
       "device.changed": "已更改：{fields}",
@@ -738,6 +739,7 @@
       "install_esphome_firmware.jump": "将 ESPHome 固件刷写到 {label}（ESPHome 版本变更：{jump}）",
       "integration.disable": "禁用集成 {label}",
       "integration.enable": "启用集成 {label}",
+      "integration.remove": "移除集成 {label}",
       "integration.reload": "重新加载集成 {label}",
       "integration.update": "更新集成 {label}",
       "mesa_service": "{domain}.{service} 的 MESA 确认",

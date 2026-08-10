@@ -1173,6 +1173,7 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "integration.disable": "Disable integration {label}",
     "integration.update": "Update integration {label}",
     "integration.reload": "Reload integration {label}",
+    "integration.remove": "Remove integration {label}",
     "create_backup": "Create backup",
     "create_backup.named": 'Create backup "{name}"',
     # ESPHome.
@@ -1265,6 +1266,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "entity.changed": "changed: {fields}",
     "device.removed": "device registry entry removed",
     "device.changed": "changed: {fields}",
+    "config_entry.removed": "integration removed",
     "card.added": "added {subject} ({where})",
     "card.edited": "edited {subject} ({where})",
     "card.deleted": "deleted {subject} ({where})",

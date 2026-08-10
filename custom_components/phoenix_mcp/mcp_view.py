@@ -4080,6 +4080,10 @@ async def async_restore_version(
                 token, hass, data,
             )
         if resource_type == "config_entry":
+            if target.get("restorable") is False:
+                return _tool_error(
+                    "Integration removal versions are audit records and cannot be restored."
+                ), "invalid_request", "async_restore_version"
             if target.get("snapshot_type") == _CONFIG_ENTRY_METADATA_SNAPSHOT:
                 fields = {
                     key: target[key]
@@ -4512,6 +4516,7 @@ async def _tool_watch_entity(
 
 _CONFIG_ENTRY_CONTEXT_FINGERPRINT = "_config_entry_context_fingerprint"
 _CONFIG_ENTRY_METADATA_SNAPSHOT = "phoenix.config_entry.metadata.v1"
+_CONFIG_ENTRY_DELETE_SNAPSHOT = "phoenix.config_entry.delete.v1"
 
 
 @dataclasses.dataclass
@@ -5344,6 +5349,420 @@ async def _execute_reload_integration(
         body["mesa_advisory"] = resolved.warnings
         _mesa_advisory_ctx.set(True)
     return _tool_success(json.dumps(body, default=str)), "allowed", f"integration:{entry_id}"
+
+
+def _config_entry_permission_references(
+    data: PhoenixData,
+    *,
+    entity_ids: list[str],
+    device_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Permission nodes which will outlive removal as stale identities."""
+    entity_references: list[dict[str, Any]] = []
+    device_references: list[dict[str, Any]] = []
+    entity_set = set(entity_ids)
+    device_set = set(device_ids)
+    for record in data.store.list_tokens():
+        if not record.is_valid():
+            continue
+        for entity_id in sorted(entity_set.intersection(record.permissions.entities)):
+            entity_references.append({
+                "entity_id": entity_id,
+                "kind": "token_permission",
+                "token_id": record.id,
+                "token_name": record.name,
+            })
+        for device_id in sorted(device_set.intersection(record.permissions.devices)):
+            device_references.append({
+                "device_id": device_id,
+                "kind": "token_permission",
+                "token_id": record.id,
+                "token_name": record.name,
+            })
+        for preset in record.presets:
+            for entity_id in sorted(entity_set.intersection(preset.permissions.entities)):
+                entity_references.append({
+                    "entity_id": entity_id,
+                    "kind": "preset_permission",
+                    "token_id": record.id,
+                    "token_name": record.name,
+                    "preset_id": preset.id,
+                    "preset_name": preset.name,
+                })
+            for device_id in sorted(device_set.intersection(preset.permissions.devices)):
+                device_references.append({
+                    "device_id": device_id,
+                    "kind": "preset_permission",
+                    "token_id": record.id,
+                    "token_name": record.name,
+                    "preset_id": preset.id,
+                    "preset_name": preset.name,
+                })
+    return {"entities": entity_references, "devices": device_references}
+
+
+def _identity_paths(
+    value: Any,
+    identities: set[str],
+    *,
+    path: str = "settings",
+) -> list[str]:
+    """Return paths, never values, for exact identities in Phoenix settings."""
+    matches: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_path = f"{path}.{key}"
+            if key in identities:
+                matches.append(child_path)
+            matches.extend(_identity_paths(item, identities, path=child_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            matches.extend(
+                _identity_paths(item, identities, path=f"{path}[{index}]")
+            )
+    elif value in identities:
+        matches.append(path)
+    return matches
+
+
+def _config_entry_pending_references(
+    data: PhoenixData, identities: set[str]
+) -> list[dict[str, Any]]:
+    """Pending Phoenix actions keyed to the entry or one affected resource."""
+    references: list[dict[str, Any]] = []
+    for pending in data.store.get_pending_approvals():
+        if pending.get("status") != "pending":
+            continue
+        if pending.get("id") in data.approvals_in_progress:
+            continue
+        args = pending.get("args", {})
+        if any(_contains_entity_identity(args, identity) for identity in identities):
+            references.append({
+                "approval_id": pending.get("id"),
+                "tool_name": pending.get("tool_name"),
+            })
+    return references
+
+
+def _config_entry_safe_owner_summary(entry: Any) -> dict[str, Any]:
+    """Allowlisted config-entry identity for shared-device reporting."""
+    return {
+        "entry_id": entry.entry_id,
+        "domain": entry.domain,
+        "title": redact_diagnostics(entry.title),
+        "disabled_by": _config_entry_value(entry.disabled_by),
+    }
+
+
+def _stored_profile_document(profile: Any | None) -> dict[str, Any] | None:
+    return profile.to_dict() if profile is not None else None
+
+
+async def _build_diff_remove_integration(
+    args: dict[str, Any],
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    mesa_decision: _ConfigEntryActionDecision | None = None,
+) -> dict[str, Any]:
+    """Build the exact removal and surviving-identity preview."""
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    context = config_entry_registry_context(entry_id, hass)
+    entity_ids = sorted(context.entity_ids) if context is not None else []
+    device_ids = sorted(context.device_ids) if context is not None else []
+    registry = dr.async_get(hass)
+    affected_devices: list[dict[str, Any]] = []
+    shared_devices: list[dict[str, Any]] = []
+    for device_id in device_ids:
+        device = registry.async_get(device_id)
+        if device is None:
+            continue
+        remaining_owners = []
+        for owner_id in device_config_entry_ids(device):
+            if owner_id == entry_id:
+                continue
+            owner = hass.config_entries.async_get_entry(owner_id)
+            if owner is not None:
+                remaining_owners.append(_config_entry_safe_owner_summary(owner))
+        device_summary = {
+            "device_id": device_id,
+            "name": redact_diagnostics(device.name_by_user or device.name or device_id),
+            "shared": bool(remaining_owners),
+            "remaining_owners": remaining_owners,
+        }
+        affected_devices.append(device_summary)
+        if remaining_owners:
+            shared_devices.append(device_summary)
+
+    hints = data.store.get_entity_hints()
+    mesa_profiles: dict[str, Any] = {
+        "entities": [],
+        "devices": [],
+        "integration": None,
+    }
+    if data.mesa is not None:
+        for entity_id in entity_ids:
+            stored = data.mesa.store.get(entity_id)
+            if stored is not None:
+                mesa_profiles["entities"].append({
+                    "entity_id": entity_id,
+                    "profile": _stored_profile_document(stored),
+                })
+        for device_id in device_ids:
+            stored = data.mesa.store.get_device_profile(device_id)
+            if stored is not None:
+                mesa_profiles["devices"].append({
+                    "device_id": device_id,
+                    "profile": _stored_profile_document(stored),
+                })
+        if entry is not None:
+            mesa_profiles["integration"] = _stored_profile_document(
+                data.mesa.store.get_integration_profile(entry.domain)
+            )
+
+    identities = {entry_id, *entity_ids, *device_ids}
+    settings = data.store.get_settings().to_dict()
+    preview: dict[str, Any] = {
+        "entry": (
+            _config_entry_safe_owner_summary(entry) if entry is not None else None
+        ),
+        "affected_entities": entity_ids,
+        "affected_devices": affected_devices,
+        "relationships": await _registry_relationships_preview(hass, entity_ids),
+        "shared_devices": shared_devices,
+        "permission_references": _config_entry_permission_references(
+            data, entity_ids=entity_ids, device_ids=device_ids
+        ),
+        "global_hints": [entity_id for entity_id in entity_ids if entity_id in hints],
+        "mesa_profiles": mesa_profiles,
+        "pending_approvals": _config_entry_pending_references(data, identities),
+        "other_phoenix_identity_paths": sorted(set(_identity_paths(settings, identities))),
+        "warning": (
+            "Home Assistant will remove this config entry through its integration-aware "
+            "cleanup. Known consumers and Phoenix identity-keyed configuration are not "
+            "rewritten, MESA profiles are not deleted, and this cannot be restored."
+        ),
+    }
+    if mesa_decision is not None:
+        preview["mesa"] = _config_entry_mesa_preview(mesa_decision)
+    label = (
+        f"{entry.domain} ({redact_diagnostics(entry.title)})"
+        if entry is not None
+        else entry_id
+    )
+    return {
+        "kind": "system_action",
+        **_summary("integration.remove", label=label),
+        "target": {"type": "integration", "id": entry_id, "label": label},
+        "preview": preview,
+    }
+
+
+def _config_entry_delete_snapshot(entry: Any, context: Any) -> dict[str, Any]:
+    """Safe, intentionally non-restorable config-entry removal record."""
+    return {
+        "snapshot_type": _CONFIG_ENTRY_DELETE_SNAPSHOT,
+        "restorable": False,
+        "entry_id": entry.entry_id,
+        "domain": entry.domain,
+        "title": redact_diagnostics(entry.title),
+        "source": _config_entry_value(entry.source),
+        "state": _config_entry_value(entry.state),
+        "disabled_by": _config_entry_value(entry.disabled_by),
+        "pref_disable_new_entities": bool(entry.pref_disable_new_entities),
+        "pref_disable_polling": bool(entry.pref_disable_polling),
+        "entity_ids": sorted(context.entity_ids),
+        "device_ids": sorted(context.device_ids),
+    }
+
+
+def _config_entry_removal_observation(
+    entry_id: str,
+    before_entity_ids: list[str],
+    before_device_ids: list[str],
+    hass: HomeAssistant,
+) -> dict[str, Any]:
+    """Observe cleanup after HA returns or raises; never infer rollback."""
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    remaining_entity_ids = sorted(
+        registry_entry.entity_id
+        for registry_entry in entity_registry.entities.values()
+        if registry_entry.config_entry_id == entry_id
+    )
+    removed_entity_ids = sorted(set(before_entity_ids) - set(remaining_entity_ids))
+    removed_device_ids: list[str] = []
+    remaining_devices: list[dict[str, Any]] = []
+    ownership_anomalies: list[str] = []
+    for device_id in before_device_ids:
+        device = device_registry.async_get(device_id)
+        if device is None:
+            removed_device_ids.append(device_id)
+            continue
+        owner_ids = device_config_entry_ids(device)
+        if entry_id in owner_ids:
+            ownership_anomalies.append(device_id)
+        owners = []
+        for owner_id in owner_ids:
+            owner = hass.config_entries.async_get_entry(owner_id)
+            if owner is not None:
+                owners.append(_config_entry_safe_owner_summary(owner))
+        remaining_devices.append({
+            "device_id": device_id,
+            "remaining_owners": owners,
+        })
+    return {
+        "entry_removed": hass.config_entries.async_get_entry(entry_id) is None,
+        "entities_before": before_entity_ids,
+        "entities_removed": removed_entity_ids,
+        "entities_remaining": remaining_entity_ids,
+        "devices_before": before_device_ids,
+        "devices_removed": removed_device_ids,
+        "devices_remaining": remaining_devices,
+        "device_ownership_anomalies": ownership_anomalies,
+    }
+
+
+async def _tool_remove_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Remove one config entry only through Home Assistant's manager."""
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "remove_integration"
+    entry_id = str(args.get("entry_id") or "").strip()
+    if not entry_id:
+        return _tool_error("entry_id is required."), "invalid_request", "remove_integration"
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    blocked = await _integration_gate(
+        tool_name="remove_integration",
+        args={"entry_id": entry_id},
+        token=token,
+        hass=hass,
+        data=data,
+        entry=entry,
+        actions=["remove"],
+        service_data={},
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda decision: _build_diff_remove_integration(
+            args, token, hass, data, decision
+        ),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_remove_integration(args, token, hass, data)
+
+
+async def _execute_remove_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    """Revalidate, remove through HA, then report the observed cleanup."""
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "remove_integration"
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    context = config_entry_registry_context(entry_id, hass)
+    if context is None:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    resolved = _config_entry_action_decision(
+        data,
+        token,
+        hass,
+        entry,
+        actions=["remove"],
+        service_data={},
+        session_id="remove_integration_execute",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    saved_fingerprint = args.get(_CONFIG_ENTRY_CONTEXT_FINGERPRINT)
+    approved_same = (
+        _approved_exec_ctx.get()
+        and isinstance(saved_fingerprint, str)
+        and saved_fingerprint == resolved.fingerprint
+    )
+    if _approved_exec_ctx.get() and isinstance(saved_fingerprint, str) and not approved_same:
+        return _config_entry_context_changed_error(entry_id, resolved)
+    if resolved.decision == "deny" or (
+        resolved.decision == "confirm" and not approved_same
+    ):
+        if resolved.blocked:
+            fire_mesa_blocked_event(hass, token, resolved.blocked)
+        return _config_entry_mesa_error(entry_id, resolved)
+
+    before_entity_ids = sorted(context.entity_ids)
+    before_device_ids = sorted(context.device_ids)
+    version_before = _config_entry_delete_snapshot(entry, context)
+    remove_result: dict[str, Any] = {}
+    remove_raised = False
+    try:
+        raw_result = await hass.config_entries.async_remove(entry_id)
+        if isinstance(raw_result, dict):
+            remove_result = raw_result
+    except Exception as exc:  # noqa: BLE001 - HA/integration removal boundary
+        remove_raised = True
+        _LOGGER.error("remove_integration failed for %s: %s", entry_id, exc)
+
+    observed = _config_entry_removal_observation(
+        entry_id, before_entity_ids, before_device_ids, hass
+    )
+    body: dict[str, Any] = {
+        "entry_id": entry_id,
+        "domain": entry.domain,
+        "removed": observed["entry_removed"],
+        "require_restart": remove_result.get("require_restart"),
+        "home_assistant_raised": remove_raised,
+        "observed_cleanup": observed,
+    }
+    if resolved.warnings:
+        body["mesa_advisory"] = resolved.warnings
+        _mesa_advisory_ctx.set(True)
+    if observed["entry_removed"]:
+        await _record_version(
+            data,
+            token,
+            resource_type="config_entry",
+            resource_id=entry_id,
+            action="delete",
+            before=version_before,
+            after=None,
+            alias=redact_diagnostics(entry.title),
+        )
+        if remove_raised:
+            body["warning"] = (
+                "Home Assistant raised during removal, but the observed config entry "
+                "is gone. Review the reported registry cleanup anomalies."
+            )
+        return (
+            _tool_success(json.dumps(body, default=str)),
+            "allowed",
+            f"integration:{entry_id}",
+        )
+
+    body["error"] = (
+        "Home Assistant did not remove the config entry. The observed registry state "
+        "is included; Phoenix made no manual registry deletion."
+    )
+    return _tool_error(json.dumps(body, default=str)), "denied", entry_id
 
 
 # ---------------------------------------------------------------------------
@@ -6920,6 +7339,7 @@ _register_executor("install_esphome_firmware", _execute_install_esphome_firmware
 _register_executor("set_integration_enabled", _execute_set_integration_enabled)
 _register_executor("set_integration", _execute_set_integration)
 _register_executor("reload_integration", _execute_reload_integration)
+_register_executor("remove_integration", _execute_remove_integration)
 _register_executor("create_backup", _execute_create_backup)
 _register_executor("create_dashboard", _execute_create_dashboard)
 _register_executor("edit_dashboard", _execute_edit_dashboard)
@@ -7078,6 +7498,7 @@ _register_tool("list_integrations", _tool_list_integrations)
 _register_tool("set_integration_enabled", _tool_set_integration_enabled)
 _register_tool("set_integration", _tool_set_integration)
 _register_tool("reload_integration", _tool_reload_integration)
+_register_tool("remove_integration", _tool_remove_integration)
 _register_tool("list_backups", _tool_list_backups)
 _register_tool("create_backup", _tool_create_backup)
 _register_tool("list_dashboards", _tool_list_dashboards)

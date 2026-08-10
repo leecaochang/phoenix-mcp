@@ -189,7 +189,7 @@
       },
       "cap_integration_write": {
         "label": "Integration management",
-        "description": "Enable or disable Home Assistant integrations."
+        "description": "List, update, reload, enable, disable, and remove accessible Home Assistant integrations."
       },
       "cap_lovelace_write": {
         "label": "Manage dashboards",
@@ -1395,6 +1395,7 @@
       "integration.disable": "Disable integration {label}",
       "integration.enable": "Enable integration {label}",
       "integration.reload": "Reload integration {label}",
+      "integration.remove": "Remove integration {label}",
       "integration.update": "Update integration {label}",
       "mesa_service": "MESA confirmation for {domain}.{service}",
       "patch_dashboard.append": "Append to {path} on dashboard '{label}'",
@@ -1431,6 +1432,7 @@
       "cards": "{count} cards",
       "cards.was": "{count} cards (was {before})",
       "config_entry.options": "reconfigured {subject}",
+      "config_entry.removed": "integration removed",
       "device.changed": "changed: {fields}",
       "device.removed": "device registry entry removed",
       "energy.sources": "{count} sources, {devices} devices",

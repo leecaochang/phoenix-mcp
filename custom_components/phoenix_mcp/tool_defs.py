@@ -2172,6 +2172,24 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "remove_integration",
+        "description": (
+            "Permanently remove a Home Assistant config entry through ConfigEntries.async_remove. Requires "
+            "complete WRITE coverage and one merged capability/MESA approval when confirmation applies. The "
+            "preview reports affected resources, consumers, shared ownership, Phoenix identity references, and "
+            "MESA context. Phoenix never manually deletes registry records; successful removal is versioned but "
+            "cannot be restored."
+        ),
+        "cap": "cap_integration_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "The config entry id (from list_integrations)."},
+            },
+            "required": ["entry_id"],
+        },
+    },
+    {
         "name": "list_backups",
         "description": "List existing Home Assistant backups (compact, newest first) and the available backup agents. Reports total alongside returned and truncated, so a clipped page is distinguishable from the whole list.",
         "cap": "cap_backup",
@@ -2941,6 +2959,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "set_integration_enabled": _annot(False, True, True),
     "set_integration": _annot(False, True, True),
     "reload_integration": _annot(False, True, True),
+    "remove_integration": _annot(False, True, True),
     "create_backup": _annot(False, False, False),
     "create_blueprint": _annot(False, False, False),
     "edit_blueprint": _annot(False, True, True),

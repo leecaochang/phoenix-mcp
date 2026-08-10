@@ -11,7 +11,7 @@
 
 Phoenix MCP gives your AI agents scoped, least-privilege access to Home Assistant. Each client gets its own token, limited to exactly the entities you allow, with its own capabilities, rate limit, and optional expiry. Auditing is enabled by default and configurable per outcome, any token can be revoked instantly, and the per-entity semantic safety layer (MESA) can make a device confirm-only or off-limits by its nature, no matter what permissions a token is granted.
 
-Phoenix MCP runs entirely inside Home Assistant, with no extra process, no cloud dependency in the core server, and no setup beyond the Phoenix MCP panel (the optional Agent Chat, voice, and AI Task features send conversations to the model provider you configure, unless you point them at a local Ollama). It works with the MCP clients you already use (Claude Code, Cursor, ChatGPT/Codex, Gemini, and others), or you can skip installing a client altogether and chat from inside Home Assistant itself. Either way, a guided setup takes you from a new token to a working agent in minutes, backed by a catalog of 143 tools for reading, controlling, and authoring your configuration. The panel is available in English and Simplified Chinese, following your Home Assistant profile language by default.
+Phoenix MCP runs entirely inside Home Assistant, with no extra process, no cloud dependency in the core server, and no setup beyond the Phoenix MCP panel (the optional Agent Chat, voice, and AI Task features send conversations to the model provider you configure, unless you point them at a local Ollama). It works with the MCP clients you already use (Claude Code, Cursor, ChatGPT/Codex, Gemini, and others), or you can skip installing a client altogether and chat from inside Home Assistant itself. Either way, a guided setup takes you from a new token to a working agent in minutes, backed by a catalog of 144 tools for reading, controlling, and authoring your configuration. The panel is available in English and Simplified Chinese, following your Home Assistant profile language by default.
 
 ## Documentation
 
@@ -48,7 +48,7 @@ Phoenix MCP 为您的 AI 智能体提供限定范围、最小权限的 Home Assi
 
 Phoenix MCP 完全运行在 Home Assistant 内部：无需额外进程，核心服务不依赖任何云服务，除 Phoenix MCP 面板之外也无需任何配置（可选的智能体对话、语音和 AI 任务功能会将对话发送给您配置的模型服务商，除非您将它们指向本地的 Ollama）。
 
-它可以配合您已经在用的 MCP 客户端（Claude Code、Cursor、ChatGPT/Codex、Gemini 等），您也可以完全不安装客户端，直接在 Home Assistant 内部对话。无论采用哪种方式，引导式设置都能在几分钟内带您从新建令牌走到可用的智能体，背后是一个包含 143 个工具的目录，可用于读取、控制和编写您的配置。
+它可以配合您已经在用的 MCP 客户端（Claude Code、Cursor、ChatGPT/Codex、Gemini 等），您也可以完全不安装客户端，直接在 Home Assistant 内部对话。无论采用哪种方式，引导式设置都能在几分钟内带您从新建令牌走到可用的智能体，背后是一个包含 144 个工具的目录，可用于读取、控制和编写您的配置。
 
 面板提供英文和简体中文两种语言，默认跟随您的 Home Assistant 个人资料设置。
 

@@ -57,6 +57,7 @@ class TestExecutorRegistration:
         assert "set_integration_enabled" in _EXECUTOR_REGISTRY
         assert "set_integration" in _EXECUTOR_REGISTRY
         assert "reload_integration" in _EXECUTOR_REGISTRY
+        assert "remove_integration" in _EXECUTOR_REGISTRY
 
 
 class TestYamlConfig:

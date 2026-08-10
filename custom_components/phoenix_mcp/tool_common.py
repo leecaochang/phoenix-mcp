@@ -499,6 +499,9 @@ def _version_change_summary(
         return _version_summary(
             f"{resource_type}.changed", fields=", ".join(changed)
         ) if changed else None
+    if resource_type == "config_entry" and after is None and before is not None:
+        if before.get("restorable") is False:
+            return _version_summary("config_entry.removed")
     return None
 
 

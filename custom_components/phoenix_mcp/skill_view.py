@@ -490,6 +490,28 @@ mode: single
   permissive. Do not retry a MESA refusal or create a second approval: an
   enforced `confirm` rule is already merged into the ordinary registry approval.
 
+### Integration registry lifecycle
+
+- Discover exact config-entry IDs with `list_integrations`. A scoped token sees an
+  entry only through an accessible owned entity or device. Every write requires
+  WRITE on every owned entity and an explicit WRITE grant on every owned device;
+  do not retry a whole-entry refusal by targeting only one child.
+- `set_integration` changes only the title and the two safe polling/new-entity
+  preferences. `set_integration_enabled` toggles only user-controlled state, and
+  `reload_integration` refuses disabled, transitioning, or unsupported entries.
+- Rename, reload, enable, disable, and removal resolve `config_entry.*` against
+  every owned entity, including entity, device, area, integration, and domain
+  MESA layers. One denial blocks the whole entry and one enforced confirmation is
+  already merged into the capability approval.
+- `remove_integration` is permanent. It calls Home Assistant's config-entry
+  removal manager and never deletes registry rows itself. Review the approval's
+  affected entities/devices, consumers, shared owners, permissions, hints, MESA
+  profiles, pending actions, and other Phoenix identities before approving.
+  Consumers and Phoenix configuration are reported, not rewritten; MESA profiles
+  are reported, not deleted. The result describes observed cleanup and restart
+  need even if an integration raises. Its version is an audit record and cannot
+  restore the removed entry.
+
 ### Device registry metadata
 
 - `set_device` changes the display-name override, area, user-controlled enabled
