@@ -18,6 +18,8 @@ from custom_components.phoenix_mcp.admin_view import (
     PhoenixAdminAuditView,
     PhoenixAdminEntityTreeView,
     PhoenixAdminPermissionDomainView,
+    PhoenixAdminPermissionBulkSelectView,
+    PhoenixAdminPermissionIntegrationOptionsView,
     PhoenixAdminSettingsView,
     PhoenixAdminTokenAuditView,
     PhoenixAdminTokenStatsView,
@@ -42,7 +44,12 @@ from custom_components.phoenix_mcp.const import (
 )
 from custom_components.phoenix_mcp.data import PhoenixData
 from custom_components.phoenix_mcp.rate_limiter import RateLimiter
-from custom_components.phoenix_mcp.token_store import GlobalSettings, TokenRecord, TokenStore
+from custom_components.phoenix_mcp.token_store import (
+    GlobalSettings,
+    PermissionNode,
+    TokenRecord,
+    TokenStore,
+)
 
 
 def _make_active_token(name: str = "test-token", pass_through: bool = False) -> TokenRecord:
@@ -783,6 +790,112 @@ async def test_permission_patch_with_hint():
 
 
 @pytest.mark.asyncio
+async def test_integration_permission_options_use_exact_entry_and_warn_shared_device(hass):
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    token = _make_active_token()
+    data = _make_data([token])
+    data.store.get_token_by_id.return_value = token
+    hass.data[DOMAIN] = data
+    first = MockConfigEntry(domain="test_integration", title="Kitchen", entry_id="entry-a")
+    second = MockConfigEntry(domain="other_integration", title="Kitchen", entry_id="entry-b")
+    first.add_to_hass(hass)
+    second.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=first.entry_id,
+        identifiers={("test_integration", "shared")},
+        name="Shared",
+    )
+    updated_device = dr.async_get(hass).async_update_device(
+        device.id, add_config_entry_id=second.entry_id
+    )
+    assert updated_device is not None
+    # HA 2026 stages this as a move because its registry model became
+    # single-owner; emulate the 2025.2 multi-owner shape Phoenix still supports.
+    object.__setattr__(updated_device, "_pending_move", None)
+    object.__setattr__(updated_device, "_composite_subentries", {
+        first.entry_id: {None}, second.entry_id: {None},
+    })
+    assert second.entry_id in updated_device.config_entries
+    live = er.async_get(hass).async_get_or_create(
+        "sensor", "test_integration", "live-a", config_entry=first
+    )
+    disabled = er.async_get(hass).async_get_or_create(
+        "sensor", "test_integration", "disabled-a", config_entry=first,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    hass.states.async_set(live.entity_id, "1")
+
+    view = PhoenixAdminPermissionIntegrationOptionsView()
+    view.hass = hass
+    response = await view.get(_make_admin_request(), token_id=token.id)
+
+    payload = json.loads(response.text)
+    option = next(item for item in payload["integrations"] if item["entry_id"] == first.entry_id)
+    assert option["domain"] == "test_integration"
+    assert option["title"] == "Kitchen"
+    assert option["device_count"] == 1
+    assert option["deviceless_entity_count"] == 1
+    assert option["registry_only_deviceless_count"] == 1
+    assert option["required_domain_ids"] == ["sensor"]
+    assert option["shared_device_count"] == 1
+    assert disabled.entity_id not in json.dumps(option)
+
+
+@pytest.mark.asyncio
+async def test_integration_bulk_selection_is_one_atomic_write_and_preserves_children(hass):
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    token = _make_active_token()
+    token.permissions.entities["light.preserved_child"] = PermissionNode(state="RED")
+    data = _make_data([token])
+    data.store.get_token_by_id.return_value = token
+
+    async def _save(_token_id, permissions):
+        token.permissions = permissions
+        return token
+
+    data.store.async_set_permissions = AsyncMock(side_effect=_save)
+    hass.data[DOMAIN] = data
+    entry = MockConfigEntry(domain="test_integration", title="Target", entry_id="entry-target")
+    entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test_integration", "target")},
+        name="Target",
+    )
+    live = er.async_get(hass).async_get_or_create(
+        "sensor", "test_integration", "deviceless-target", config_entry=entry
+    )
+    er.async_get(hass).async_get_or_create(
+        "light", "test_integration", "preserved_child",
+        config_entry=entry, device_id=device.id,
+        suggested_object_id="preserved_child",
+    )
+    hass.states.async_set(live.entity_id, "1")
+
+    view = PhoenixAdminPermissionBulkSelectView()
+    view.hass = hass
+    request = _make_admin_request(body=json.dumps({
+        "selector_type": "integration",
+        "selector_id": entry.entry_id,
+        "state": "GREEN",
+    }).encode())
+    response = await view.post(request, token_id=token.id)
+
+    assert response.status == 200
+    data.store.async_set_permissions.assert_awaited_once()
+    assert token.permissions.devices[device.id].state == "GREEN"
+    assert token.permissions.entities[live.entity_id].state == "GREEN"
+    assert token.permissions.entities["light.preserved_child"].state == "RED"
+    summary = json.loads(response.text)["summary"]
+    assert summary["device_count"] == 1
+    assert summary["entity_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_settings_patch_uses_async_lock():
     data = _make_data()
     data.store.async_patch_settings = AsyncMock(return_value=GlobalSettings())
@@ -1287,7 +1400,7 @@ async def test_entity_tree_force_reload_bypasses_cache():
 
 
 def test_all_admin_views_exported():
-    assert len(ALL_ADMIN_VIEWS) == 56
+    assert len(ALL_ADMIN_VIEWS) == 58
 
 
 def test_archived_views_before_token_view():

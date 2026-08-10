@@ -397,6 +397,33 @@ export interface DomainTree {
 
 export type EntityTree = Record<string, DomainTree>;
 
+export interface IntegrationPermissionOption {
+  entry_id: string;
+  domain: string;
+  title: string;
+  device_count: number;
+  deviceless_entity_count: number;
+  registry_only_deviceless_count: number;
+  required_domain_ids: string[];
+  shared_device_count: number;
+}
+
+export interface BulkPermissionSummary {
+  selector_type: "area" | "label" | "integration";
+  selector_id: string;
+  state: NodeState;
+  device_count: number;
+  entity_count: number;
+  registry_only_deviceless_count: number;
+  required_domain_ids: string[];
+  shared_device_count: number;
+}
+
+export interface BulkPermissionResult {
+  permissions: PermissionTree;
+  summary: BulkPermissionSummary;
+}
+
 export interface ResolutionStep {
   level: string;
   state: string;

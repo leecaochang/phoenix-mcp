@@ -27,7 +27,11 @@ from homeassistant.helpers import category_registry as cr
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import label_registry as lr
-from homeassistant.config_entries import ConfigEntryDisabler
+from homeassistant.config_entries import (
+    ConfigEntryDisabler,
+    ConfigEntryState,
+    support_entry_unload,
+)
 from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
@@ -43,7 +47,7 @@ from .mesa import (
 )
 from .ws_dispatch import WsDispatchError, async_ws_command
 from .mesa_tools import MESA_TOOL_NAMES, async_call_mesa_tool, mesa_tool_defs
-from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
+from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, redact_diagnostics, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
 # Shared tool primitives live in tool_common (extracted so per-domain tool
 # modules can use them without importing this transport module).
 # Per-domain tools live under tools/; this module keeps the transport, the
@@ -168,7 +172,7 @@ from .tool_defs import (
 )
 from .audit import Outcome
 from .tool_common import _CAP_FORBIDDEN_MESSAGE, _resolve_area_id, _ProgressBus, _approved_exec_ctx, _approval_resource, _gate, _mesa_advisory_ctx, _mesa_confirm_annotation, _operator_accepted_result, _pending_or_inline, _progress_ctx, _record_version, _restore_ctx, _set_progress_status, _tool_error, _tool_success
-from .policy_engine import (EntityCreationNotPermitted, Permission, call_needs_physical_gate, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
+from .policy_engine import (EntityCreationNotPermitted, Permission, assist_expose_check, call_needs_physical_gate, config_entry_registry_context, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_config_entry_registry_access, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
 from .rate_limiter import RateLimitResult
 from .token_store import TokenRecord
 from . import yaml_includes
@@ -4491,23 +4495,117 @@ async def _tool_watch_entity(
 # ---------------------------------------------------------------------------
 
 
+def _config_entry_value(value: Any) -> str | None:
+    """Return a stable public string for a Home Assistant enum-like value."""
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+async def _config_entry_support(
+    entry: Any, hass: HomeAssistant
+) -> tuple[bool | None, bool | None, bool | None, bool | None]:
+    """Probe safe config-entry support metadata without false negatives."""
+    supports_unload: bool | None
+    try:
+        supports_unload = getattr(entry, "supports_unload", None)
+        if supports_unload is None:
+            supports_unload = await support_entry_unload(hass, entry.domain)
+        else:
+            supports_unload = bool(supports_unload)
+    except Exception:  # integration loaders are third-party boundaries
+        supports_unload = None
+
+    def _optional_support(public_name: str, cache_name: str) -> bool | None:
+        try:
+            value = bool(getattr(entry, public_name))
+            cached = getattr(entry, cache_name, None)
+            # HA's property returns False when its handler has not been loaded.
+            # That is unknown, not evidence that the feature is unsupported.
+            return None if cached is None and not value else value
+        except Exception:
+            return None
+
+    supports_options = _optional_support("supports_options", "_supports_options")
+    supports_reconfigure = _optional_support(
+        "supports_reconfigure", "_supports_reconfigure"
+    )
+    try:
+        if entry.disabled_by is not None:
+            supports_reload: bool | None = False
+        elif entry.state is ConfigEntryState.LOADED:
+            supports_reload = supports_unload
+        elif entry.state in (
+            ConfigEntryState.NOT_LOADED,
+            ConfigEntryState.SETUP_ERROR,
+            ConfigEntryState.SETUP_RETRY,
+            ConfigEntryState.FAILED_UNLOAD,
+        ):
+            supports_reload = True
+        else:
+            supports_reload = False
+    except Exception:
+        supports_reload = None
+    return supports_reload, supports_unload, supports_options, supports_reconfigure
+
+
 async def _tool_list_integrations(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
-    """MCP tool: list config entries (integrations)."""
+    """MCP tool: list only config entries visible through owned resources."""
     if effective_cap(token, "cap_integration_write") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "list_integrations"
-    integrations = [
-        {
+    integrations: list[dict[str, Any]] = []
+    for entry in hass.config_entries.async_entries():
+        access = resolve_config_entry_registry_access(entry.entry_id, token, hass)
+        if access not in (Permission.READ, Permission.WRITE):
+            continue
+        context = config_entry_registry_context(entry.entry_id, hass)
+        if context is None:
+            continue
+        expose = assist_expose_check(token, hass)
+        accessible_entities = sum(
+            (expose is None or expose(entity_id)) and
+            resolve_registry_access(entity_id, token, hass)
+            in (Permission.READ, Permission.WRITE)
+            for entity_id in context.entity_ids
+        )
+        accessible_devices = sum(
+            resolve_device_registry_access(device_id, token, hass)
+            in (Permission.READ, Permission.WRITE)
+            for device_id in context.device_ids
+        )
+        (
+            supports_reload,
+            supports_unload,
+            supports_options,
+            supports_reconfigure,
+        ) = await _config_entry_support(entry, hass)
+        reason = getattr(entry, "reason", None)
+        integrations.append({
             "entry_id": entry.entry_id,
             "domain": entry.domain,
-            "title": entry.title,
-            "state": str(entry.state),
-            "disabled_by": str(entry.disabled_by) if entry.disabled_by else None,
-        }
-        for entry in hass.config_entries.async_entries()
-        if entry.domain != DOMAIN  # never expose Phoenix MCP's own entry as a target
-    ]
+            # Titles are user/integration supplied and commonly contain an IP,
+            # hostname URL, or both.  Keep the public title field useful while
+            # applying the same network-topology scrub as setup diagnostics.
+            "title": redact_diagnostics(entry.title),
+            "source": _config_entry_value(entry.source),
+            "state": _config_entry_value(entry.state),
+            "enabled": entry.disabled_by is None,
+            "disabled_by": _config_entry_value(entry.disabled_by),
+            "setup_failure_reason": (
+                redact_diagnostics(str(reason)) if reason else None
+            ),
+            "supports_reload": supports_reload,
+            "supports_unload": supports_unload,
+            "supports_options": supports_options,
+            "supports_reconfigure": supports_reconfigure,
+            "pref_disable_new_entities": bool(entry.pref_disable_new_entities),
+            "pref_disable_polling": bool(entry.pref_disable_polling),
+            "accessible_entity_count": accessible_entities,
+            "accessible_device_count": accessible_devices,
+        })
     integrations.sort(key=lambda e: (e["domain"], e["title"] or ""))
     return _tool_success(json.dumps({"count": len(integrations), "integrations": integrations}, default=str)), "allowed", "list_integrations"
 

@@ -35,6 +35,14 @@ class Permission(str, Enum):
     NOT_FOUND = "not_found"
 
 
+class ConfigEntryRegistryContext(NamedTuple):
+    """Exact registry membership owned by one Home Assistant config entry."""
+
+    entry: Any
+    entity_ids: tuple[str, ...]
+    device_ids: tuple[str, ...]
+
+
 class EntityCreationNotPermitted(Exception):
     def __init__(self, entity_id: str) -> None:
         self.entity_id = entity_id
@@ -305,6 +313,123 @@ def resolve_device_registry_write(
         return Permission.READ
     if node.state == "RED":
         return Permission.DENY
+    return Permission.NO_ACCESS
+
+
+def config_entry_registry_context(
+    entry_id: str, hass: HomeAssistant
+) -> ConfigEntryRegistryContext | None:
+    """Collect exact entity and device membership for a config entry.
+
+    Devices can have multiple owners.  Membership therefore comes from the
+    registry's owner set rather than from an entity sample, while entities use
+    their exact config_entry_id.  Phoenix MCP's own entry is deliberately
+    indistinguishable from an absent entry to callers.
+    """
+    if not isinstance(entry_id, str):
+        return None
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return None
+    entity_ids = tuple(sorted(
+        item.entity_id
+        for item in er.async_get(hass).entities.values()
+        if item.config_entry_id == entry_id
+    ))
+    device_ids = tuple(sorted(
+        device.id
+        for device in dr.async_get(hass).devices.values()
+        if entry_id in device_config_entry_ids(device)
+        and not _phoenix_owned_device(device, hass)
+    ))
+    return ConfigEntryRegistryContext(entry, entity_ids, device_ids)
+
+
+def resolve_config_entry_registry_access(
+    entry_id: str, token: TokenRecord, hass: HomeAssistant
+) -> Permission:
+    """Resolve read visibility inherited from an entry's owned resources."""
+    context = config_entry_registry_context(entry_id, hass)
+    if context is None:
+        return Permission.NOT_FOUND
+    if token.pass_through:
+        expose = assist_expose_check(token, hass)
+        if expose is None or (not context.entity_ids and not context.device_ids):
+            return Permission.WRITE
+        if any(
+            expose(entity_id)
+            and resolve_registry_access(entity_id, token, hass)
+            in (Permission.READ, Permission.WRITE)
+            for entity_id in context.entity_ids
+        ) or any(
+            resolve_device_registry_access(device_id, token, hass)
+            in (Permission.READ, Permission.WRITE)
+            for device_id in context.device_ids
+        ):
+            return Permission.WRITE
+        return Permission.NO_ACCESS
+
+    expose = assist_expose_check(token, hass)
+    entity_results = [
+        resolve_registry_access(entity_id, token, hass)
+        for entity_id in context.entity_ids
+        if expose is None or expose(entity_id)
+    ]
+    device_results = [
+        resolve_device_registry_access(device_id, token, hass)
+        for device_id in context.device_ids
+    ]
+    results = entity_results + device_results
+    if Permission.WRITE in results:
+        return Permission.WRITE
+    if Permission.READ in results:
+        return Permission.READ
+    if Permission.DENY in results:
+        return Permission.DENY
+    return Permission.NO_ACCESS
+
+
+def resolve_config_entry_registry_write(
+    entry_id: str,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    force_registry_only: bool = False,
+) -> Permission:
+    """Require complete entity WRITE and explicit device WRITE coverage.
+
+    A scoped token cannot manage a resource-less entry.  For disabling,
+    force_registry_only proves that authorization survives after live states
+    disappear instead of relying on a direct entity grant that will self-lock.
+    """
+    context = config_entry_registry_context(entry_id, hass)
+    if context is None:
+        return Permission.NOT_FOUND
+    if token.pass_through:
+        return Permission.WRITE
+    if not context.entity_ids and not context.device_ids:
+        return Permission.NO_ACCESS
+
+    entity_results = [
+        resolve_registry_access(
+            entity_id,
+            token,
+            hass,
+            force_registry_only=force_registry_only,
+        )
+        for entity_id in context.entity_ids
+    ]
+    device_results = [
+        resolve_device_registry_write(device_id, token, hass)
+        for device_id in context.device_ids
+    ]
+    results = entity_results + device_results
+    if all(result == Permission.WRITE for result in results):
+        return Permission.WRITE
+    if Permission.DENY in results:
+        return Permission.DENY
+    if Permission.READ in results:
+        return Permission.READ
     return Permission.NO_ACCESS
 
 

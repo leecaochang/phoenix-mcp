@@ -47,8 +47,19 @@ from .const import (
 )
 from .data import PhoenixData
 from .helpers import cancel_expiry_timer, panel_catalog
-from .policy_engine import Permission, get_effective_hint, resolve
-from .token_store import PermissionTree, VALID_NODE_STATES, token_name_slug
+from .policy_engine import (
+    Permission,
+    config_entry_registry_context,
+    device_config_entry_ids,
+    get_effective_hint,
+    resolve,
+)
+from .token_store import (
+    PermissionNode,
+    PermissionTree,
+    VALID_NODE_STATES,
+    token_name_slug,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -381,6 +392,85 @@ def _build_entity_tree(hass: HomeAssistant) -> dict:
         tree[domain]["entity_details"][entity_id] = entity_info
 
     return tree
+
+
+def _integration_permission_selection(
+    hass: HomeAssistant, entry_id: str
+) -> dict[str, Any] | None:
+    """Return the exact permission nodes selected by one config entry."""
+    context = config_entry_registry_context(entry_id, hass)
+    if context is None:
+        return None
+    entity_reg = er_mod.async_get(hass)
+    selected_entities: list[str] = []
+    registry_only_deviceless: list[str] = []
+    for entity_id in context.entity_ids:
+        entity = entity_reg.async_get(entity_id)
+        if (
+            entity is None
+            or entity.device_id is not None
+            or entity_id.split(".", 1)[0] in BLOCKED_DOMAINS
+            or entity.platform == DOMAIN
+        ):
+            continue
+        if entity.disabled_by is None and hass.states.get(entity_id) is not None:
+            selected_entities.append(entity_id)
+        else:
+            registry_only_deviceless.append(entity_id)
+
+    device_reg = dr_mod.async_get(hass)
+    shared_devices = [
+        device_id
+        for device_id in context.device_ids
+        if (
+            (device := device_reg.async_get(device_id)) is not None
+            and len(device_config_entry_ids(device)) > 1
+        )
+    ]
+    return {
+        "entry_id": context.entry.entry_id,
+        "domain": context.entry.domain,
+        "title": context.entry.title,
+        "device_ids": list(context.device_ids),
+        "entity_ids": sorted(selected_entities),
+        "registry_only_deviceless_count": len(registry_only_deviceless),
+        "required_domain_ids": sorted({
+            entity_id.split(".", 1)[0]
+            for entity_id in registry_only_deviceless
+        }),
+        "shared_device_count": len(shared_devices),
+    }
+
+
+def _bulk_permission_selection(
+    hass: HomeAssistant, selector_type: str, selector_id: str
+) -> dict[str, Any] | None:
+    """Resolve an area, label, or config entry to current permission nodes."""
+    if selector_type == "integration":
+        return _integration_permission_selection(hass, selector_id)
+
+    if selector_type not in ("area", "label"):
+        return None
+    entity_tree = _build_entity_tree(hass)
+    entity_ids: list[str] = []
+    for domain in entity_tree.values():
+        for entity_id, detail in domain["entity_details"].items():
+            matches = (
+                detail["area_id"] == selector_id
+                if selector_type == "area"
+                else any(label["id"] == selector_id for label in detail["labels"])
+            )
+            if matches:
+                entity_ids.append(entity_id)
+    if not entity_ids:
+        return None
+    return {
+        "device_ids": [],
+        "entity_ids": sorted(entity_ids),
+        "registry_only_deviceless_count": 0,
+        "required_domain_ids": [],
+        "shared_device_count": 0,
+    }
 
 
 def _build_resolution_path(entity_id: str, token: Any, hass: HomeAssistant) -> list[dict]:
@@ -1131,6 +1221,122 @@ class PhoenixAdminPermissionsView(PhoenixView):
             settings=data.store.get_settings(),
         )
         return _ok(updated.permissions.to_dict(), request_id=rid)
+
+
+class PhoenixAdminPermissionIntegrationOptionsView(PhoenixView):
+    """List exact config entries available to the permission selector."""
+
+    url = "/api/phoenix-mcp/admin/tokens/{token_id}/permissions/integration-options"
+    name = "api:phoenix-mcp:admin:permission_integration_options"
+    requires_auth = True
+
+    @require_admin
+    async def get(self, request: web.Request, token_id: str) -> web.Response:
+        rid = request["phoenix_mcp_rid"]
+        data: PhoenixData = self.hass.data[DOMAIN]
+        if data.store.get_token_by_id(token_id) is None:
+            return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
+        integrations = []
+        for entry in self.hass.config_entries.async_entries():
+            selection = _integration_permission_selection(self.hass, entry.entry_id)
+            if selection is None:
+                continue
+            if not selection["device_ids"] and not selection["entity_ids"]:
+                continue
+            integrations.append({
+                "entry_id": selection["entry_id"],
+                "domain": selection["domain"],
+                "title": selection["title"],
+                "device_count": len(selection["device_ids"]),
+                "deviceless_entity_count": len(selection["entity_ids"]),
+                "registry_only_deviceless_count": selection[
+                    "registry_only_deviceless_count"
+                ],
+                "required_domain_ids": selection["required_domain_ids"],
+                "shared_device_count": selection["shared_device_count"],
+            })
+        integrations.sort(key=lambda item: (
+            str(item["title"]).casefold(), item["domain"], item["entry_id"]
+        ))
+        return _ok({"integrations": integrations}, request_id=rid)
+
+
+class PhoenixAdminPermissionBulkSelectView(PhoenixView):
+    """Atomically apply one state to a server-resolved selector snapshot."""
+
+    url = "/api/phoenix-mcp/admin/tokens/{token_id}/permissions/bulk-select"
+    name = "api:phoenix-mcp:admin:permission_bulk_select"
+    requires_auth = True
+
+    @require_admin
+    async def post(self, request: web.Request, token_id: str) -> web.Response:
+        rid = request["phoenix_mcp_rid"]
+        body = await _read_body(request, rid)
+        if isinstance(body, web.Response):
+            return body
+        selector_type = body.get("selector_type")
+        selector_id = body.get("selector_id")
+        state = body.get("state")
+        if selector_type not in ("area", "label", "integration"):
+            return _err(
+                "invalid_request",
+                "selector_type must be area, label, or integration.",
+                400,
+                rid,
+            )
+        if not isinstance(selector_id, str) or not selector_id:
+            return _err("invalid_request", "selector_id is required.", 400, rid)
+        if state not in VALID_NODE_STATES:
+            return _err(
+                "invalid_request",
+                f"state must be one of: {', '.join(sorted(VALID_NODE_STATES))}.",
+                400,
+                rid,
+            )
+
+        selection = _bulk_permission_selection(
+            self.hass, selector_type, selector_id
+        )
+        if selection is None:
+            return _err("not_found", "Permission selection not found.", 404, rid)
+
+        data: PhoenixData = self.hass.data[DOMAIN]
+        async with data.store.async_lock:
+            token = data.store.get_token_by_id(token_id)
+            if token is None:
+                return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
+            permissions = PermissionTree.from_dict(token.permissions.to_dict())
+            for node_type, node_ids in (
+                ("devices", selection["device_ids"]),
+                ("entities", selection["entity_ids"]),
+            ):
+                nodes = getattr(permissions, node_type)
+                for node_id in node_ids:
+                    if state == "GREY":
+                        nodes.pop(node_id, None)
+                    else:
+                        nodes[node_id] = PermissionNode(state=state)
+            updated = await data.store.async_set_permissions(token_id, permissions)
+            if updated is None:
+                return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
+
+        _audit_admin(self.hass, request, rid, request.path)
+        summary = {
+            "selector_type": selector_type,
+            "selector_id": selector_id,
+            "state": state,
+            "device_count": len(selection["device_ids"]),
+            "entity_count": len(selection["entity_ids"]),
+            "registry_only_deviceless_count": selection[
+                "registry_only_deviceless_count"
+            ],
+            "required_domain_ids": selection["required_domain_ids"],
+            "shared_device_count": selection["shared_device_count"],
+        }
+        return _ok(
+            {"permissions": updated.permissions.to_dict(), "summary": summary},
+            request_id=rid,
+        )
 
 
 class PhoenixAdminPermissionDomainView(PhoenixView):
@@ -3877,6 +4083,8 @@ ALL_ADMIN_VIEWS: list[type[PhoenixView]] = [
     PhoenixAdminTokenPresetView,
     PhoenixAdminTokenPresetApplyView,
     PhoenixAdminPermissionsView,
+    PhoenixAdminPermissionIntegrationOptionsView,
+    PhoenixAdminPermissionBulkSelectView,
     PhoenixAdminPermissionDomainView,
     PhoenixAdminPermissionDeviceView,
     PhoenixAdminPermissionEntityView,

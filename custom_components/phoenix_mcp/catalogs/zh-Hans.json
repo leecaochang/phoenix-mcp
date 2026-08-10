@@ -433,7 +433,6 @@
       "apply": "应用",
       "applyFailed": "应用权限失败。",
       "applying": "应用中…",
-      "applyingProgress": "应用中… {progress}",
       "area": "区域",
       "cancel": "取消",
       "entities": {
@@ -441,16 +440,34 @@
         "other": "{count} 个实体"
       },
       "grantNoteArea": "这将授予对当前处于所选区域内的实体的访问权限。新增实体不会自动包含在内。如果希望将来的实体也继承访问权限，请授权整个域。",
+      "grantNoteIntegration": "这会将一次快照授权应用到该配置条目当前拥有的全部设备，以及其已启用且在线的无设备实体；不会更改子实体限制。",
       "grantNoteLabel": "这将授予对当前带有所选标签的实体的访问权限。新增实体不会自动包含在内。如果希望将来的实体也继承访问权限，请授权整个域。",
       "groupBy": "分组方式",
+      "integration": "集成",
+      "integrationCoverage": "此条目当前会选择 {devices} 个设备和 {entities} 个在线无设备实体。",
+      "entryId": "配置条目 ID",
       "label": "标签",
+      "loadIntegrationsFailed": "加载集成选项失败。",
+      "loadingIntegrations": "正在加载集成…",
       "noAreas": "没有任何可访问的实体定义了区域。",
+      "noIntegrations": "当前没有拥有可选设备或在线无设备实体的集成。",
       "noLabels": "没有任何可访问的实体定义了标签。",
       "permissionToApply": "要应用的权限",
       "selectArea": "-- 选择区域 --",
+      "selectIntegration": "-- 选择集成 --",
       "selectLabel": "-- 选择标签 --",
+      "registryOnlyWarning": "有 {count} 个仅注册表中的无设备实体未被选择。如需让它们继承访问权限，请授权这些域：{domains}。",
+      "resources": {
+        "one": "{count} 个资源",
+        "other": "{count} 个资源"
+      },
+      "sharedDeviceWarning": {
+        "one": "所选设备中有 {count} 个为共享设备。其设备授权会影响该设备上的所有实体，包括其他配置条目拥有的实体。",
+        "other": "所选设备中有 {count} 个为共享设备。其设备授权会影响这些设备上的所有实体，包括其他配置条目拥有的实体。"
+      },
       "stateRemoveGrant": "移除授权",
-      "title": "按区域或标签选择",
+      "title": "按区域、标签或集成选择",
+      "willSetIntegration": "这将对 {devices} 个设备节点和 {entities} 个在线无设备实体节点应用{state}。",
       "willSet": {
         "one": "这将对 {count} 个实体应用{state}。",
         "other": "这将对 {count} 个实体应用{state}。"
@@ -1025,7 +1042,7 @@
       "scoped": "限定范围",
       "secondsOption": "{s} 秒",
       "secondsShort": "{n} 秒",
-      "selectByAreaLabel": "按区域或标签选择",
+      "selectByAreaLabelIntegration": "按区域、标签或集成选择",
       "setUpAgent": "设置智能体",
       "setUpFirstAgent": "设置您的第一个智能体",
       "showArchived": "显示已归档",

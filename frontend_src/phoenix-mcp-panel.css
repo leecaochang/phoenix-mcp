@@ -1408,6 +1408,11 @@ select.input {
    ============================================================ */
 .area-picker-summary { font-size: 13px; color: var(--phx-text-2); margin: 0 0 12px; }
 .area-picker-progress { font-size: 13px; margin: 0; }
+.integration-selection-details { margin: 0 0 14px; color: var(--phx-text-2); font-size: 13px; }
+.integration-selection-details > span { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 600; }
+.integration-selection-details > p { margin: 8px 0 12px; }
+.integration-entry-id { display: block; overflow-wrap: anywhere; user-select: text; color: var(--phx-text); font-family: var(--phx-mono, ui-monospace, monospace); font-size: 12px; }
+.integration-selection-details .banner { margin-bottom: 10px; }
 
 /* ============================================================
    Rate limit config

@@ -19,10 +19,13 @@ from custom_components.phoenix_mcp.policy_engine import (
     EntityCreationNotPermitted,
     Permission,
     call_needs_physical_gate,
+    config_entry_registry_context,
     filter_entities_for_token,
     filter_service_response,
     parse_relative_time,
     resolve,
+    resolve_config_entry_registry_access,
+    resolve_config_entry_registry_write,
     resolve_registry_access,
     resolve_intent_entities,
     resolve_service_targets,
@@ -163,6 +166,100 @@ def device_env(hass: HomeAssistant, config_entry: MockConfigEntry, entity_reg, d
         "light_accent": light_accent,
         "sensor": sensor,
     }
+
+
+class TestConfigEntryRegistryPolicy:
+    """Config-entry authorization is inherited without a new tree level."""
+
+    def test_exact_context_and_device_derived_visibility(
+        self, hass, config_entry, device_env
+    ):
+        context = config_entry_registry_context(config_entry.entry_id, hass)
+        assert context is not None
+        assert context.device_ids == (device_env["device"].id,)
+        assert set(context.entity_ids) == {
+            device_env["light_main"].entity_id,
+            device_env["light_accent"].entity_id,
+            device_env["sensor"].entity_id,
+        }
+        token = _make_token(devices={device_env["device"].id: "YELLOW"})
+        assert resolve_config_entry_registry_access(
+            config_entry.entry_id, token, hass
+        ) == Permission.READ
+
+    def test_disabled_registry_entity_only_grant_cannot_reveal_entry(
+        self, hass, config_entry, entity_reg
+    ):
+        entity = entity_reg.async_get_or_create(
+            "switch", "test_integration", "disabled_only",
+            config_entry=config_entry,
+            disabled_by=er.RegistryEntryDisabler.USER,
+        )
+        token = _make_token(entities={entity.entity_id: "GREEN"})
+        assert resolve_config_entry_registry_access(
+            config_entry.entry_id, token, hass
+        ) == Permission.NO_ACCESS
+
+    def test_complete_write_requires_every_entity_and_exact_device(
+        self, hass, config_entry, device_env
+    ):
+        device_id = device_env["device"].id
+        token = _make_token(
+            domains={"light": "GREEN", "sensor": "GREEN"},
+            devices={device_id: "GREEN"},
+        )
+        assert resolve_config_entry_registry_write(
+            config_entry.entry_id, token, hass
+        ) == Permission.WRITE
+        token.permissions.entities[device_env["sensor"].entity_id] = _node("YELLOW")
+        assert resolve_config_entry_registry_write(
+            config_entry.entry_id, token, hass
+        ) == Permission.READ
+
+    def test_force_registry_only_prevents_post_disable_self_lockout(
+        self, hass, config_entry, registered_env
+    ):
+        entity_ids = [
+            item.entity_id
+            for group in registered_env.values()
+            for item in group.values()
+        ]
+        token = _make_token(entities={entity_id: "GREEN" for entity_id in entity_ids})
+        assert resolve_config_entry_registry_write(
+            config_entry.entry_id, token, hass
+        ) == Permission.WRITE
+        assert resolve_config_entry_registry_write(
+            config_entry.entry_id, token, hass, force_registry_only=True
+        ) == Permission.NO_ACCESS
+
+    def test_resource_less_scoped_entry_fails_closed(self, hass, config_entry):
+        token = _make_token(domains={"test_integration": "GREEN"})
+        assert resolve_config_entry_registry_access(
+            config_entry.entry_id, token, hass
+        ) == Permission.NO_ACCESS
+        assert resolve_config_entry_registry_write(
+            config_entry.entry_id, token, hass
+        ) == Permission.NO_ACCESS
+
+    def test_pass_through_entry_visibility_preserves_assist_exposure(
+        self, hass, config_entry, registered_env
+    ):
+        token = _make_token(pass_through=True)
+        token.use_assist_exposure = True
+        with patch(
+            "custom_components.phoenix_mcp.policy_engine.assist_expose_check",
+            return_value=lambda _entity_id: False,
+        ):
+            assert resolve_config_entry_registry_access(
+                config_entry.entry_id, token, hass
+            ) == Permission.NO_ACCESS
+        with patch(
+            "custom_components.phoenix_mcp.policy_engine.assist_expose_check",
+            return_value=lambda _entity_id: True,
+        ):
+            assert resolve_config_entry_registry_access(
+                config_entry.entry_id, token, hass
+            ) == Permission.WRITE
 
 
 @pytest.fixture

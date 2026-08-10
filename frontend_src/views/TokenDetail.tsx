@@ -1042,7 +1042,7 @@ export function TokenDetailView({ tokenId, onBack, onRefresh, presetsEnabled = f
                   <div className="tree-header-actions">
                     {entityTree && (
                       <button className="btn btn-outline btn-sm" onClick={() => setShowSelectByPicker(true)}>
-                        {t("tokens.selectByAreaLabel")}
+                        {t("tokens.selectByAreaLabelIntegration")}
                       </button>
                     )}
                     <button

@@ -5,6 +5,7 @@ import type {
   ApprovalListParams,
   ApprovalListResponse,
   ApprovalRecord,
+  BulkPermissionResult,
   BatchApproveResult,
   AuditEntry,
   AuditListResponse,
@@ -15,6 +16,7 @@ import type {
   DeclaredModelCaps,
   EntityTree,
   GlobalSettings,
+  IntegrationPermissionOption,
   MesaExportArchive,
   MesaImportResult,
   MesaIssuesResponse,
@@ -162,6 +164,20 @@ export const api = {
     req<PermissionTree>("PATCH", `/tokens/${tokenId}/permissions/devices/${encodeURIComponent(deviceId)}`, body),
   patchEntityPermission: (tokenId: string, entityId: string, body: PermissionPatchBody) =>
     req<PermissionTree>("PATCH", `/tokens/${tokenId}/permissions/entities/${encodeURIComponent(entityId)}`, body),
+  getPermissionIntegrationOptions: (tokenId: string) =>
+    req<{ integrations: IntegrationPermissionOption[] }>(
+      "GET", `/tokens/${tokenId}/permissions/integration-options`,
+    ),
+  bulkSelectPermissions: (
+    tokenId: string,
+    selectorType: "area" | "label" | "integration",
+    selectorId: string,
+    state: PermissionPatchBody["state"],
+  ) => req<BulkPermissionResult>(
+    "POST",
+    `/tokens/${tokenId}/permissions/bulk-select`,
+    { selector_type: selectorType, selector_id: selectorId, state },
+  ),
 
   resolve: (tokenId: string, entityId: string) =>
     req<ResolveResult>("GET", `/tokens/${tokenId}/resolve/${encodeURIComponent(entityId)}`),

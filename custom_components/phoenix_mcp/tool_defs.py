@@ -2109,8 +2109,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "list_integrations",
         "description": (
-            "List Home Assistant config entries (integrations): entry_id, domain, title, state, and whether "
-            "disabled. Use the entry_id with set_integration_enabled."
+            "List Home Assistant config entries visible through this token's accessible owned entities or "
+            "devices. Returns safe registry metadata, normalized state and disabled reason, scrubbed setup "
+            "failure reason, feature support (null when probing is inconclusive), preferences, and accessible "
+            "entity/device counts. Never returns config-entry data, options, unique IDs, discovery identity, "
+            "URLs, credentials, or network identity. Use entry_id with integration management tools."
         ),
         "cap": "cap_integration_write",
         "inputSchema": {"type": "object", "properties": {}},

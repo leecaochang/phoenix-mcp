@@ -44,15 +44,15 @@
         <p>The tree groups entities by domain and device. You rarely set every node: the usual pattern is to set a whole domain or device, leave the children grey so they inherit, then use RED to carve out exceptions. See <a href="permissions.html">Permissions</a> for how the states resolve. Three panel tools make this faster.</p>
         <p>Each row also carries a small MESA control, a <code>+</code> to create a profile or <code>MESA</code> when one already exists, which opens the profile editor over the tab without losing your place. It writes at the level of the row you clicked: a domain group authors a domain profile, a device group authors a device profile covering every entity that device owns, and an entity row authors an entity profile. Permissions and MESA are independent, so a profile written here changes what any token may do with that entity by nature, not just this one. The <a href="mesa.html">MESA</a> page covers what the levels mean.</p>
 
-        <h3 id="select-by">Select by Area or Label</h3>
-        <p>The <strong>Select by Area or Label</strong> button bulk-applies one state to a group of entities at once. Pick a tab (Area or Label), choose the group, choose the state to apply (Read, Write, Deny, or Remove grant), and Phoenix MCP sets each matching entity.</p>
+        <h3 id="select-by">Select by area, label, or integration</h3>
+        <p>The <strong>Select by area, label, or integration</strong> button atomically applies one state to a server-resolved group. Pick a tab, choose the group or exact config entry, then choose Read, Write, Deny, or Remove grant. The integration tab displays <code>title — domain</code> and the full config-entry ID, then selects every currently owned device node and every live, enabled deviceless entity node. Existing child-entity restrictions are left alone.</p>
         <div class="callout warn">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2 6 4-14 2 8h6"/></svg>
-          <div class="callout-body"><p class="callout-title">It applies to the entities in the group now, not forever</p><p>Select-by grants access to the entities <em>currently</em> in the chosen area or label, one entity at a time. Entities added to that area or label later are <strong>not</strong> picked up automatically. For coverage that follows future entities, set a domain-level grant instead.</p></div>
+          <div class="callout-body"><p class="callout-title">It is a snapshot, not a new permission level</p><p>Area, label, and integration selection all resolve current registry membership and save the affected nodes in one atomic update. Future members are <strong>not</strong> picked up automatically. Registry-only deviceless entities still need a domain grant, and the dialog reports those domains. A shared-device warning means its device grant also affects entities owned by other config entries.</p></div>
         </div>
         <figure class="screenshot">
-          <img src="assets/token-area.png" alt="The Select by Area or Label dialog grouping entities by area" loading="lazy" />
-          <figcaption>The bulk-apply dialog, grouping by area or label.</figcaption>
+          <img src="assets/token-area.png" alt="The bulk permission dialog grouping entities by area" loading="lazy" />
+          <figcaption>The same bulk-apply dialog also supports labels and exact config entries.</figcaption>
         </figure>
 
         <h3 id="emulator">The effective-permission emulator</h3>

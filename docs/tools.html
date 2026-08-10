@@ -339,7 +339,8 @@
 
           <article class="tool" data-cap="system" data-search="list_integrations set_integration_enabled enable disable">
             <div class="tool-head"><span class="tool-name">list_integrations</span><span class="tool-name">set_integration_enabled</span><span class="badge badge-cap">Integration management</span></div>
-            <p class="tool-desc">List integrations and enable or disable them. Confirm-eligible.</p>
+            <p class="tool-desc"><code>list_integrations</code> returns only config entries visible through an accessible owned entity or device (pass-through tokens may also see resource-less entries). Its allowlisted projection includes exact entry ID, domain, title, source, normalized state, enabled/disabled reason, a scrubbed setup-failure reason, safely probed reload/unload/options/reconfigure support, new-entity and polling preferences, and accessible entity/device counts. An inconclusive support probe is <code>null</code>, not a false negative. Config-entry data/options, unique and discovery identity, URLs, credentials, and network identity are never returned. Phoenix MCP's own entry is always excluded.</p>
+            <p class="tool-desc"><code>set_integration_enabled</code> enables or disables an entry and is Confirm-eligible. Its complete inherited-write and MESA lifecycle hardening is part of the next integration-management stage.</p>
             <dl><dt>params</dt><dd><code>set_integration_enabled</code>: <code>entry_id</code> (required; from <code>list_integrations</code>), <code>enabled</code> (required; boolean)</dd></dl>
           </article>
 

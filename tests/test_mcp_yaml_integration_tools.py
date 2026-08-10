@@ -18,7 +18,11 @@ from custom_components.phoenix_mcp.mcp_view import (
     _execute_patch_yaml_config,
     _execute_set_yaml_config,
 )
-from custom_components.phoenix_mcp.token_store import PermissionTree, TokenRecord
+from custom_components.phoenix_mcp.token_store import (
+    PermissionNode,
+    PermissionTree,
+    TokenRecord,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -708,11 +712,78 @@ class TestIntegrations:
     async def test_list_excludes_phoenix(self, hass):
         MockConfigEntry(domain="test_integration", title="Test", entry_id="e1").add_to_hass(hass)
         MockConfigEntry(domain="phoenix_mcp", title="Phoenix MCP", entry_id="phoenix_mcp1").add_to_hass(hass)
-        content, outcome, _ = await _call("list_integrations", {}, _token(), hass)
+        content, outcome, _ = await _call(
+            "list_integrations", {}, _token(pass_through=True), hass
+        )
         assert outcome == "allowed"
         domains = {i["domain"] for i in _json(content)["integrations"]}
         assert "test_integration" in domains
         assert "phoenix_mcp" not in domains
+
+    async def test_list_is_scoped_by_owned_entity_and_safe_projection(self, hass):
+        from homeassistant.helpers import entity_registry as er
+
+        visible = MockConfigEntry(
+            domain="test_integration",
+            title="Visible 192.168.1.2 https://example.invalid/setup",
+            entry_id="visible-entry",
+            data={"password": "secret", "host": "192.168.1.2"},
+            options={"token": "secret"},
+        )
+        hidden = MockConfigEntry(
+            domain="other_integration", title="Hidden", entry_id="hidden-entry"
+        )
+        visible.add_to_hass(hass)
+        hidden.add_to_hass(hass)
+        entity = er.async_get(hass).async_get_or_create(
+            "light", "test_integration", "visible-light",
+            config_entry=visible,
+        )
+        hass.states.async_set(entity.entity_id, "on")
+        token = _token()
+        token.permissions.entities[entity.entity_id] = PermissionNode(state="YELLOW")
+
+        content, outcome, _ = await _call("list_integrations", {}, token, hass)
+
+        assert outcome == "allowed"
+        result = _json(content)
+        assert result["count"] == 1
+        item = result["integrations"][0]
+        assert item["entry_id"] == visible.entry_id
+        assert item["title"] == "Visible <redacted-ip> <redacted-url>"
+        assert item["state"] == "not_loaded"
+        assert item["enabled"] is True
+        assert item["accessible_entity_count"] == 1
+        assert item["accessible_device_count"] == 0
+        assert set(item) == {
+            "entry_id", "domain", "title", "source", "state", "enabled",
+            "disabled_by", "setup_failure_reason", "supports_reload",
+            "supports_unload", "supports_options", "supports_reconfigure",
+            "pref_disable_new_entities", "pref_disable_polling",
+            "accessible_entity_count", "accessible_device_count",
+        }
+        serialized = json.dumps(item)
+        assert "secret" not in serialized
+        assert "192.168.1.2" not in serialized
+        assert hidden.entry_id not in serialized
+
+    async def test_disabled_direct_entity_grant_does_not_reveal_entry(self, hass):
+        from homeassistant.helpers import entity_registry as er
+
+        entry = MockConfigEntry(
+            domain="test_integration", title="Disabled", entry_id="disabled-entry"
+        )
+        entry.add_to_hass(hass)
+        entity = er.async_get(hass).async_get_or_create(
+            "switch", "test_integration", "disabled-switch",
+            config_entry=entry,
+            disabled_by=er.RegistryEntryDisabler.USER,
+        )
+        token = _token()
+        token.permissions.entities[entity.entity_id] = PermissionNode(state="GREEN")
+        content, outcome, _ = await _call("list_integrations", {}, token, hass)
+        assert outcome == "allowed"
+        assert _json(content)["integrations"] == []
 
     async def test_disable_calls_ha(self, hass):
         entry = MockConfigEntry(domain="test_integration", entry_id="e2")

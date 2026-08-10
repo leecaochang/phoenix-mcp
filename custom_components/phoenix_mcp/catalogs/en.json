@@ -461,7 +461,7 @@
       "scoped": "Scoped",
       "secondsOption": "{s} seconds",
       "secondsShort": "{n}s",
-      "selectByAreaLabel": "Select by Area or Label",
+      "selectByAreaLabelIntegration": "Select by area, label, or integration",
       "setUpAgent": "Set up an agent",
       "setUpFirstAgent": "Set up your first agent",
       "showArchived": "Show Archived",
@@ -1006,7 +1006,6 @@
       "apply": "Apply",
       "applyFailed": "Failed to apply permissions.",
       "applying": "Applying...",
-      "applyingProgress": "Applying... {progress}",
       "area": "Area",
       "cancel": "Cancel",
       "entities": {
@@ -1014,19 +1013,37 @@
         "other": "{count} entities"
       },
       "grantNoteArea": "This grants access to entities currently in the selected area. New entities are not included automatically. Grant the domain if future entities should inherit access.",
+      "grantNoteIntegration": "This applies a snapshot grant to all devices currently owned by the exact config entry and its live, enabled deviceless entities. It does not change child-entity restrictions.",
       "grantNoteLabel": "This grants access to entities currently in the selected label. New entities are not included automatically. Grant the domain if future entities should inherit access.",
       "groupBy": "Group by",
+      "integration": "Integration",
+      "integrationCoverage": "This entry currently selects {devices} devices and {entities} live deviceless entities.",
+      "entryId": "Config entry ID",
       "label": "Label",
+      "loadIntegrationsFailed": "Failed to load integration choices.",
+      "loadingIntegrations": "Loading integrations…",
       "noAreas": "No areas are defined on any accessible entity.",
+      "noIntegrations": "No integrations currently own selectable devices or live deviceless entities.",
       "noLabels": "No labels are defined on any accessible entity.",
       "permissionToApply": "Permission to apply",
       "selectArea": "-- Select area --",
+      "selectIntegration": "-- Select integration --",
       "selectLabel": "-- Select label --",
+      "registryOnlyWarning": "{count} registry-only deviceless entities are not selected. Grant these domains if they need inherited access: {domains}.",
+      "resources": {
+        "one": "{count} resource",
+        "other": "{count} resources"
+      },
+      "sharedDeviceWarning": {
+        "one": "{count} selected device is shared. Its device grant affects every entity on that device, including entities owned by other config entries.",
+        "other": "{count} selected devices are shared. Their device grants affect every entity on those devices, including entities owned by other config entries."
+      },
       "stateDeny": "Deny",
       "stateRead": "Read",
       "stateRemoveGrant": "Remove grant",
       "stateWrite": "Write",
-      "title": "Select by Area or Label",
+      "title": "Select by area, label, or integration",
+      "willSetIntegration": "This will apply {state} to {devices} device nodes and {entities} live deviceless entity nodes.",
       "willSet": {
         "one": "This will apply {state} to {count} entity.",
         "other": "This will apply {state} to {count} entities."
