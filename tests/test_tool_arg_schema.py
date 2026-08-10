@@ -58,6 +58,19 @@ UNPUBLISHED_ARGS = {
         "_restore_ctx is set. test_mcp_registry_tools.py pins that a caller "
         "sending it outside a restore is ignored."
     ),
+    ("mcp_view.py", "labels"): (
+        "INTERNAL absolute form used only while restoring an entity version. "
+        "Public set_entity edits labels with add_labels/remove_labels so a stale "
+        "caller cannot replace labels it did not read."
+    ),
+    ("mcp_view.py", "disabled_by"): (
+        "INTERNAL restore form preserving Home Assistant's exact disabler. Public "
+        "set_entity exposes only the user-controlled enabled boolean."
+    ),
+    ("mcp_view.py", "hidden_by"): (
+        "INTERNAL restore form preserving Home Assistant's exact hider. Public "
+        "set_entity exposes only the user-controlled hidden boolean."
+    ),
     ("discovery.py", "name"): (
         "search_entities accepts `name` as an alias for its published `query`, "
         "so a model that guesses the other spelling still searches instead of "
@@ -88,8 +101,33 @@ def test_set_entity_exposes_only_validated_registry_reference_fields():
         "floor_id",
         "label_id",
         "labels",
+        "add_labels",
+        "remove_labels",
     }
-    assert properties & registry_references == {"area_id"}
+    assert properties & registry_references == {
+        "add_labels",
+        "area_id",
+        "categories",
+        "remove_labels",
+    }
+
+
+def test_set_entity_publishes_reversible_registry_fields_and_null_clears():
+    properties = _tool_defs()["set_entity"]["inputSchema"]["properties"]
+    assert {
+        "device_class",
+        "enabled",
+        "hidden",
+        "add_labels",
+        "remove_labels",
+        "categories",
+    } <= set(properties)
+    for field in ("name", "icon", "area_id", "device_class"):
+        assert properties[field]["type"] == ["string", "null"]
+    assert properties["categories"]["additionalProperties"]["type"] == [
+        "string",
+        "null",
+    ]
 
 
 def _modules() -> list[pathlib.Path]:

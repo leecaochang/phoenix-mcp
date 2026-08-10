@@ -807,10 +807,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "set_entity",
         "description": (
-            "Update an entity's registry metadata: its friendly name, icon, area, and/or the alternative "
-            "spoken names (aliases) Assist matches it by. Requires WRITE access to the entity and "
-            "cap_registry_write (often admin-confirmed). Provide entity_id plus at least one of name, icon, "
-            "area_id, add_aliases, remove_aliases. Aliases are edited by adding and removing names rather "
+            "Update an entity's user-controlled registry metadata: friendly name, icon, area, device class, "
+            "enabled/hidden state, labels, categories, and/or the alternative spoken names (aliases) Assist "
+            "matches it by. Requires WRITE access to a live entity; a disabled or otherwise registry-only "
+            "entity instead requires inherited WRITE on its device or domain. cap_registry_write also applies "
+            "and is often admin-confirmed. Use null to clear name, icon, area_id, or device_class. Aliases and "
+            "labels are edited by adding and removing values rather "
             "than by replacing the list, so an entity never loses the ability to answer to its own name; "
             "describe_entity reports the names it currently matches. Does not rename the entity_id. "
             "Captured in version history."
@@ -820,11 +822,21 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "entity_id": {"type": "string"},
-                "name": {"type": "string", "description": "New friendly-name override (registry name)."},
-                "icon": {"type": "string", "description": "New icon, e.g. mdi:lightbulb."},
-                "area_id": {"type": "string", "description": "Assign to this area_id (must already exist)."},
+                "name": {"type": ["string", "null"], "description": "New friendly-name override, or null to clear it."},
+                "icon": {"type": ["string", "null"], "description": "New icon such as mdi:lightbulb, or null to clear it."},
+                "area_id": {"type": ["string", "null"], "description": "Assign to an existing area_id, or null to clear the assignment."},
+                "device_class": {"type": ["string", "null"], "description": "User device-class override, or null to clear it."},
+                "enabled": {"type": "boolean", "description": "Enable or user-disable the entity. Integration/system-disabled entries cannot be changed here. Disabling is refused unless inherited device/domain WRITE will remain."},
+                "hidden": {"type": "boolean", "description": "Set or clear the user-hidden state. Integration-hidden entries cannot be changed here."},
                 "add_aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative spoken names to ADD, e.g. ['lounge lamp']. Aliases are how Assist matches an entity, so this is the fix when a voice command does not resolve. Already-present aliases are ignored; matching is case-insensitive."},
                 "remove_aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative spoken names to REMOVE. Only names you list are removed; the entity keeps responding to its own name. Names it does not have are ignored."},
+                "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Existing label IDs to add."},
+                "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to remove; absent labels are ignored."},
+                "categories": {
+                    "type": "object",
+                    "additionalProperties": {"type": ["string", "null"]},
+                    "description": "Category patch keyed by scope. Values are existing category IDs; null removes that scope.",
+                },
             },
             "required": ["entity_id"],
         },

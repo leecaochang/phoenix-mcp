@@ -466,6 +466,20 @@ mode: single
   and changes nothing. The result reports what actually changed, so check it
   rather than assuming your edit applied.
 
+### Entity registry metadata
+
+- `set_entity` can clear name, icon, area, and device-class overrides with an
+  explicit null; omitting a field leaves it unchanged. Labels are edited with
+  `add_labels` / `remove_labels`, while `categories` is a scope-keyed patch whose
+  null value removes that scope.
+- `enabled` and `hidden` change only user-controlled state. If an integration,
+  device, config entry, or Home Assistant owns that state, report the refusal
+  instead of trying to override it. Re-enabling may require an integration reload
+  or Home Assistant restart before the entity publishes a live state again.
+- A disabled or otherwise registry-only entity inherits access from its device or
+  domain. Disabling is refused unless that inherited WRITE will remain, so do not
+  retry it with an entity-only grant; ask the operator for device/domain scope.
+
 ### Raw YAML configuration
 
 - These tools reach `configuration.yaml` and any YAML file it loads through an

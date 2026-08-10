@@ -132,7 +132,11 @@ def resolve(entity_id: str, token: TokenRecord, hass: HomeAssistant) -> Permissi
 
 
 def resolve_registry_access(
-    entity_id: str, token: TokenRecord, hass: HomeAssistant
+    entity_id: str,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    force_registry_only: bool = False,
 ) -> Permission:
     """Resolve access to an entity, requiring inherited scope when registry-only.
 
@@ -153,9 +157,9 @@ def resolve_registry_access(
     registry = er.async_get(hass)
     entry = registry.async_get(entity_id)
     canonical_id = entry.entity_id if entry is not None else entity_id
-    if entry is None or (
+    if entry is None or (not force_registry_only and (
         entry.disabled_by is None and hass.states.get(canonical_id) is not None
-    ):
+    )):
         return ordinary
     if token.pass_through:
         return ordinary

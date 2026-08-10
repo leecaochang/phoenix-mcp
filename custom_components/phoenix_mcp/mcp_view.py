@@ -21,8 +21,10 @@ from homeassistant.exceptions import (
     ServiceValidationError,
 )
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import category_registry as cr
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import label_registry as lr
 from homeassistant.config_entries import ConfigEntryDisabler
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -159,7 +161,7 @@ from .tool_defs import (
 )
 from .audit import Outcome
 from .tool_common import _CAP_FORBIDDEN_MESSAGE, _resolve_area_id, _ProgressBus, _approved_exec_ctx, _approval_resource, _gate, _mesa_advisory_ctx, _mesa_confirm_annotation, _operator_accepted_result, _pending_or_inline, _progress_ctx, _record_version, _restore_ctx, _set_progress_status, _tool_error, _tool_success
-from .policy_engine import (EntityCreationNotPermitted, Permission, call_needs_physical_gate, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_esphome_user_service, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
+from .policy_engine import (EntityCreationNotPermitted, Permission, call_needs_physical_gate, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
 from .rate_limiter import RateLimitResult
 from .token_store import TokenRecord
 from . import yaml_includes
@@ -1253,6 +1255,11 @@ def _entity_meta_snapshot(entry: Any) -> dict:
         "name": entry.name,
         "icon": entry.icon,
         "area_id": entry.area_id,
+        "device_class": entry.device_class,
+        "disabled_by": getattr(entry.disabled_by, "value", entry.disabled_by),
+        "hidden_by": getattr(entry.hidden_by, "value", entry.hidden_by),
+        "labels": sorted(entry.labels),
+        "categories": dict(sorted(entry.categories.items())),
         "aliases": _alias_wire(entry.aliases),
     }
 
@@ -1372,15 +1379,129 @@ def _registry_area_id_error(
         return None
     area_id = args["area_id"]
     if area_id is not None and not isinstance(area_id, str):
-        return _tool_error("area_id must be a string."), "invalid_request", entity_id
+        return _tool_error("area_id must be a string or null."), "invalid_request", entity_id
     if area_id and ar.async_get(hass).async_get_area(area_id) is None:
         return _tool_error("Unknown area_id."), "invalid_request", entity_id
     return None
 
 
 _SET_ENTITY_UPDATE_ARGUMENTS = frozenset(
-    {"name", "icon", "area_id", "add_aliases", "remove_aliases"}
+    {
+        "name", "icon", "area_id", "device_class", "enabled", "hidden",
+        "add_aliases", "remove_aliases", "add_labels", "remove_labels",
+        "categories",
+    }
 )
+
+_SET_ENTITY_RESTORE_ARGUMENTS = frozenset(
+    {"aliases", "labels", "disabled_by", "hidden_by"}
+)
+
+
+def _registry_id_edit(value: Any, field: str) -> list[str] | str:
+    """Normalize a label-id add/remove argument, or return a refusal message."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        values = value
+    else:
+        return f"{field} must be a string or a list of strings."
+    cleaned: list[str] = []
+    for value_item in values:
+        item = value_item.strip()
+        if item and item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
+def _apply_registry_id_edits(
+    current: set[str], add: list[str], remove: list[str]
+) -> tuple[set[str], list[str], list[str]]:
+    """Apply set-style registry ID edits; additions win an add/remove tie."""
+    result = (current - set(remove)) | set(add)
+    return result, sorted(result - current), sorted(current - result)
+
+
+def _set_entity_value_error(
+    args: dict,
+    hass: HomeAssistant,
+    entry: er.RegistryEntry,
+    *,
+    restoring: bool,
+) -> str | None:
+    """Validate set_entity values and references without changing the registry."""
+    for field in ("name", "icon", "device_class"):
+        if field in args and args[field] is not None and not isinstance(args[field], str):
+            return f"{field} must be a string or null."
+    for field in ("enabled", "hidden"):
+        if field in args and not isinstance(args[field], bool):
+            return f"{field} must be true or false."
+
+    for field in ("add_labels", "remove_labels"):
+        if field not in args:
+            continue
+        parsed = _registry_id_edit(args[field], field)
+        if isinstance(parsed, str):
+            return parsed
+        if field == "add_labels":
+            missing = [label_id for label_id in parsed if lr.async_get(hass).async_get_label(label_id) is None]
+            if missing:
+                return f"Unknown label id: {missing[0]}."
+    if restoring and "labels" in args:
+        labels = args["labels"]
+        if not isinstance(labels, list) or not all(
+            isinstance(label_id, str) for label_id in labels
+        ):
+            return "labels must be a list of label ids."
+        missing = [
+            label_id
+            for label_id in labels
+            if lr.async_get(hass).async_get_label(label_id) is None
+        ]
+        if missing:
+            return f"Unknown label id: {missing[0]}."
+
+    if "categories" in args:
+        categories = args["categories"]
+        if not isinstance(categories, dict):
+            return "categories must be an object mapping scope to category id or null."
+        category_registry = cr.async_get(hass)
+        for scope, category_id in categories.items():
+            if not isinstance(scope, str) or not scope:
+                return "category scopes must be non-empty strings."
+            if category_id is not None and not isinstance(category_id, str):
+                return f"category {scope!r} must be a string id or null."
+            if category_id is not None and category_registry.async_get_category(
+                scope=scope, category_id=category_id
+            ) is None:
+                return f"Unknown category id {category_id!r} in scope {scope!r}."
+
+    if restoring:
+        enum_fields = (
+            ("disabled_by", er.RegistryEntryDisabler),
+            ("hidden_by", er.RegistryEntryHider),
+        )
+        for field, enum_type in enum_fields:
+            if field not in args or args[field] is None:
+                continue
+            try:
+                enum_type(args[field])
+            except (TypeError, ValueError):
+                return f"Invalid stored {field} value."
+
+    if not restoring and "enabled" in args and entry.disabled_by not in (
+        None, er.RegistryEntryDisabler.USER
+    ):
+        return f"This entity is disabled by {entry.disabled_by.value}, not by the user."
+    if not restoring and "hidden" in args and entry.hidden_by not in (
+        None, er.RegistryEntryHider.USER
+    ):
+        return f"This entity is hidden by {entry.hidden_by.value}, not by the user."
+    if args.get("enabled") is True and entry.device_id:
+        device = dr.async_get(hass).async_get(entry.device_id)
+        if device is not None and device.disabled:
+            return "The entity cannot be enabled while its device is disabled."
+    return None
 
 
 def _set_entity_args_error(
@@ -1388,24 +1509,31 @@ def _set_entity_args_error(
     hass: HomeAssistant,
     entity_id: str,
     *,
-    allow_restore_aliases: bool = False,
+    allow_restore_fields: bool = False,
 ) -> tuple[dict, str, str] | None:
     """Validate supported fields and reject requests with no registry update."""
     area_error = _registry_area_id_error(args, hass, entity_id)
     if area_error is not None:
         return area_error
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None:
+        return _tool_error("Entity has no registry entry to edit."), "invalid_request", entity_id
     update_arguments = _SET_ENTITY_UPDATE_ARGUMENTS | (
-        {"aliases"} if allow_restore_aliases else set()
+        _SET_ENTITY_RESTORE_ARGUMENTS if allow_restore_fields else set()
     )
     if not any(field in args for field in update_arguments):
         return (
             _tool_error(
-                "Provide at least one of name, icon, area_id, add_aliases, "
-                "remove_aliases."
+                "Provide at least one of the supported entity registry updates."
             ),
             "invalid_request",
             entity_id,
         )
+    value_error = _set_entity_value_error(
+        args, hass, entry, restoring=allow_restore_fields
+    )
+    if value_error is not None:
+        return _tool_error(value_error), "invalid_request", entity_id
     return None
 
 
@@ -1420,11 +1548,29 @@ def _registry_write_precheck(
     entity_id = str(args.get("entity_id") or "").strip()
     if not entity_id:
         return _tool_error("entity_id is required."), "invalid_request", tool_name
-    perm_error = _registry_write_perm_error(resolve(entity_id, token, hass), entity_id)
+    permission = (
+        resolve_registry_access(entity_id, token, hass)
+        if tool_name == "set_entity"
+        else resolve(entity_id, token, hass)
+    )
+    perm_error = _registry_write_perm_error(permission, entity_id)
     if perm_error is not None:
         return perm_error
     if tool_name == "set_entity":
-        return _set_entity_args_error(args, hass, entity_id)
+        args_error = _set_entity_args_error(args, hass, entity_id)
+        if args_error is not None:
+            return args_error
+        if args.get("enabled") is False and resolve_registry_access(
+            entity_id, token, hass, force_registry_only=True
+        ) != Permission.WRITE:
+            return (
+                _tool_error(
+                    "Disabling this entity would remove the token's only write grant. "
+                    "Grant WRITE to its device or domain first."
+                ),
+                "denied",
+                entity_id,
+            )
     return None
 
 
@@ -1432,8 +1578,20 @@ async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssis
     entity_id = str(args.get("entity_id") or "")
     entry = er.async_get(hass).async_get(entity_id)
     before = _entity_meta_snapshot(entry) if entry else {}
-    fields = [f for f in ("name", "icon", "area_id") if f in args]
+    fields = [f for f in ("name", "icon", "area_id", "device_class") if f in args]
     preview = {f: {"before": before.get(f), "after": args.get(f)} for f in fields}
+    if "enabled" in args:
+        fields.append("enabled")
+        preview["enabled"] = {
+            "before": before.get("disabled_by") is None,
+            "after": args["enabled"],
+        }
+    if "hidden" in args:
+        fields.append("hidden")
+        preview["hidden"] = {
+            "before": before.get("hidden_by") is not None,
+            "after": args["hidden"],
+        }
     # Aliases preview as the RESOLVED spoken names on both sides, which is what
     # the operator is actually approving a change to; the sentinel is an
     # implementation detail and naming it here would ask them to review a
@@ -1460,6 +1618,29 @@ async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssis
         preview["aliases"] = {
             "before": er.async_get_entity_aliases(hass, entry),
             "after": after_names,
+        }
+    if entry is not None and ("add_labels" in args or "remove_labels" in args):
+        fields.append("labels")
+        add = _registry_id_edit(args.get("add_labels", []), "add_labels")
+        remove = _registry_id_edit(args.get("remove_labels", []), "remove_labels")
+        after_labels = None
+        if not isinstance(add, str) and not isinstance(remove, str):
+            after_labels = sorted(
+                _apply_registry_id_edits(set(entry.labels), add, remove)[0]
+            )
+        preview["labels"] = {"before": sorted(entry.labels), "after": after_labels}
+    if entry is not None and "categories" in args:
+        fields.append("categories")
+        after_categories = dict(entry.categories)
+        if isinstance(args["categories"], dict):
+            for scope, category_id in args["categories"].items():
+                if category_id is None:
+                    after_categories.pop(scope, None)
+                else:
+                    after_categories[scope] = category_id
+        preview["categories"] = {
+            "before": dict(sorted(entry.categories.items())),
+            "after": dict(sorted(after_categories.items())),
         }
     return {
         "kind": "system_action",
@@ -1515,7 +1696,9 @@ async def _execute_set_entity(
     entity_id = str(args.get("entity_id") or "").strip()
     if not entity_id:
         return _tool_error("entity_id is required."), "invalid_request", "set_entity"
-    err = _registry_write_perm_error(resolve(entity_id, token, hass), entity_id)
+    err = _registry_write_perm_error(
+        resolve_registry_access(entity_id, token, hass), entity_id
+    )
     if err is not None:
         return err
     reg = er.async_get(hass)
@@ -1524,10 +1707,24 @@ async def _execute_set_entity(
         return _tool_error("Entity has no registry entry to edit."), "invalid_request", entity_id
     restoring = _restore_ctx.get() is not None
     args_error = _set_entity_args_error(
-        args, hass, entity_id, allow_restore_aliases=restoring
+        args, hass, entity_id, allow_restore_fields=restoring
     )
     if args_error is not None:
         return args_error
+    will_disable = args.get("enabled") is False or (
+        restoring and args.get("disabled_by") is not None
+    )
+    if will_disable and resolve_registry_access(
+        entity_id, token, hass, force_registry_only=True
+    ) != Permission.WRITE:
+        return (
+            _tool_error(
+                "Disabling this entity would remove the token's only write grant. "
+                "Grant WRITE to its device or domain first."
+            ),
+            "denied",
+            entity_id,
+        )
 
     updates: dict = {}
     if "name" in args:
@@ -1537,6 +1734,16 @@ async def _execute_set_entity(
     if "area_id" in args:
         area_id = args["area_id"]
         updates["area_id"] = area_id or None
+    if "device_class" in args:
+        updates["device_class"] = args["device_class"] or None
+    if "enabled" in args:
+        updates["disabled_by"] = (
+            None if args["enabled"] else er.RegistryEntryDisabler.USER
+        )
+    if "hidden" in args:
+        updates["hidden_by"] = (
+            er.RegistryEntryHider.USER if args["hidden"] else None
+        )
     alias_add: list[str] = []
     alias_remove: list[str] = []
     for field, sink in (("add_aliases", alias_add), ("remove_aliases", alias_remove)):
@@ -1562,9 +1769,48 @@ async def _execute_set_entity(
     # the caller, so no agent-reachable path can set it.
     if "aliases" in args and restoring:
         updates["aliases"] = _alias_unwire(args["aliases"])
+    label_add: list[str] = []
+    label_remove: list[str] = []
+    for field, sink in (("add_labels", label_add), ("remove_labels", label_remove)):
+        if field not in args:
+            continue
+        parsed = _registry_id_edit(args[field], field)
+        if isinstance(parsed, str):
+            return _tool_error(parsed), "invalid_request", entity_id
+        sink.extend(parsed)
+    labels_added: list[str] = []
+    labels_removed: list[str] = []
+    if label_add or label_remove:
+        new_labels, labels_added, labels_removed = _apply_registry_id_edits(
+            set(entry.labels), label_add, label_remove
+        )
+        updates["labels"] = new_labels
+    if "categories" in args and not restoring:
+        categories = dict(entry.categories)
+        for scope, category_id in args["categories"].items():
+            if category_id is None:
+                categories.pop(scope, None)
+            else:
+                categories[scope] = category_id
+        updates["categories"] = categories
+    if restoring:
+        if "labels" in args:
+            updates["labels"] = set(args["labels"])
+        if "categories" in args:
+            updates["categories"] = dict(args["categories"])
+        if "disabled_by" in args:
+            updates["disabled_by"] = (
+                er.RegistryEntryDisabler(args["disabled_by"])
+                if args["disabled_by"] is not None else None
+            )
+        if "hidden_by" in args:
+            updates["hidden_by"] = (
+                er.RegistryEntryHider(args["hidden_by"])
+                if args["hidden_by"] is not None else None
+            )
     if not updates:
         return (
-            _tool_error("Provide at least one of name, icon, area_id, add_aliases, remove_aliases."),
+            _tool_error("Provide at least one of the supported entity registry updates."),
             "invalid_request", entity_id,
         )
 
@@ -1589,6 +1835,23 @@ async def _execute_set_entity(
         updated = reg.async_get(entity_id)
         if updated is not None:
             body["aliases"] = er.async_get_entity_aliases(hass, updated)
+    if label_add or label_remove:
+        body["labels_added"] = labels_added
+        body["labels_removed"] = labels_removed
+    if "enabled" in args and args["enabled"]:
+        updated_entry = reg.async_get(entity_id)
+        if updated_entry is not None:
+            config_entry = (
+                hass.config_entries.async_get_entry(updated_entry.config_entry_id)
+                if updated_entry.config_entry_id else None
+            )
+            body["activation"] = {
+                "requires_restart": config_entry is None or not config_entry.supports_unload,
+                "note": (
+                    "The registry entry is enabled. Its integration may need to be "
+                    "reloaded or Home Assistant restarted before a live state appears."
+                ),
+            }
     return _tool_success(json.dumps(body, default=str)), "allowed", entity_id
 
 
@@ -2171,10 +2434,24 @@ async def async_restore_version(
                     {"file": resource_id, "content": restorable}, token, hass, data)
             return await _execute_write_file({"path": resource_id, "content": restorable}, token, hass, data)
         if resource_type == "entity":
-            # Re-apply the registry metadata (name/icon/area). Restoring a deleted
+            # Re-apply the registry metadata. Restoring a deleted
             # entry's snapshot lands here too and fails cleanly in set_entity if the
             # entity no longer exists (a deleted registry entry cannot be recreated).
-            fields = {k: target[k] for k in ("name", "icon", "area_id", "aliases") if k in target}
+            fields = {
+                key: target[key]
+                for key in (
+                    "name",
+                    "icon",
+                    "area_id",
+                    "device_class",
+                    "aliases",
+                    "labels",
+                    "categories",
+                    "disabled_by",
+                    "hidden_by",
+                )
+                if key in target
+            }
             if not fields:
                 return _tool_error("This version has no entity metadata to restore."), "invalid_request", "async_restore_version"
             return await _execute_set_entity({"entity_id": resource_id, **fields}, token, hass, data)

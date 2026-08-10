@@ -16,7 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import category_registry as cr
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import label_registry as lr
 from homeassistant.util.dt import utcnow
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -520,6 +523,270 @@ class TestEntityRegistryWrite:
         assert hist[0].after["name"] == "Desk Lamp"
         assert hist[0].before["name"] != "Desk Lamp"
 
+    async def test_nullable_fields_clear_and_metadata_round_trips(
+        self, hass, env
+    ):
+        eid, area_id = env
+        data, versions = _data()
+        token = self._token_rw()
+        label = lr.async_get(hass).async_create("Registry test")
+        category = cr.async_get(hass).async_create(
+            name="Registry category", scope="test_scope"
+        )
+
+        first, outcome, _ = await _call_tool(
+            "set_entity",
+            {
+                "entity_id": eid,
+                "name": "Desk Lamp",
+                "icon": "mdi:desk-lamp",
+                "area_id": area_id,
+                "device_class": "outlet",
+                "hidden": True,
+                "add_labels": [label.label_id],
+                "categories": {"test_scope": category.category_id},
+            },
+            token,
+            hass,
+            data,
+        )
+        assert outcome == "allowed"
+        first_body = _text(first)
+        assert first_body["labels_added"] == [label.label_id]
+        desired = versions.list_for("entity", eid)[0]
+        assert desired.after["device_class"] == "outlet"
+        assert desired.after["hidden_by"] == "user"
+        assert desired.after["labels"] == [label.label_id]
+        assert desired.after["categories"] == {
+            "test_scope": category.category_id
+        }
+
+        cleared, outcome, _ = await _call_tool(
+            "set_entity",
+            {
+                "entity_id": eid,
+                "name": None,
+                "icon": None,
+                "area_id": None,
+                "device_class": None,
+                "enabled": False,
+                "hidden": False,
+                "remove_labels": [label.label_id],
+                "categories": {"test_scope": None},
+            },
+            token,
+            hass,
+            data,
+        )
+        assert outcome == "allowed"
+        assert _text(cleared)["labels_removed"] == [label.label_id]
+        entry = er.async_get(hass).async_get(eid)
+        assert entry.name is None
+        assert entry.icon is None
+        assert entry.area_id is None
+        assert entry.device_class is None
+        assert entry.disabled_by == er.RegistryEntryDisabler.USER
+        assert entry.hidden_by is None
+        assert entry.labels == set()
+        assert entry.categories == {}
+
+        _content, outcome, _ = await async_restore_version(
+            desired, "admin-registry", hass, data, side="after"
+        )
+        assert outcome == "allowed"
+        restored = er.async_get(hass).async_get(eid)
+        assert restored.name == "Desk Lamp"
+        assert restored.icon == "mdi:desk-lamp"
+        assert restored.area_id == area_id
+        assert restored.device_class == "outlet"
+        assert restored.disabled_by is None
+        assert restored.hidden_by == er.RegistryEntryHider.USER
+        assert restored.labels == {label.label_id}
+        assert restored.categories == {"test_scope": category.category_id}
+
+    async def test_disable_refuses_entity_only_self_lockout_before_pending(
+        self, hass, env
+    ):
+        eid, _area = env
+        data, _versions = _data()
+        token = _token(
+            tree=PermissionTree(
+                entities={eid: PermissionNode(state="GREEN")}
+            ),
+            cap_registry_write="confirm",
+        )
+        gate = AsyncMock(return_value=({}, "pending_approval", "approval"))
+        with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
+            content, outcome, _ = await _call_tool(
+                "set_entity",
+                {"entity_id": eid, "enabled": False},
+                token,
+                hass,
+                data,
+            )
+        assert outcome == "denied"
+        assert "device or domain" in content["content"][0]["text"]
+        assert er.async_get(hass).async_get(eid).disabled_by is None
+        gate.assert_not_awaited()
+
+    async def test_domain_write_can_disable_edit_and_reenable_registry_only(
+        self, hass, env
+    ):
+        eid, _area = env
+        data, _versions = _data()
+        token = self._token_rw()
+        _, outcome, _ = await _call_tool(
+            "set_entity", {"entity_id": eid, "enabled": False}, token, hass, data
+        )
+        assert outcome == "allowed"
+        assert er.async_get(hass).async_get(eid).disabled_by == er.RegistryEntryDisabler.USER
+
+        _, outcome, _ = await _call_tool(
+            "set_entity",
+            {"entity_id": eid, "name": "While disabled"},
+            token,
+            hass,
+            data,
+        )
+        assert outcome == "allowed"
+        content, outcome, _ = await _call_tool(
+            "set_entity", {"entity_id": eid, "enabled": True}, token, hass, data
+        )
+        assert outcome == "allowed"
+        assert er.async_get(hass).async_get(eid).disabled_by is None
+        assert "activation" in _text(content)
+
+    @pytest.mark.parametrize(
+        "registry_field,value,args,fragment",
+        [
+            (
+                "disabled_by",
+                er.RegistryEntryDisabler.INTEGRATION,
+                {"enabled": True},
+                "disabled by integration",
+            ),
+            (
+                "hidden_by",
+                er.RegistryEntryHider.INTEGRATION,
+                {"hidden": False},
+                "hidden by integration",
+            ),
+        ],
+    )
+    async def test_only_user_controlled_enabled_and_hidden_states_change(
+        self, hass, env, registry_field, value, args, fragment
+    ):
+        eid, _area = env
+        registry = er.async_get(hass)
+        registry.async_update_entity(eid, **{registry_field: value})
+        data, _versions = _data()
+        content, outcome, _ = await _call_tool(
+            "set_entity", {"entity_id": eid, **args}, self._token_rw(), hass, data
+        )
+        assert outcome == "invalid_request"
+        assert fragment in content["content"][0]["text"]
+        assert getattr(registry.async_get(eid), registry_field) == value
+
+    async def test_enable_refuses_entity_on_disabled_device(self, hass, env):
+        eid, _area = env
+        device_registry = dr.async_get(hass)
+        device = device_registry.async_get_or_create(
+            config_entry_id="e_reg",
+            identifiers={("test_integration", "disabled-device")},
+        )
+        er.async_get(hass).async_update_entity(eid, device_id=device.id)
+        device_registry.async_update_device(
+            device.id, disabled_by=dr.DeviceEntryDisabler.USER
+        )
+        # Exercise the explicit owning-device guard rather than the preceding
+        # "only user-controlled disablers" guard.
+        er.async_get(hass).async_update_entity(
+            eid, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        data, _versions = _data()
+        content, outcome, _ = await _call_tool(
+            "set_entity",
+            {"entity_id": eid, "enabled": True},
+            self._token_rw(),
+            hass,
+            data,
+        )
+        assert outcome == "invalid_request"
+        assert "device is disabled" in content["content"][0]["text"]
+
+    @pytest.mark.parametrize(
+        "args,fragment",
+        [
+            ({"add_labels": ["no_such_label"]}, "Unknown label id"),
+            (
+                {"categories": {"test_scope": "no_such_category"}},
+                "Unknown category id",
+            ),
+        ],
+    )
+    async def test_registry_references_are_rejected_before_pending(
+        self, hass, env, args, fragment
+    ):
+        eid, _area = env
+        data, _versions = _data()
+        gate = AsyncMock(return_value=({}, "pending_approval", "approval"))
+        token = _token(
+            tree=PermissionTree(domains={"light": PermissionNode(state="GREEN")}),
+            cap_registry_write="confirm",
+        )
+        with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
+            content, outcome, _ = await _call_tool(
+                "set_entity", {"entity_id": eid, **args}, token, hass, data
+            )
+        assert outcome == "invalid_request"
+        assert fragment in content["content"][0]["text"]
+        gate.assert_not_awaited()
+
+    async def test_registry_references_are_revalidated_at_apply_time(
+        self, hass, env
+    ):
+        from custom_components.phoenix_mcp.mcp_view import (
+            _execute_set_entity,
+            _registry_write_precheck,
+        )
+
+        eid, _area = env
+        token = self._token_rw()
+        label_registry = lr.async_get(hass)
+        label = label_registry.async_create("Approval-window label")
+        category_registry = cr.async_get(hass)
+        category = category_registry.async_create(
+            name="Approval-window category", scope="approval_scope"
+        )
+        cases = [
+            (
+                {"entity_id": eid, "add_labels": [label.label_id]},
+                lambda: label_registry.async_delete(label.label_id),
+                "Unknown label id",
+            ),
+            (
+                {
+                    "entity_id": eid,
+                    "categories": {
+                        "approval_scope": category.category_id
+                    },
+                },
+                lambda: category_registry.async_delete(
+                    scope="approval_scope", category_id=category.category_id
+                ),
+                "Unknown category id",
+            ),
+        ]
+        for args, delete_reference, fragment in cases:
+            assert _registry_write_precheck(args, token, hass, "set_entity") is None
+            delete_reference()
+            data, _versions = _data()
+            content, outcome, _ = await _execute_set_entity(
+                args, token, hass, data
+            )
+            assert outcome == "invalid_request"
+            assert fragment in content["content"][0]["text"]
+
     async def test_set_entity_forbidden_without_cap(self, hass, env):
         eid, _area = env
         data, _ = _data()
@@ -603,7 +870,6 @@ class TestEntityRegistryWrite:
             {"floor_id": "ground_floor"},
             {"device_id": "device-1"},
             {"category_id": "category-1"},
-            {"categories": {"scope": "category-1"}},
             {"area_ids": ["office"]},
         ],
     )

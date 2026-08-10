@@ -418,6 +418,25 @@ class TestResolveRegistryAccess:
         token = _make_token(entities={entity_id: "GREEN"})
         assert resolve_registry_access(entity_id, token, hass) == Permission.NO_ACCESS
 
+    async def test_forced_registry_scope_predicts_disable_self_lockout(
+        self, hass, registered_env
+    ):
+        entity_id = registered_env["lights"]["kitchen"].entity_id
+        entity_only = _make_token(entities={entity_id: "GREEN"})
+        domain_write = _make_token(domains={"light": "GREEN"})
+        assert (
+            resolve_registry_access(
+                entity_id, entity_only, hass, force_registry_only=True
+            )
+            == Permission.NO_ACCESS
+        )
+        assert (
+            resolve_registry_access(
+                entity_id, domain_write, hass, force_registry_only=True
+            )
+            == Permission.WRITE
+        )
+
     async def test_pass_through_keeps_registry_write(self, hass, registered_env):
         entity_id = registered_env["lights"]["kitchen"].entity_id
         hass.states.async_remove(entity_id)
