@@ -16,6 +16,7 @@ import voluptuous as vol
 from aiohttp import web
 
 from .view_base import PhoenixView
+from homeassistant import loader
 from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceNotFound,
@@ -2038,9 +2039,13 @@ def _device_mesa_decision(
     actions: list[str],
     service_data: dict[str, Any],
     session_id: str,
+    entity_ids: list[str] | None = None,
 ) -> _DeviceMesaDecision | tuple[dict, str, str]:
     """Resolve all device MESA actions across the exact attached membership."""
-    entity_ids = device_registry_entity_ids(hass, device.id)
+    if entity_ids is None:
+        entity_ids = device_registry_entity_ids(hass, device.id)
+    else:
+        entity_ids = sorted(set(entity_ids))
     mesa_active = (
         data.mesa is not None
         and data.store.get_settings().mesa_mode != MESA_MODE_OFF
@@ -2521,6 +2526,532 @@ async def _execute_set_device(
         }
     if mesa_decision is not None and mesa_decision.warnings:
         body["mesa_advisory"] = mesa_decision.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body, default=str)), "allowed", device_id
+
+
+_REMOVE_DEVICE_CONTEXT_FINGERPRINT = "_remove_device_context_fingerprint"
+_REMOVE_DEVICE_MESA_FINGERPRINT = "_remove_device_mesa_fingerprint"
+
+
+@dataclasses.dataclass
+class _DeviceRemovalContext:
+    """One integration owner's exact, revalidatable device-removal context."""
+
+    device: Any
+    config_entry: Any
+    hook: Any
+    owner_ids: list[str]
+    affected_entity_ids: list[str]
+    child_device_ids: list[str]
+    fingerprint: str
+
+
+async def _async_device_removal_hook(hass: HomeAssistant, entry: Any) -> Any | None:
+    """Load an integration and return its device-removal hook, if supported.
+
+    Home Assistant's config-entry support cache can be uninitialized. Loading
+    the component is the authoritative check and is repeated in the executor.
+    The async component getter is newer than Phoenix's minimum HA version, so
+    retain the synchronous getter fallback used by Home Assistant 2025.2.
+    """
+    try:
+        integration = await loader.async_get_integration(hass, entry.domain)
+        async_get_component = getattr(integration, "async_get_component", None)
+        if callable(async_get_component):
+            component = await async_get_component()
+        else:
+            component = integration.get_component()
+    except (ImportError, loader.IntegrationNotFound):
+        return None
+    except Exception:  # noqa: BLE001 - a broken integration must fail closed
+        _LOGGER.exception(
+            "Could not load %s to resolve device removal support", entry.domain
+        )
+        return None
+    hook = getattr(component, "async_remove_config_entry_device", None)
+    return hook if callable(hook) else None
+
+
+def _device_owner_summary(entry: Any, *, supports_removal: bool | None = None) -> dict:
+    """Safe config-entry owner projection for removal previews and results."""
+    return {
+        "entry_id": entry.entry_id,
+        "domain": entry.domain,
+        "title": entry.title,
+        "disabled_by": getattr(entry.disabled_by, "value", entry.disabled_by),
+        "supports_remove_device": (
+            supports_removal
+            if supports_removal is not None
+            else getattr(entry, "supports_remove_device", None)
+        ),
+    }
+
+
+def _device_permission_references(
+    data: PhoenixData, device_id: str
+) -> list[dict[str, Any]]:
+    """Active-token and preset permission nodes keyed to one device."""
+    references: list[dict[str, Any]] = []
+    for record in data.store.list_tokens():
+        if not record.is_valid():
+            continue
+        if device_id in record.permissions.devices:
+            references.append({
+                "kind": "token_permission",
+                "token_id": record.id,
+                "token_name": record.name,
+            })
+        for preset in record.presets:
+            if device_id in preset.permissions.devices:
+                references.append({
+                    "kind": "preset_permission",
+                    "token_id": record.id,
+                    "token_name": record.name,
+                    "preset_id": preset.id,
+                    "preset_name": preset.name,
+                })
+    return references
+
+
+def _device_removal_context_fingerprint(
+    device_id: str,
+    entry: Any,
+    owner_ids: list[str],
+    affected_entity_ids: list[str],
+    child_device_ids: list[str],
+) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "device_id": device_id,
+                "config_entry_id": entry.entry_id,
+                "integration": entry.domain,
+                "owner_ids": owner_ids,
+                "affected_entity_ids": affected_entity_ids,
+                "child_device_ids": child_device_ids,
+                "supports_removal": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+async def _resolve_device_removal_context(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+) -> _DeviceRemovalContext | tuple[dict, str, str]:
+    """Resolve exact ownership and live integration support without mutation."""
+    device_id = str(args.get("device_id") or "").strip()
+    if not device_id:
+        return _tool_error("device_id is required."), "invalid_request", "remove_device"
+    perm_error = _device_write_perm_error(
+        resolve_device_registry_write(device_id, token, hass),
+        device_id,
+        token,
+        hass,
+    )
+    if perm_error is not None:
+        return perm_error
+    registry = dr.async_get(hass)
+    device = registry.async_get(device_id)
+    if device is None:
+        return _tool_error("Device not found."), "not_found", device_id
+
+    owner_ids = device_config_entry_ids(device)
+    selected = args.get("config_entry_id")
+    if selected is not None and (not isinstance(selected, str) or not selected.strip()):
+        return (
+            _tool_error("config_entry_id must be a non-empty string."),
+            "invalid_request",
+            device_id,
+        )
+    if selected is None:
+        if len(owner_ids) != 1:
+            message = (
+                "config_entry_id is required when a device has multiple owners."
+                if owner_ids
+                else "This device has no owning config entry to remove."
+            )
+            return _tool_error(message), "invalid_request", device_id
+        selected = owner_ids[0]
+    else:
+        selected = selected.strip()
+    if selected not in owner_ids:
+        return (
+            _tool_error("The selected config entry does not own this device."),
+            "invalid_request",
+            device_id,
+        )
+    entry = hass.config_entries.async_get_entry(selected)
+    if entry is None:
+        return _tool_error("The owning config entry no longer exists."), "invalid_request", device_id
+    if entry.domain == DOMAIN:
+        return _tool_error("Phoenix MCP devices cannot be removed."), "denied", device_id
+    hook = await _async_device_removal_hook(hass, entry)
+    if hook is None:
+        return (
+            _tool_error("This integration does not support device removal."),
+            "invalid_request",
+            device_id,
+        )
+
+    affected_entity_ids = sorted(
+        registry_entry.entity_id
+        for registry_entry in er.async_get(hass).entities.values()
+        if registry_entry.device_id == device_id
+        and registry_entry.config_entry_id == selected
+    )
+    child_device_ids = sorted(
+        child.id
+        for child in registry.devices.values()
+        if child.via_device_id == device_id
+    )
+    fingerprint = _device_removal_context_fingerprint(
+        device_id,
+        entry,
+        owner_ids,
+        affected_entity_ids,
+        child_device_ids,
+    )
+    return _DeviceRemovalContext(
+        device=device,
+        config_entry=entry,
+        hook=hook,
+        owner_ids=owner_ids,
+        affected_entity_ids=affected_entity_ids,
+        child_device_ids=child_device_ids,
+        fingerprint=fingerprint,
+    )
+
+
+def _device_removal_mesa_error(
+    context: _DeviceRemovalContext, decision: _DeviceMesaDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": "MESA blocked device removal.",
+                    "device_id": context.device.id,
+                    "config_entry_id": context.config_entry.entry_id,
+                    "mesa": _device_mesa_preview(decision),
+                    "blocked": [
+                        {"entity_id": eid, "rule": rule, "reason": reason}
+                        for eid, rule, reason in decision.blocked
+                    ],
+                },
+                default=str,
+            )
+        ),
+        "denied",
+        context.device.id,
+    )
+
+
+def _device_removal_context_changed_error(
+    context: _DeviceRemovalContext, mesa_decision: _DeviceMesaDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": (
+                        "The device's ownership, affected entities, integration "
+                        "support, child relationships, or effective MESA profile "
+                        "changed after approval. Review the removal again."
+                    ),
+                    "device_id": context.device.id,
+                    "config_entry_id": context.config_entry.entry_id,
+                    "mesa": _device_mesa_preview(mesa_decision),
+                },
+                default=str,
+            )
+        ),
+        "denied",
+        context.device.id,
+    )
+
+
+async def _build_diff_remove_device(
+    context: _DeviceRemovalContext,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    mesa_decision: _DeviceMesaDecision,
+) -> dict[str, Any]:
+    remaining_owner_ids = [
+        owner_id
+        for owner_id in context.owner_ids
+        if owner_id != context.config_entry.entry_id
+    ]
+    remaining_owners = []
+    for owner_id in remaining_owner_ids:
+        owner = hass.config_entries.async_get_entry(owner_id)
+        if owner is not None:
+            remaining_owners.append(_device_owner_summary(owner))
+    visible_children = [
+        child_id
+        for child_id in context.child_device_ids
+        if resolve_device_registry_access(child_id, token, hass)
+        in (Permission.READ, Permission.WRITE)
+    ]
+    stored_device_profile = (
+        data.mesa.store.get_device_profile(context.device.id)
+        if data.mesa is not None
+        else None
+    )
+    preview = {
+        "selected_owner": _device_owner_summary(
+            context.config_entry, supports_removal=True
+        ),
+        "affected_entities": context.affected_entity_ids,
+        "relationships": await _registry_relationships_preview(
+            hass, context.affected_entity_ids
+        ),
+        "child_devices_losing_parent_if_device_disappears": visible_children,
+        "remaining_owners": remaining_owners,
+        "device_permission_references": _device_permission_references(
+            data, context.device.id
+        ),
+        "device_mesa_profile": (
+            stored_device_profile.to_dict()
+            if stored_device_profile is not None
+            else None
+        ),
+        "mesa": _device_mesa_preview(mesa_decision),
+        "warning": (
+            "The owning integration will decide whether removal is accepted. "
+            "Known consumers are not rewritten, and this operation cannot be restored."
+        ),
+    }
+    label = context.device.name_by_user or context.device.name or context.device.id
+    return {
+        "kind": "system_action",
+        **_summary(
+            "remove_device",
+            device_id=context.device.id,
+            config_entry_id=context.config_entry.entry_id,
+        ),
+        "target": {"type": "device", "id": context.device.id, "label": label},
+        "preview": preview,
+    }
+
+
+async def _tool_remove_device(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: remove one integration's ownership through its HA hook."""
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "remove_device"
+    resolved = await _resolve_device_removal_context(args, token, hass)
+    if isinstance(resolved, tuple):
+        return resolved
+    context = resolved
+    mesa = _device_mesa_decision(
+        data,
+        token,
+        hass,
+        context.device,
+        actions=["remove"],
+        # config_entry_id is also a Home Assistant target selector. Phoenix has
+        # already expanded the selected owner to exact entity IDs, so passing
+        # the selector into mesa-core would correctly be rejected as
+        # contradictory (it could name entities outside this decision).
+        service_data={},
+        session_id=request_id or "remove_device",
+        entity_ids=context.affected_entity_ids,
+    )
+    if isinstance(mesa, tuple):
+        return mesa
+    if mesa.decision == "deny":
+        if mesa.blocked:
+            fire_mesa_blocked_event(hass, token, mesa.blocked)
+        return _device_removal_mesa_error(context, mesa)
+
+    approval_args = {
+        **args,
+        "device_id": context.device.id,
+        "config_entry_id": context.config_entry.entry_id,
+        _REMOVE_DEVICE_CONTEXT_FINGERPRINT: context.fingerprint,
+        _REMOVE_DEVICE_MESA_FINGERPRINT: mesa.profile_fingerprint,
+    }
+    diff_builder = lambda: _build_diff_remove_device(  # noqa: E731
+        context, token, hass, data, mesa
+    )
+    blocked = await _gate(
+        "cap_integration_write",
+        token,
+        hass,
+        data,
+        tool_name="remove_device",
+        args=approval_args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=diff_builder,
+    )
+    if blocked is not None:
+        return blocked
+    if mesa.decision == "confirm":
+        return await _create_registry_mesa_approval(
+            hass,
+            data,
+            token,
+            tool_name="remove_device",
+            args=approval_args,
+            diff=await diff_builder(),
+            request_id=request_id,
+            client_ip=client_ip,
+        )
+    return await _execute_remove_device(approval_args, token, hass, data)
+
+
+async def _execute_remove_device(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    """Revalidate and invoke an integration-aware device removal."""
+    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "remove_device"
+    resolved = await _resolve_device_removal_context(args, token, hass)
+    if isinstance(resolved, tuple):
+        return resolved
+    context = resolved
+    mesa = _device_mesa_decision(
+        data,
+        token,
+        hass,
+        context.device,
+        actions=["remove"],
+        service_data={},
+        session_id="remove_device_execute",
+        entity_ids=context.affected_entity_ids,
+    )
+    if isinstance(mesa, tuple):
+        return mesa
+    approved = _approved_exec_ctx.get()
+    saved_context = args.get(_REMOVE_DEVICE_CONTEXT_FINGERPRINT)
+    saved_mesa = args.get(_REMOVE_DEVICE_MESA_FINGERPRINT)
+    if approved and (
+        saved_context != context.fingerprint
+        or saved_mesa != mesa.profile_fingerprint
+    ):
+        return _device_removal_context_changed_error(context, mesa)
+    mesa_confirmed = (
+        approved
+        and isinstance(saved_mesa, str)
+        and saved_mesa == mesa.profile_fingerprint
+    )
+    if mesa.decision == "deny" or (
+        mesa.decision == "confirm" and not mesa_confirmed
+    ):
+        if mesa.blocked:
+            fire_mesa_blocked_event(hass, token, mesa.blocked)
+        return _device_removal_mesa_error(context, mesa)
+
+    device_id = context.device.id
+    selected_owner = context.config_entry.entry_id
+    label = context.device.name_by_user or context.device.name or device_id
+    try:
+        accepted = await context.hook(hass, context.config_entry, context.device)
+    except Exception as exc:  # noqa: BLE001 - integration hook is third-party code
+        _LOGGER.error(
+            "remove_device hook failed for %s via %s: %s",
+            device_id,
+            context.config_entry.domain,
+            exc,
+        )
+        return (
+            _tool_error("The integration failed while removing this device; Phoenix made no registry change."),
+            "denied",
+            device_id,
+        )
+    if not accepted:
+        return (
+            _tool_error("The integration rejected device removal; the registry was not changed by Phoenix."),
+            "denied",
+            device_id,
+        )
+
+    registry = dr.async_get(hass)
+    current = registry.async_get(device_id)
+    if current is not None and selected_owner in device_config_entry_ids(current):
+        try:
+            registry.async_update_device(
+                device_id, remove_config_entry_id=selected_owner
+            )
+        except Exception as exc:  # noqa: BLE001 - HA registry boundary
+            _LOGGER.error(
+                "remove_device registry cleanup failed for %s owner %s: %s",
+                device_id,
+                selected_owner,
+                exc,
+            )
+            return (
+                _tool_error(
+                    "The integration accepted removal, but Home Assistant could "
+                    "not remove its registry ownership. Inspect the device before retrying."
+                ),
+                "denied",
+                device_id,
+            )
+        current = registry.async_get(device_id)
+    if current is not None and selected_owner in device_config_entry_ids(current):
+        return (
+            _tool_error(
+                "The integration accepted removal, but its device ownership remains."
+            ),
+            "denied",
+            device_id,
+        )
+    disappeared = current is None
+    remaining_owner_ids = device_config_entry_ids(current) if current is not None else []
+    remaining_owners = []
+    for owner_id in remaining_owner_ids:
+        owner = hass.config_entries.async_get_entry(owner_id)
+        if owner is not None:
+            remaining_owners.append(_device_owner_summary(owner))
+
+    version_before = {
+        "restorable": False,
+        "operation": "remove_config_entry_device",
+        "device": _device_meta_snapshot(context.device),
+        "selected_owner": _device_owner_summary(
+            context.config_entry, supports_removal=True
+        ),
+        "owners_before": context.owner_ids,
+        "affected_entities": context.affected_entity_ids,
+        "device_disappeared": disappeared,
+        "remaining_owner_ids": remaining_owner_ids,
+    }
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=device_id,
+        action="delete",
+        before=version_before,
+        after=None,
+        alias=label,
+    )
+    body: dict[str, Any] = {
+        "device_id": device_id,
+        "config_entry_id": selected_owner,
+        "removed": True,
+        "device_disappeared": disappeared,
+        "remaining_owners": remaining_owners,
+    }
+    if mesa.warnings:
+        body["mesa_advisory"] = mesa.warnings
         _mesa_advisory_ctx.set(True)
     return _tool_success(json.dumps(body, default=str)), "allowed", device_id
 
@@ -3641,6 +4172,10 @@ async def async_restore_version(
                 {"entity_id": current_entity_id, **fields}, token, hass, data
             )
         if resource_type == "device":
+            if target.get("restorable") is False:
+                return _tool_error(
+                    "Device removal versions are audit records and cannot be restored."
+                ), "invalid_request", "async_restore_version"
             fields = {
                 key: target[key]
                 for key in ("name", "area_id", "labels", "disabled_by")
@@ -5530,6 +6065,7 @@ _register_executor("patch_dashboard", _execute_patch_dashboard)
 _register_executor("edit_energy_config", _execute_edit_energy_config)
 _register_executor("set_entity", _execute_set_entity)
 _register_executor("set_device", _execute_set_device)
+_register_executor("remove_device", _execute_remove_device)
 _register_executor("delete_entity", _execute_delete_entity)
 _register_executor("permit_zigbee_join", _execute_permit_zigbee_join)
 _register_executor("reconfigure_zigbee_device", _execute_reconfigure_zigbee_device)
@@ -5603,6 +6139,7 @@ _register_tool("edit_blueprint", _tool_edit_blueprint)
 _register_tool("delete_blueprint", _tool_delete_blueprint)
 _register_tool("set_entity", _tool_set_entity)
 _register_tool("set_device", _tool_set_device)
+_register_tool("remove_device", _tool_remove_device)
 _register_tool("delete_entity", _tool_delete_entity)
 _register_tool("get_radio_network", _tool_get_radio_network)
 _register_tool("get_radio_device", _tool_get_radio_device)

@@ -869,6 +869,36 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "remove_device",
+        "description": (
+            "Ask one owning integration to remove a device through Home Assistant's integration-aware removal "
+            "hook. Requires cap_integration_write plus an explicit WRITE grant on the device. config_entry_id "
+            "is inferred only when the device has exactly one owner; multi-owner devices require it explicitly. "
+            "Unsupported integrations and Phoenix MCP's own devices are refused before approval. The approval "
+            "preview lists the selected owner's affected entities and known consumers, remaining owners, child "
+            "devices at risk of losing their parent, permission references, and device-level MESA configuration. "
+            "Removal is governed by the fully inherited MESA profile of exactly the affected entities. The "
+            "integration may reject the request. This is destructive and cannot be restored from version history."
+        ),
+        "cap": "cap_integration_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "The device registry id.",
+                },
+                "config_entry_id": {
+                    "type": "string",
+                    "description": (
+                        "Owning config entry to remove. Optional only when exactly one owner exists."
+                    ),
+                },
+            },
+            "required": ["device_id"],
+        },
+    },
+    {
         "name": "delete_entity",
         "description": (
             "Delete an entity's registry entry, the common use is removing a stale or duplicate entry left "
@@ -2864,6 +2894,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "set_config_entry_options": _annot(False, True, True),
     "set_entity": _annot(False, True, True),
     "set_device": _annot(False, True, True),
+    "remove_device": _annot(False, True, True),
     "delete_entity": _annot(False, True, True),
     "write_file": _annot(False, True, True),
     "set_yaml_config": _annot(False, True, True),

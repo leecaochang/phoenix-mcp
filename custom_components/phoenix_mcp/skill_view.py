@@ -511,6 +511,17 @@ mode: single
   edits have no MESA gate in this stage. With MESA active, an entity-less device
   cannot be renamed or enabled/disabled because mesa-core has no complete entity
   context from which to resolve it.
+- `remove_device` is destructive and uses an owning integration's Home Assistant
+  removal hook; it never deletes a raw registry row. It needs
+  `cap_integration_write` plus explicit device WRITE. Pass `config_entry_id` for
+  a multi-owner device; Phoenix infers it only when exactly one owner exists.
+- The removal preview shows exactly the selected owner's entities and consumers,
+  remaining owners, child devices at risk of losing their parent, device
+  permission references, and device-level MESA configuration. Removal evaluates
+  `device_registry.remove` across exactly those affected entities and fails
+  closed with MESA active when no complete entity context exists. The integration
+  may reject removal. Successful removal versions are audit-only and cannot be
+  restored.
 
 ### Raw YAML configuration
 

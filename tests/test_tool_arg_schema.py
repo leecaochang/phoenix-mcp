@@ -144,6 +144,12 @@ def test_set_device_publishes_only_reversible_user_metadata():
         assert properties[field]["type"] == ["string", "null"]
 
 
+def test_remove_device_publishes_only_owner_selection():
+    schema = _tool_defs()["remove_device"]["inputSchema"]
+    assert set(schema["properties"]) == {"device_id", "config_entry_id"}
+    assert schema["required"] == ["device_id"]
+
+
 def _modules() -> list[pathlib.Path]:
     return [PACKAGE / "mcp_view.py", *sorted((PACKAGE / "tools").glob("*.py"))]
 

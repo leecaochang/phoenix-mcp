@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 117 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 118 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 117 of its own, 140 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 118 of its own, 141 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 140 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 141 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -359,6 +359,14 @@
             <p class="tool-desc">Name, area, and enabled-state changes require every attached registry entity to remain writable; a more-specific entity RED/YELLOW restriction blocks the whole operation. Label-only edits do not change child authorization. Disabling previews every affected entity and its known consumers, while enabling reports whether an integration reload or restart may be needed. Changes are versioned and restorable.</p>
             <p class="tool-desc">Name changes and enable/disable evaluate <code>device_registry.rename</code>, <code>device_registry.enable</code>, or <code>device_registry.disable</code> across every attached entity's fully inherited MESA profile. Any denial blocks the whole device; enforced confirmation merges into the ordinary registry approval, whose fingerprint pins both entity membership and every resolved profile. Area and labels have no MESA gate. Entity-less devices fail closed for those MESA actions while MESA is active.</p>
             <dl><dt>params</dt><dd><code>device_id</code> (required) + at least one of <code>name</code> / <code>area_id</code> / <code>enabled</code> / <code>add_labels</code> / <code>remove_labels</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="remove_device device registry integration owner config entry remove delete mesa consumers">
+            <div class="tool-head"><span class="tool-name">remove_device</span><span class="badge badge-cap">Integration write</span></div>
+            <p class="tool-desc">Ask one owning integration to remove a device through Home Assistant's integration-aware removal hook. This requires <code>cap_integration_write</code> plus an explicit device WRITE grant. Phoenix never deletes the raw device-registry row. The owner is inferred only when exactly one exists; pass <code>config_entry_id</code> for a multi-owner device. Unsupported integrations and Phoenix MCP's own entry are refused before approval, and an integration may reject the request without changing the registry.</p>
+            <p class="tool-desc">The approval preview identifies the selected owner's affected entities and their known consumers, child devices that could lose their parent if the device disappears, remaining owners, device permission references, and device-level MESA configuration. <code>device_registry.remove</code> is evaluated across exactly those affected entities using normal MESA inheritance. Capability, permission, ownership, membership, support, and MESA are recomputed immediately before execution.</p>
+            <p class="tool-desc">After the hook accepts, Phoenix removes only the selected config-entry ownership if the integration did not already do so. The result says whether the entire device disappeared and lists any remaining owners. Removal is captured as a non-restorable delete version.</p>
+            <dl><dt>params</dt><dd><code>device_id</code> (required), optional <code>config_entry_id</code> when exactly one owner cannot be inferred</dd></dl>
           </article>
 
           <article class="tool" data-cap="system" data-search="permit_zigbee_join reconfigure_zigbee_device remove_zigbee_device zigbee radio pair join z2m zha zigbee2mqtt">

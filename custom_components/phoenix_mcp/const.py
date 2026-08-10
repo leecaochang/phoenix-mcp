@@ -1147,6 +1147,7 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "delete_entity": "Delete the registry entry for {entity_id}",
     # Device registry.
     "set_device": "Update device registry metadata ({fields}) for {device_id}",
+    "remove_device": "Remove {device_id} from config entry {config_entry_id}",
     # Zigbee. The bare forms are the error paths, where no device resolved.
     "zigbee_permit": "Open the Zigbee network for joining",
     "zigbee_permit.close": "Close the Zigbee join window",

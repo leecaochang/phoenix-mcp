@@ -719,6 +719,7 @@
       "rename_esphome_device": "将 ESPHome 设备 {device} 重命名为 {new_name}。此操作会编译并刷写该设备。",
       "rename_esphome_device.services": "将 ESPHome 设备 {device} 重命名为 {new_name}，同时重命名 {count} 个动作服务。此操作会编译并刷写该设备。",
       "restart_ha": "重启 Home Assistant",
+      "remove_device": "从配置条目 {config_entry_id} 移除设备 {device_id}",
       "set_dashboard_config": "设置仪表盘“{label}”的布局",
       "set_device": "更新 {device_id} 的设备注册表元数据（{fields}）",
       "set_entity": "更新 {entity_id} 的注册表元数据（{fields}）",

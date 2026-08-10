@@ -72,6 +72,11 @@ FLOOR = _version(MIN_HA_VERSION)
 # against that tag's source at
 # https://raw.githubusercontent.com/home-assistant/core/<tag>/<path>.
 KNOWN_IMPORTS: dict[str, dict[str, str]] = {
+    "homeassistant": {
+        # Integration loading predates Phoenix's minimum HA version and is the
+        # same public module used by HA's 2025.2 device-removal endpoint.
+        "loader": "0.0.0",
+    },
     "homeassistant.components.automation.config": {
         "async_validate_config_item": "0.0.0",
     },
