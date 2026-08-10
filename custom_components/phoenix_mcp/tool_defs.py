@@ -814,8 +814,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "and is often admin-confirmed. Use null to clear name, icon, area_id, or device_class. Aliases and "
             "labels are edited by adding and removing values rather "
             "than by replacing the list, so an entity never loses the ability to answer to its own name; "
-            "describe_entity reports the names it currently matches. Does not rename the entity_id. "
-            "Captured in version history."
+            "describe_entity reports the names it currently matches. new_entity_id renames within the same "
+            "domain only after checking Phoenix identity blockers and showing known relationship consumers. "
+            "Rename is governed by the fully inherited MESA profile. Captured in version history."
         ),
         "cap": "cap_registry_write",
         "inputSchema": {
@@ -826,6 +827,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 "icon": {"type": ["string", "null"], "description": "New icon such as mdi:lightbulb, or null to clear it."},
                 "area_id": {"type": ["string", "null"], "description": "Assign to an existing area_id, or null to clear the assignment."},
                 "device_class": {"type": ["string", "null"], "description": "User device-class override, or null to clear it."},
+                "new_entity_id": {"type": "string", "description": "Rename to this unoccupied entity ID in the same domain. References are previewed but are not rewritten."},
                 "enabled": {"type": "boolean", "description": "Enable or user-disable the entity. Integration/system-disabled entries cannot be changed here. Disabling is refused unless inherited device/domain WRITE will remain."},
                 "hidden": {"type": "boolean", "description": "Set or clear the user-hidden state. Integration-hidden entries cannot be changed here."},
                 "add_aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative spoken names to ADD, e.g. ['lounge lamp']. Aliases are how Assist matches an entity, so this is the fix when a voice command does not resolve. Already-present aliases are ignored; matching is case-insensitive."},
@@ -848,7 +850,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "after a device re-pair. Requires WRITE access to the entity and cap_registry_write (often "
             "admin-confirmed). A live entity whose integration still provides it will be re-created by that "
             "integration; an orphaned entry stays gone. Captured in version history, but a deleted entry "
-            "cannot be re-created through Phoenix MCP."
+            "cannot be re-created through Phoenix MCP. Known relationship consumers are shown in the "
+            "approval preview. Delete is governed by the entity's fully inherited MESA profile."
         ),
         "cap": "cap_registry_write",
         "inputSchema": {

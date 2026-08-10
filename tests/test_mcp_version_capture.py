@@ -523,6 +523,42 @@ class TestEntityRegistryWrite:
         assert hist[0].after["name"] == "Desk Lamp"
         assert hist[0].before["name"] != "Desk Lamp"
 
+    async def test_rename_versions_and_restores_the_original_entity_id(
+        self, hass, env
+    ):
+        eid, _area_id = env
+        renamed_id = "light.renamed_lamp"
+        data, versions = _data()
+
+        content, outcome, _ = await _call_tool(
+            "set_entity",
+            {"entity_id": eid, "new_entity_id": renamed_id},
+            self._token_rw(),
+            hass,
+            data,
+        )
+        assert outcome == "allowed"
+        assert _text(content)["previous_entity_id"] == eid
+        assert er.async_get(hass).async_get(eid) is None
+        assert er.async_get(hass).async_get(renamed_id) is not None
+
+        rename = versions.list_for("entity", renamed_id)[0]
+        assert rename.action == "edit"
+        assert rename.before["entity_id"] == eid
+        assert rename.after["entity_id"] == renamed_id
+
+        # A real entity platform adopts the registry ID (sometimes only after a
+        # reload/restart). This bare registry fixture has no platform listener,
+        # so simulate that handoff before restoring the old ID.
+        hass.states.async_remove(eid)
+        hass.states.async_set(renamed_id, "on")
+        _content, outcome, _ = await async_restore_version(
+            rename, "admin-registry", hass, data, side="before"
+        )
+        assert outcome == "allowed", _content
+        assert er.async_get(hass).async_get(eid) is not None
+        assert er.async_get(hass).async_get(renamed_id) is None
+
     async def test_nullable_fields_clear_and_metadata_round_trips(
         self, hass, env
     ):
@@ -956,6 +992,34 @@ class TestEntityRegistryWrite:
         hist = versions.list_for("entity", eid)
         assert hist[0].action == "delete"
         assert hist[0].after is None and hist[0].before is not None
+        assert hist[0].before["entity_id"] == eid
+
+    async def test_delete_registry_only_uses_inherited_domain_write(self, hass, env):
+        eid, _area = env
+        registry = er.async_get(hass)
+        registry.async_update_entity(
+            eid, disabled_by=er.RegistryEntryDisabler.USER
+        )
+        hass.states.async_remove(eid)
+
+        entity_only = _token(
+            tree=PermissionTree(
+                entities={eid: PermissionNode(state="GREEN")}
+            ),
+            cap_registry_write="allow",
+        )
+        data, _versions = _data()
+        _content, outcome, _ = await _call_tool(
+            "delete_entity", {"entity_id": eid}, entity_only, hass, data
+        )
+        assert outcome == "denied"
+        assert registry.async_get(eid) is not None
+
+        _content, outcome, _ = await _call_tool(
+            "delete_entity", {"entity_id": eid}, self._token_rw(), hass, data
+        )
+        assert outcome == "allowed"
+        assert registry.async_get(eid) is None
 
 
 def _summary_text(fields):

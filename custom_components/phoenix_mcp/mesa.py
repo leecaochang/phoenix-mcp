@@ -30,6 +30,8 @@ private state. Report any mesa-core bug to the maintainer.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -720,6 +722,118 @@ class MesaVerdict:
     confirm: list[str] = field(default_factory=list)
     blocked: list[tuple[str, str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RegistryMesaDecision:
+    """MESA's fully resolved verdict for one entity-registry identity action."""
+
+    decision: str  # "allow" | "confirm" | "deny"
+    rule: str
+    reason: str
+    warnings: list[str] = field(default_factory=list)
+    effective_rule: dict[str, Any] | None = None
+    profile_fingerprint: str | None = None
+
+
+def evaluate_registry_action(
+    data: PhoenixData,
+    token: TokenRecord,
+    entity_id: str,
+    *,
+    action: str,
+    service_data: dict[str, Any] | None = None,
+    session_id: str = "entity_registry",
+) -> RegistryMesaDecision:
+    """Evaluate rename/delete through the normal inheritance resolver and enforcer.
+
+    The synthetic service names are ``entity_registry.rename`` and
+    ``entity_registry.delete``. The enforcer still resolves the entity's exact
+    entity/device/area/integration/domain layers, so a permissive entity profile
+    cannot bypass a restrictive ancestor. The returned fingerprint covers the
+    whole resolved explanation, not only the final control-mode string; an
+    approval can therefore satisfy only the MESA state it actually previewed.
+    """
+    runtime = data.mesa
+    settings = data.store.get_settings()
+    if runtime is None or settings.mesa_mode == MESA_MODE_OFF:
+        return RegistryMesaDecision(
+            decision="allow",
+            rule="mesa:off",
+            reason="MESA is off.",
+        )
+
+    explanation = runtime.resolver.explain(entity_id)
+    explanation_doc = explanation.to_dict()
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            explanation_doc,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+    control = next(
+        (
+            item
+            for item in explanation.explanation
+            if item.field_path == "operational_boundaries.control_mode"
+        ),
+        None,
+    )
+    boundaries = explanation.effective_profile.operational_boundaries
+    control_mode = getattr(boundaries.control_mode, "value", boundaries.control_mode)
+    effective_rule = {
+        "action": f"entity_registry.{action}",
+        "control_mode": control_mode,
+        "control_reason": boundaries.control_reason,
+        "enforcement_mode": (
+            MESA_MODE_ENFORCED
+            if settings.mesa_mode == MESA_MODE_ENFORCED
+            else boundaries.enforcement_mode
+        ),
+        "provided_by_level": control.provided_by_level if control is not None else None,
+        "provided_by_origin": control.provided_by_origin if control is not None else None,
+        "profile_fingerprint": fingerprint[:16],
+    }
+    verdict = evaluate_service_entities(
+        runtime,
+        settings.mesa_mode,
+        token,
+        [entity_id],
+        domain="entity_registry",
+        service=action,
+        service_data=dict(service_data or {}),
+        session_id=session_id,
+    )
+    reason = boundaries.control_reason or entity_id
+    if verdict.confirm:
+        return RegistryMesaDecision(
+            decision="confirm",
+            rule="control_mode:confirm",
+            reason=f"Entity registry {action} requires confirmation: {reason}",
+            warnings=list(verdict.warnings),
+            effective_rule=effective_rule,
+            profile_fingerprint=fingerprint,
+        )
+    if verdict.blocked:
+        _blocked_entity, rule, blocked_reason = verdict.blocked[0]
+        return RegistryMesaDecision(
+            decision="deny",
+            rule=rule,
+            reason=blocked_reason,
+            warnings=list(verdict.warnings),
+            effective_rule=effective_rule,
+            profile_fingerprint=fingerprint,
+        )
+    return RegistryMesaDecision(
+        decision="allow",
+        rule=f"control_mode:{control_mode}",
+        reason=f"Entity registry {action} is permitted: {reason}",
+        warnings=list(verdict.warnings),
+        effective_rule=effective_rule,
+        profile_fingerprint=fingerprint,
+    )
 
 
 def _host_enforced(settings_mode: str, result: Any) -> bool:

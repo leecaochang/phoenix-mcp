@@ -479,6 +479,14 @@ mode: single
 - A disabled or otherwise registry-only entity inherits access from its device or
   domain. Disabling is refused unless that inherited WRITE will remain, so do not
   retry it with an entity-only grant; ask the operator for device/domain scope.
+- Rename an entity ID with `new_entity_id`. It must stay in the same domain and
+  be unoccupied. Rename does not repair automations, scripts, scenes, groups,
+  dashboards, or integration configuration that names the old ID; inspect the
+  approval's relationship preview and update those consumers separately.
+- Rename and delete obey the entity's fully inherited MESA profile. A device- or
+  domain-level `read_only` rule blocks both even when the entity itself is more
+  permissive. Do not retry a MESA refusal or create a second approval: an
+  enforced `confirm` rule is already merged into the ordinary registry approval.
 
 ### Raw YAML configuration
 

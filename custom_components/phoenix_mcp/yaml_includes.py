@@ -68,8 +68,15 @@ DEFAULT_FILES = {
 }
 
 # automations.yaml / scenes.yaml are lists of dicts keyed by an "id" field;
-# scripts.yaml is a mapping keyed by script id.
-_DOMAIN_SHAPES = {"automation": "list", "scene": "list", "script": "named"}
+# scripts.yaml and legacy YAML groups are mappings keyed by object id. Group is
+# read-only here: the relationship scanner follows it, while authoring tools
+# still call this module only with automation/script/scene.
+_DOMAIN_SHAPES = {
+    "automation": "list",
+    "scene": "list",
+    "script": "named",
+    "group": "named",
+}
 
 # The leaf each domain uses in HA's default layout, and the only file the read
 # side used to open. read_all_entries falls back to it when configuration.yaml
@@ -78,6 +85,7 @@ _LEGACY_LEAF = {
     "automation": "automations.yaml",
     "script": "scripts.yaml",
     "scene": "scenes.yaml",
+    "group": "groups.yaml",
 }
 
 _LIST_FLAVORS = frozenset({"!include", "!include_dir_list", "!include_dir_merge_list"})

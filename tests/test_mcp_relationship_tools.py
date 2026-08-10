@@ -86,6 +86,12 @@ def rel_env(hass: HomeAssistant):
     _write(hass.config.path("scenes.yaml"), [
         {"id": "s1", "name": "Evening", "entities": {"light.kitchen": "on"}},
     ])
+    _write(hass.config.path("groups.yaml"), {
+        "downstairs_lights": {
+            "name": "Downstairs lights",
+            "entities": ["light.kitchen", "light.bedroom"],
+        },
+    })
     return {"automation": auto.entity_id}
 
 
@@ -107,6 +113,8 @@ class TestGetRelationships:
             {"entity_id": "light.kitchen", "roles": ["trigger"]}]
         assert by_kind["script"]["id"] == "greet"
         assert by_kind["scene"]["name"] == "Evening"
+        assert by_kind["group"]["id"] == "downstairs_lights"
+        assert by_kind["group"]["roles"] == ["member"]
         assert body["scope"] == {
             "selector": "entity_id", "value": "light.kitchen",
             "entity_ids": ["light.kitchen"], "count": 1}
@@ -223,7 +231,9 @@ class TestRelationshipSelectors:
         assert outcome == "allowed"
         body = _json(content)
         assert set(body["scope"]["entity_ids"]) >= {"light.kitchen", "light.bedroom"}
-        assert {c["kind"] for c in body["consumers"]} == {"automation", "script", "scene"}
+        assert {c["kind"] for c in body["consumers"]} == {
+            "automation", "script", "scene", "group"
+        }
 
     async def test_device_scope(self, hass, rel_env):
         from homeassistant.helpers import device_registry as dr
@@ -286,7 +296,7 @@ class TestRelationshipCoverage:
     async def test_missing_caps_are_reported_not_hidden(self, hass, rel_env):
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         body = _json(content)
-        assert body["searched"] == ["automation", "script", "scene"]
+        assert body["searched"] == ["automation", "script", "scene", "group"]
         assert {n["kind"] for n in body["not_searched"]} == {"dashboard", "config_entry"}
         assert all("requires cap_" in n["reason"] for n in body["not_searched"])
 

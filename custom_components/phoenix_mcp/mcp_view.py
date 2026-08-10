@@ -26,14 +26,19 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import label_registry as lr
 from homeassistant.config_entries import ConfigEntryDisabler
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
 from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
-from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
+from .mesa import (
+    RegistryMesaDecision,
+    async_apply_mesa_to_call,
+    evaluate_registry_action,
+    fire_mesa_blocked_event,
+)
 from .ws_dispatch import WsDispatchError, async_ws_command
 from .mesa_tools import MESA_TOOL_NAMES, async_call_mesa_tool, mesa_tool_defs
 from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
@@ -85,7 +90,7 @@ from .tools.energy import (
     _tool_get_solar_forecast,
     async_restore_energy_prefs,
 )
-from .tools.discovery import _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_entities, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_search_entities, _tool_validate_config, _tool_whatif
+from .tools.discovery import _registry_relationship_preview, _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_entities, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_search_entities, _tool_validate_config, _tool_whatif
 from .tools.native import (
     _UNTRUSTED_DATA_BOUNDARY,
     _build_live_context,
@@ -1252,6 +1257,7 @@ def _entity_meta_snapshot(entry: Any) -> dict:
     freeze that name, so a later rename would silently stop matching by voice.
     """
     return {
+        "entity_id": entry.entity_id,
         "name": entry.name,
         "icon": entry.icon,
         "area_id": entry.area_id,
@@ -1389,7 +1395,7 @@ _SET_ENTITY_UPDATE_ARGUMENTS = frozenset(
     {
         "name", "icon", "area_id", "device_class", "enabled", "hidden",
         "add_aliases", "remove_aliases", "add_labels", "remove_labels",
-        "categories",
+        "categories", "new_entity_id",
     }
 )
 
@@ -1436,6 +1442,21 @@ def _set_entity_value_error(
     for field in ("enabled", "hidden"):
         if field in args and not isinstance(args[field], bool):
             return f"{field} must be true or false."
+
+    if "new_entity_id" in args:
+        new_entity_id = args["new_entity_id"]
+        if not isinstance(new_entity_id, str) or not valid_entity_id(new_entity_id):
+            return "new_entity_id must be a valid entity ID."
+        if new_entity_id == entry.entity_id:
+            return "new_entity_id is already this entity's ID."
+        old_domain = entry.entity_id.split(".", 1)[0]
+        if new_entity_id.split(".", 1)[0] != old_domain:
+            return f"new_entity_id must stay in the {old_domain} domain."
+        registry = er.async_get(hass)
+        if registry.async_get(new_entity_id) is not None or hass.states.get(
+            new_entity_id
+        ) is not None:
+            return "new_entity_id is already occupied."
 
     for field in ("add_labels", "remove_labels"):
         if field not in args:
@@ -1537,8 +1558,199 @@ def _set_entity_args_error(
     return None
 
 
+_REGISTRY_MESA_FINGERPRINT = "_registry_mesa_fingerprint"
+
+
+def _contains_entity_identity(value: Any, entity_id: str) -> bool:
+    """Whether a Phoenix configuration subtree keys or values the exact ID."""
+    if isinstance(value, dict):
+        return any(
+            key == entity_id or _contains_entity_identity(item, entity_id)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_entity_identity(item, entity_id) for item in value)
+    return value == entity_id
+
+
+def _entity_identity_references(
+    data: PhoenixData, entity_id: str
+) -> list[dict[str, Any]]:
+    """Active Phoenix configuration whose identity would not follow a rename."""
+    references: list[dict[str, Any]] = []
+    for record in data.store.list_tokens():
+        if not record.is_valid():
+            continue
+        if entity_id in record.permissions.entities:
+            references.append(
+                {
+                    "kind": "token_permission",
+                    "token_id": record.id,
+                    "token_name": record.name,
+                }
+            )
+        for preset in record.presets:
+            if entity_id in preset.permissions.entities:
+                references.append(
+                    {
+                        "kind": "preset_permission",
+                        "token_id": record.id,
+                        "token_name": record.name,
+                        "preset_id": preset.id,
+                        "preset_name": preset.name,
+                    }
+                )
+    if entity_id in data.store.get_entity_hints():
+        references.append({"kind": "global_hint", "entity_id": entity_id})
+    if data.mesa is not None and data.mesa.store.get(entity_id) is not None:
+        references.append({"kind": "mesa_entity_profile", "entity_id": entity_id})
+    for pending in data.store.get_pending_approvals():
+        if pending.get("status") != "pending":
+            continue
+        if pending.get("id") in data.approvals_in_progress:
+            # The approval currently executing necessarily contains this entity
+            # ID in its saved args; it is the operation, not a competing config
+            # consumer. Other pending approvals remain blockers.
+            continue
+        if _contains_entity_identity(pending.get("args", {}), entity_id):
+            references.append(
+                {
+                    "kind": "pending_approval",
+                    "approval_id": pending.get("id"),
+                    "tool_name": pending.get("tool_name"),
+                }
+            )
+    return references
+
+
+def _rename_blocker_error(
+    data: PhoenixData, entity_id: str
+) -> tuple[dict, str, str] | None:
+    blockers = _entity_identity_references(data, entity_id)
+    if not blockers:
+        return None
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": (
+                        "Entity ID rename is blocked by Phoenix configuration keyed "
+                        "to the old ID. Move or remove every blocker first."
+                    ),
+                    "entity_id": entity_id,
+                    "blockers": blockers,
+                },
+                default=str,
+            )
+        ),
+        "invalid_request",
+        entity_id,
+    )
+
+
+def _registry_mesa_error(
+    entity_id: str, action: str, decision: RegistryMesaDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": f"MESA blocked entity registry {action}.",
+                    "entity_id": entity_id,
+                    "mesa": {
+                        "rule": decision.rule,
+                        "reason": decision.reason,
+                        "effective_rule": decision.effective_rule,
+                        "warnings": decision.warnings,
+                    },
+                },
+                default=str,
+            )
+        ),
+        "denied",
+        entity_id,
+    )
+
+
+def _registry_mesa_decision(
+    data: PhoenixData,
+    token: TokenRecord,
+    entity_id: str,
+    *,
+    action: str,
+    service_data: dict[str, Any] | None = None,
+    session_id: str,
+) -> RegistryMesaDecision | tuple[dict, str, str]:
+    """Resolve MESA fail-closed for a registry identity action."""
+    try:
+        return evaluate_registry_action(
+            data,
+            token,
+            entity_id,
+            action=action,
+            service_data=service_data,
+            session_id=session_id,
+        )
+    except Exception:  # noqa: BLE001 - a safety resolver failure must block
+        _LOGGER.exception("MESA registry %s evaluation failed for %s", action, entity_id)
+        return (
+            _tool_error("MESA safety evaluation failed; no registry change was made."),
+            "denied",
+            entity_id,
+        )
+
+
+def _mesa_preview(decision: RegistryMesaDecision) -> dict[str, Any]:
+    return {
+        "decision": decision.decision,
+        "rule": decision.rule,
+        "reason": decision.reason,
+        "effective_rule": decision.effective_rule,
+        "warnings": decision.warnings,
+    }
+
+
+async def _create_registry_mesa_approval(
+    hass: HomeAssistant,
+    data: PhoenixData,
+    token: TokenRecord,
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    diff: dict[str, Any],
+    request_id: str,
+    client_ip: str | None,
+) -> tuple[dict, str, str]:
+    """Create the normal registry approval when only MESA requires confirm."""
+    from .approvals import (  # noqa: PLC0415
+        async_create_pending_approval,
+        create_approval_notification,
+        fire_approval_requested_event,
+    )
+
+    async with data.store.async_lock:
+        approval = await async_create_pending_approval(
+            data.store,
+            token_id=token.id,
+            token_name=token.name,
+            tool_name=tool_name,
+            cap_name="cap_registry_write",
+            args=args,
+            diff=diff,
+            request_id=request_id,
+            client_ip=client_ip,
+        )
+    create_approval_notification(hass, approval)
+    fire_approval_requested_event(hass, approval)
+    return await _pending_or_inline(hass, data, token, approval)
+
+
 def _registry_write_precheck(
-    args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    tool_name: str,
+    data: PhoenixData | None = None,
 ) -> tuple[dict, str, str] | None:
     """Pre-gate validation for registry writes; None means OK to proceed.
 
@@ -1548,14 +1760,12 @@ def _registry_write_precheck(
     entity_id = str(args.get("entity_id") or "").strip()
     if not entity_id:
         return _tool_error("entity_id is required."), "invalid_request", tool_name
-    permission = (
-        resolve_registry_access(entity_id, token, hass)
-        if tool_name == "set_entity"
-        else resolve(entity_id, token, hass)
-    )
+    permission = resolve_registry_access(entity_id, token, hass)
     perm_error = _registry_write_perm_error(permission, entity_id)
     if perm_error is not None:
         return perm_error
+    registry_entry = er.async_get(hass).async_get(entity_id)
+    canonical_id = registry_entry.entity_id if registry_entry is not None else entity_id
     if tool_name == "set_entity":
         args_error = _set_entity_args_error(args, hass, entity_id)
         if args_error is not None:
@@ -1571,15 +1781,26 @@ def _registry_write_precheck(
                 "denied",
                 entity_id,
             )
+        if "new_entity_id" in args and data is not None:
+            blocker_error = _rename_blocker_error(data, canonical_id)
+            if blocker_error is not None:
+                return blocker_error
     return None
 
 
-async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
+async def _build_diff_set_entity(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: RegistryMesaDecision | None = None,
+) -> dict:
     entity_id = str(args.get("entity_id") or "")
     entry = er.async_get(hass).async_get(entity_id)
     before = _entity_meta_snapshot(entry) if entry else {}
     fields = [f for f in ("name", "icon", "area_id", "device_class") if f in args]
-    preview = {f: {"before": before.get(f), "after": args.get(f)} for f in fields}
+    preview: dict[str, Any] = {
+        f: {"before": before.get(f), "after": args.get(f)} for f in fields
+    }
     if "enabled" in args:
         fields.append("enabled")
         preview["enabled"] = {
@@ -1642,6 +1863,26 @@ async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssis
             "before": dict(sorted(entry.categories.items())),
             "after": dict(sorted(after_categories.items())),
         }
+    if entry is not None and "new_entity_id" in args:
+        fields.append("entity_id")
+        preview["entity_id"] = {
+            "before": entry.entity_id,
+            "after": args["new_entity_id"],
+        }
+        preview["relationships"] = await _registry_relationship_preview(
+            hass, entry.entity_id
+        )
+        data = hass.data.get(DOMAIN)
+        if data is not None:
+            preview["phoenix_configuration"] = _entity_identity_references(
+                data, entry.entity_id
+            )
+        preview["warning"] = (
+            "Home Assistant does not rewrite consumers of the old entity ID. "
+            "Update every relationship listed here separately."
+        )
+    if mesa_decision is not None:
+        preview["mesa"] = _mesa_preview(mesa_decision)
     return {
         "kind": "system_action",
         **_summary("set_entity", fields=", ".join(fields) or "nothing", entity_id=entity_id),
@@ -1650,19 +1891,37 @@ async def _build_diff_set_entity(args: dict, token: TokenRecord, hass: HomeAssis
     }
 
 
-async def _build_diff_delete_entity(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
+async def _build_diff_delete_entity(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: RegistryMesaDecision | None = None,
+) -> dict:
     entity_id = str(args.get("entity_id") or "")
     entry = er.async_get(hass).async_get(entity_id)
     snap = _entity_meta_snapshot(entry) if entry else {}
+    relationships = (
+        await _registry_relationship_preview(hass, entity_id)
+        if entry is not None
+        else {"consumers": [], "consumer_count": 0, "searched": []}
+    )
+    data = hass.data.get(DOMAIN)
+    preview: dict[str, Any] = {
+        "name": snap.get("name"),
+        "area_id": snap.get("area_id"),
+        "warning": "Removes the entity's registry entry. A live entity's integration may re-create it; an orphan stays gone. Not re-creatable through Phoenix MCP.",
+        "relationships": relationships,
+        "phoenix_configuration": (
+            _entity_identity_references(data, entity_id) if data is not None else []
+        ),
+    }
+    if mesa_decision is not None:
+        preview["mesa"] = _mesa_preview(mesa_decision)
     return {
         "kind": "system_action",
         **_summary("delete_entity", entity_id=entity_id),
         "target": {"type": "entity", "id": entity_id, "label": snap.get("name") or entity_id},
-        "preview": {
-            "name": snap.get("name"),
-            "area_id": snap.get("area_id"),
-            "warning": "Removes the entity's registry entry. A live entity's integration may re-create it; an orphan stays gone. Not re-creatable through Phoenix MCP.",
-        },
+        "preview": preview,
     }
 
 
@@ -1677,16 +1936,60 @@ async def _tool_set_entity(
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_entity"
     # Then validate entity scope and registry references before gating so a doomed
     # request cannot create a pending approval. The executor re-validates at apply time.
-    pre = _registry_write_precheck(args, token, hass, "set_entity")
+    pre = _registry_write_precheck(args, token, hass, "set_entity", data)
     if pre is not None:
         return pre
+    mesa_decision: RegistryMesaDecision | None = None
+    approval_args = dict(args)
+    if "new_entity_id" in args:
+        entity_id = str(args.get("entity_id") or "").strip()
+        registry_entry = er.async_get(hass).async_get(entity_id)
+        if registry_entry is not None:
+            entity_id = registry_entry.entity_id
+            approval_args["entity_id"] = entity_id
+        resolved = _registry_mesa_decision(
+            data,
+            token,
+            entity_id,
+            action="rename",
+            service_data={"new_entity_id": args["new_entity_id"]},
+            session_id=request_id or "set_entity",
+        )
+        if isinstance(resolved, tuple):
+            return resolved
+        mesa_decision = resolved
+        if mesa_decision.decision == "deny":
+            fire_mesa_blocked_event(
+                hass,
+                token,
+                [(entity_id, mesa_decision.rule, mesa_decision.reason)],
+            )
+            return _registry_mesa_error(entity_id, "rename", mesa_decision)
+        if mesa_decision.decision == "confirm":
+            approval_args[_REGISTRY_MESA_FINGERPRINT] = (
+                mesa_decision.profile_fingerprint
+            )
+    diff_builder = lambda: _build_diff_set_entity(  # noqa: E731
+        args, token, hass, mesa_decision
+    )
     blocked = await _gate(
         "cap_registry_write", token, hass, data,
-        tool_name="set_entity", args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_set_entity(args, token, hass),
+        tool_name="set_entity", args=approval_args, request_id=request_id,
+        client_ip=client_ip, diff=diff_builder,
     )
     if blocked is not None:
         return blocked
+    if mesa_decision is not None and mesa_decision.decision == "confirm":
+        return await _create_registry_mesa_approval(
+            hass,
+            data,
+            token,
+            tool_name="set_entity",
+            args=approval_args,
+            diff=await diff_builder(),
+            request_id=request_id,
+            client_ip=client_ip,
+        )
     return await _execute_set_entity(args, token, hass, data)
 
 
@@ -1694,6 +1997,9 @@ async def _execute_set_entity(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
     entity_id = str(args.get("entity_id") or "").strip()
+    registry_entry = er.async_get(hass).async_get(entity_id)
+    if registry_entry is not None:
+        entity_id = registry_entry.entity_id
     if not entity_id:
         return _tool_error("entity_id is required."), "invalid_request", "set_entity"
     err = _registry_write_perm_error(
@@ -1711,6 +2017,40 @@ async def _execute_set_entity(
     )
     if args_error is not None:
         return args_error
+    new_entity_id = args.get("new_entity_id")
+    mesa_decision: RegistryMesaDecision | None = None
+    if isinstance(new_entity_id, str):
+        blocker_error = _rename_blocker_error(data, entry.entity_id)
+        if blocker_error is not None:
+            return blocker_error
+        resolved = _registry_mesa_decision(
+            data,
+            token,
+            entry.entity_id,
+            action="rename",
+            service_data={"new_entity_id": new_entity_id},
+            session_id="set_entity_execute",
+        )
+        if isinstance(resolved, tuple):
+            return resolved
+        mesa_decision = resolved
+        mesa_confirmed = (
+            _approved_exec_ctx.get()
+            and isinstance(args.get(_REGISTRY_MESA_FINGERPRINT), str)
+            and args[_REGISTRY_MESA_FINGERPRINT]
+            == mesa_decision.profile_fingerprint
+        )
+        if mesa_decision.decision == "deny" or (
+            mesa_decision.decision == "confirm" and not mesa_confirmed
+        ):
+            fire_mesa_blocked_event(
+                hass,
+                token,
+                [(entry.entity_id, mesa_decision.rule, mesa_decision.reason)],
+            )
+            return _registry_mesa_error(
+                entry.entity_id, "rename", mesa_decision
+            )
     will_disable = args.get("enabled") is False or (
         restoring and args.get("disabled_by") is not None
     )
@@ -1744,6 +2084,8 @@ async def _execute_set_entity(
         updates["hidden_by"] = (
             er.RegistryEntryHider.USER if args["hidden"] else None
         )
+    if isinstance(new_entity_id, str):
+        updates["new_entity_id"] = new_entity_id
     alias_add: list[str] = []
     alias_remove: list[str] = []
     for field, sink in (("add_aliases", alias_add), ("remove_aliases", alias_remove)):
@@ -1820,26 +2162,37 @@ async def _execute_set_entity(
     except Exception as exc:  # noqa: BLE001 - surface a clean tool error
         _LOGGER.error("set_entity failed for %s: %s", entity_id, exc)
         return _tool_error("Failed to update entity."), "denied", entity_id
-    after = _entity_meta_snapshot(reg.async_get(entity_id))
+    updated_id = new_entity_id if isinstance(new_entity_id, str) else entity_id
+    updated_entry = reg.async_get(updated_id)
+    if updated_entry is None:
+        _LOGGER.error(
+            "set_entity updated %s but no registry entry exists at %s",
+            entity_id,
+            updated_id,
+        )
+        return _tool_error("Failed to read updated entity."), "denied", entity_id
+    after = _entity_meta_snapshot(updated_entry)
     await _record_version(
-        data, token, resource_type="entity", resource_id=entity_id,
-        action="edit", before=before, after=after, alias=after.get("name") or entity_id,
+        data, token, resource_type="entity", resource_id=updated_id,
+        action="edit",
+        before=before, after=after, alias=after.get("name") or updated_id,
     )
-    body: dict = {"entity_id": entity_id, "updated": after}
+    body: dict = {"entity_id": updated_id, "updated": after}
+    if updated_id != entity_id:
+        body["previous_entity_id"] = entity_id
     if alias_add or alias_remove:
         # What CHANGED, not what was asked for: an alias already present or one
         # that was not there is a no-op, and a caller that cannot see that reads
         # a typo as a successful edit.
         body["aliases_added"] = added
         body["aliases_removed"] = removed
-        updated = reg.async_get(entity_id)
+        updated = reg.async_get(updated_id)
         if updated is not None:
             body["aliases"] = er.async_get_entity_aliases(hass, updated)
     if label_add or label_remove:
         body["labels_added"] = labels_added
         body["labels_removed"] = labels_removed
     if "enabled" in args and args["enabled"]:
-        updated_entry = reg.async_get(entity_id)
         if updated_entry is not None:
             config_entry = (
                 hass.config_entries.async_get_entry(updated_entry.config_entry_id)
@@ -1852,7 +2205,10 @@ async def _execute_set_entity(
                     "reloaded or Home Assistant restarted before a live state appears."
                 ),
             }
-    return _tool_success(json.dumps(body, default=str)), "allowed", entity_id
+    if mesa_decision is not None and mesa_decision.warnings:
+        body["mesa_advisory"] = mesa_decision.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body, default=str)), "allowed", updated_id
 
 
 async def _tool_delete_entity(
@@ -1864,16 +2220,53 @@ async def _tool_delete_entity(
     # work, so the tool can never be a scope/existence oracle when the cap is off.
     if effective_cap(token, "cap_registry_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "delete_entity"
-    pre = _registry_write_precheck(args, token, hass, "delete_entity")
+    pre = _registry_write_precheck(args, token, hass, "delete_entity", data)
     if pre is not None:
         return pre
+    entity_id = str(args.get("entity_id") or "").strip()
+    resolved = _registry_mesa_decision(
+        data,
+        token,
+        entity_id,
+        action="delete",
+        session_id=request_id or "delete_entity",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    mesa_decision = resolved
+    if mesa_decision.decision == "deny":
+        fire_mesa_blocked_event(
+            hass,
+            token,
+            [(entity_id, mesa_decision.rule, mesa_decision.reason)],
+        )
+        return _registry_mesa_error(entity_id, "delete", mesa_decision)
+    approval_args = {**args, "entity_id": entity_id}
+    if mesa_decision.decision == "confirm":
+        approval_args[_REGISTRY_MESA_FINGERPRINT] = (
+            mesa_decision.profile_fingerprint
+        )
+    diff_builder = lambda: _build_diff_delete_entity(  # noqa: E731
+        args, token, hass, mesa_decision
+    )
     blocked = await _gate(
         "cap_registry_write", token, hass, data,
-        tool_name="delete_entity", args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_delete_entity(args, token, hass),
+        tool_name="delete_entity", args=approval_args, request_id=request_id,
+        client_ip=client_ip, diff=diff_builder,
     )
     if blocked is not None:
         return blocked
+    if mesa_decision.decision == "confirm":
+        return await _create_registry_mesa_approval(
+            hass,
+            data,
+            token,
+            tool_name="delete_entity",
+            args=approval_args,
+            diff=await diff_builder(),
+            request_id=request_id,
+            client_ip=client_ip,
+        )
     return await _execute_delete_entity(args, token, hass, data)
 
 
@@ -1883,13 +2276,40 @@ async def _execute_delete_entity(
     entity_id = str(args.get("entity_id") or "").strip()
     if not entity_id:
         return _tool_error("entity_id is required."), "invalid_request", "delete_entity"
-    err = _registry_write_perm_error(resolve(entity_id, token, hass), entity_id)
+    err = _registry_write_perm_error(
+        resolve_registry_access(entity_id, token, hass), entity_id
+    )
     if err is not None:
         return err
     reg = er.async_get(hass)
     entry = reg.async_get(entity_id)
     if entry is None:
         return _tool_error("Entity has no registry entry to delete."), "invalid_request", entity_id
+    resolved = _registry_mesa_decision(
+        data,
+        token,
+        entry.entity_id,
+        action="delete",
+        session_id="delete_entity_execute",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    mesa_decision = resolved
+    mesa_confirmed = (
+        _approved_exec_ctx.get()
+        and isinstance(args.get(_REGISTRY_MESA_FINGERPRINT), str)
+        and args[_REGISTRY_MESA_FINGERPRINT]
+        == mesa_decision.profile_fingerprint
+    )
+    if mesa_decision.decision == "deny" or (
+        mesa_decision.decision == "confirm" and not mesa_confirmed
+    ):
+        fire_mesa_blocked_event(
+            hass,
+            token,
+            [(entry.entity_id, mesa_decision.rule, mesa_decision.reason)],
+        )
+        return _registry_mesa_error(entry.entity_id, "delete", mesa_decision)
     before = _entity_meta_snapshot(entry)
     try:
         reg.async_remove(entity_id)
@@ -1900,7 +2320,11 @@ async def _execute_delete_entity(
         data, token, resource_type="entity", resource_id=entity_id,
         action="delete", before=before, after=None, alias=before.get("name") or entity_id,
     )
-    return _tool_success(json.dumps({"entity_id": entity_id, "deleted": True})), "allowed", entity_id
+    body: dict[str, Any] = {"entity_id": entity_id, "deleted": True}
+    if mesa_decision.warnings:
+        body["mesa_advisory"] = mesa_decision.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body)), "allowed", entity_id
 
 
 async def _tool_render_template(
@@ -2452,9 +2876,32 @@ async def async_restore_version(
                 )
                 if key in target
             }
+            desired_entity_id = target.get("entity_id")
+            candidate_ids: list[str] = []
+            for snapshot in (record.before, record.after):
+                if isinstance(snapshot, dict) and isinstance(
+                    snapshot.get("entity_id"), str
+                ):
+                    candidate_ids.append(snapshot["entity_id"])
+            candidate_ids.append(resource_id)
+            current_entity_id = next(
+                (
+                    candidate
+                    for candidate in candidate_ids
+                    if er.async_get(hass).async_get(candidate) is not None
+                ),
+                resource_id,
+            )
+            if (
+                isinstance(desired_entity_id, str)
+                and desired_entity_id != current_entity_id
+            ):
+                fields["new_entity_id"] = desired_entity_id
             if not fields:
                 return _tool_error("This version has no entity metadata to restore."), "invalid_request", "async_restore_version"
-            return await _execute_set_entity({"entity_id": resource_id, **fields}, token, hass, data)
+            return await _execute_set_entity(
+                {"entity_id": current_entity_id, **fields}, token, hass, data
+            )
         return _tool_error(f"Cannot restore resource type '{resource_type}'."), "invalid_request", "async_restore_version"
     finally:
         _restore_ctx.reset(ctx)

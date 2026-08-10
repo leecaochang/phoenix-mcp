@@ -412,6 +412,35 @@ def _scan_relationships(
         if entry["entities"]:
             consumers.append(entry)
 
+    groups = _entries("group")
+    if isinstance(groups, dict):
+        for group_id, cfg in groups.items():
+            if not isinstance(cfg, dict):
+                continue
+            raw_members = cfg.get("entities", [])
+            if isinstance(raw_members, str):
+                members = {raw_members}
+            elif isinstance(raw_members, list):
+                members = {item for item in raw_members if isinstance(item, str)}
+            else:
+                members = set()
+            entry = _consumer("group", str(group_id), cfg.get("name"))
+            for member in members:
+                _note(
+                    member,
+                    {
+                        "kind": "group",
+                        "id": entry["id"],
+                        "name": entry["name"],
+                        "typed": True,
+                        "service": False,
+                    },
+                )
+            for entity_id in members & scope:
+                _record(entry, entity_id, "member")
+            if entry["entities"]:
+                consumers.append(entry)
+
     for url_path, title, config in dashboards:
         hits: list[tuple[list, str]] = []
         _entity_id_strings(config, [], hits)
@@ -1386,6 +1415,44 @@ def _relationship_config_entries(hass: HomeAssistant) -> list[dict]:
     ]
 
 
+async def _registry_relationship_preview(
+    hass: HomeAssistant, entity_id: str
+) -> dict[str, Any]:
+    """Full known-consumer preview for a registry rename or deletion.
+
+    Unlike the token-facing get_relationships response, an admin approval card
+    is not capability-narrowed: it always attempts dashboards and config entries
+    as well as YAML automations, scripts, scenes, and groups. Config-entry
+    credentials remain inside the event-loop snapshot and only matching entity
+    IDs reach the preview, exactly like get_relationships.
+    """
+    dashboards, skipped = await _relationship_dashboards(hass)
+    entries = _relationship_config_entries(hass)
+    consumers, _refs, unreadable = await hass.async_add_executor_job(
+        _scan_relationships,
+        hass,
+        {entity_id},
+        dashboards,
+        entries,
+    )
+    incomplete = [*skipped, *unreadable]
+    preview: dict[str, Any] = {
+        "consumers": consumers,
+        "consumer_count": len(consumers),
+        "searched": [
+            "automation",
+            "script",
+            "scene",
+            "group",
+            "dashboard",
+            "config_entry",
+        ],
+    }
+    if incomplete:
+        preview["not_searched"] = incomplete
+    return preview
+
+
 async def _tool_get_relationships(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
@@ -1411,7 +1478,7 @@ async def _tool_get_relationships(
         return resolved
     selector, value, scope = resolved.selector, resolved.value, resolved.entity_ids
 
-    searched = ["automation", "script", "scene"]
+    searched = ["automation", "script", "scene", "group"]
     not_searched: list[dict] = []
     dashboards: list[tuple[str, str | None, Any]] = []
     entries: list[dict] = []
