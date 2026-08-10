@@ -2177,7 +2177,8 @@ async def _execute_set_entity(
         action="edit",
         before=before, after=after, alias=after.get("name") or updated_id,
     )
-    body: dict = {"entity_id": updated_id, "updated": after}
+    public_after = {**after, "aliases": er.async_get_entity_aliases(hass, updated_entry)}
+    body: dict = {"entity_id": updated_id, "updated": public_after}
     if updated_id != entity_id:
         body["previous_entity_id"] = entity_id
     if alias_add or alias_remove:

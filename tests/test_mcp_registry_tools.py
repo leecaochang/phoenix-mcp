@@ -835,6 +835,17 @@ class TestEntityAliases:
         assert "lounge lamp" in body["aliases"]
         assert er.COMPUTED_NAME not in body["aliases"]
 
+    async def test_updated_projection_resolves_the_computed_name(self, hass, reg_env):
+        """A metadata-only edit must not leak the restore-only null sentinel."""
+        eid = reg_env["light_kitchen"]
+        content, outcome, _ = await self._set(hass, eid, icon="mdi:lamp")
+        assert outcome == "allowed"
+        body = json.loads(content["content"][0]["text"])
+        aliases = body["updated"]["aliases"]
+        entry = er.async_get(hass).async_get(eid)
+        assert None not in aliases
+        assert er.async_get_full_entity_name(hass, entry) in aliases
+
     async def test_remove_takes_only_the_named_alias(self, hass, reg_env):
         eid = reg_env["light_kitchen"]
         await self._set(hass, eid, add_aliases=["lounge lamp", "big light"])
