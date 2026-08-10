@@ -507,8 +507,9 @@
       "dynamicTitle": "New entities added to this device will automatically inherit this permission.",
       "editHint": "Edit hint",
       "effectiveTitle": "Effective: {state}",
-      "filterAria": "Filter entities",
-      "filterPlaceholder": "Filter by entity name or ID...",
+      "filterAria": "Filter domains, devices, and entities",
+      "filterEmpty": "No domains, devices, entities, or stored grants match this filter.",
+      "filterPlaceholder": "Filter by domain, device, entity, or ID...",
       "hintAllAria": "Apply hint to all tokens",
       "hintAllTokens": "All tokens",
       "hintAria": "Hint for {id}",
@@ -557,6 +558,11 @@
       "typeDevice": "Device",
       "typeDomain": "Domain",
       "typeEntity": "Entity",
+      "unmatchedDeviceBadge": "Unmatched",
+      "unmatchedDeviceBadgeTitle": "This device ID is not represented in the current entity tree.",
+      "unmatchedDeviceName": "Device not in current tree",
+      "unmatchedDevicesNote": "These explicit grants refer to device IDs that are not in the current entity tree. Set N to remove a stale grant.",
+      "unmatchedDevicesTitle": "Unmatched device permissions",
       "viewMesaProfile": "View MESA profile"
     },
     "changes": {

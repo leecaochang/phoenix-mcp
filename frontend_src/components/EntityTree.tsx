@@ -11,6 +11,80 @@ const INDIRECT_CONTROL_DOMAINS = new Set([
   "automation", "script", "scene",
 ]);
 
+/** Match both literal text and common identifier punctuation variants.
+ *
+ * Home Assistant commonly derives entity IDs from addresses and hostnames, so
+ * an operator may know a device as `1.1.1.1` while the registry row contains
+ * `binary_sensor.1_1_1_1`. Keeping the literal match as well as a compact form
+ * makes both searches useful without changing what is displayed.
+ */
+export function matchesTreeSearch(query: string, ...values: Array<string | null | undefined>): boolean {
+  const literalQuery = query.trim().toLocaleLowerCase();
+  if (!literalQuery) return true;
+  const compactQuery = literalQuery.replace(/[\s._-]+/g, "");
+
+  return values.some((value) => {
+    if (!value) return false;
+    const literalValue = value.toLocaleLowerCase();
+    if (literalValue.includes(literalQuery)) return true;
+    return compactQuery.length > 0
+      && literalValue.replace(/[\s._-]+/g, "").includes(compactQuery);
+  });
+}
+
+function ghostEntitiesForDomain(
+  domainKey: string,
+  permissions: PermissionTree,
+  allEntityIds: Set<string>,
+): string[] {
+  return Object.keys(permissions.entities).filter(
+    (entityId) => entityId.startsWith(`${domainKey}.`) && !allEntityIds.has(entityId),
+  );
+}
+
+function domainMatchesSearch(
+  query: string,
+  domainKey: string,
+  domainData: DomainTree,
+  permissions: PermissionTree,
+  allEntityIds: Set<string>,
+): boolean {
+  if (matchesTreeSearch(query, domainKey)) return true;
+  if (Object.values(domainData.entity_details).some((detail) =>
+    matchesTreeSearch(query, detail.entity_id, detail.friendly_name))) return true;
+  if (Object.entries(domainData.devices).some(([deviceId, device]) =>
+    matchesTreeSearch(query, deviceId, device.name))) return true;
+  return ghostEntitiesForDomain(domainKey, permissions, allEntityIds).some((entityId) =>
+    matchesTreeSearch(query, entityId));
+}
+
+/** Search opens the hierarchy temporarily; it must not rewrite the operator's
+ * expansion choices. Capture the state only when entering search and restore it
+ * only when leaving, so changing one non-empty query to another does not keep
+ * moving the snapshot.
+ */
+function useTemporarySearchExpansion(
+  filterText: string,
+  expanded: boolean,
+  setExpanded: React.Dispatch<React.SetStateAction<boolean>>,
+): void {
+  const wasSearching = React.useRef(false);
+  const expandedBeforeSearch = React.useRef(false);
+
+  useEffect(() => {
+    const isSearching = filterText.trim().length > 0;
+    if (isSearching === wasSearching.current) return;
+
+    if (isSearching) {
+      expandedBeforeSearch.current = expanded;
+      setExpanded(true);
+    } else {
+      setExpanded(expandedBeforeSearch.current);
+    }
+    wasSearching.current = isSearching;
+  }, [expanded, filterText, setExpanded]);
+}
+
 interface Props {
   tokenId: string;
   permissions: PermissionTree;
@@ -232,9 +306,7 @@ function EntityRow({
   }, [revealNonce]);
 
   if (filterText) {
-    const q = filterText.toLowerCase();
-    const matches = entityId.toLowerCase().includes(q) || (friendlyName?.toLowerCase().includes(q) ?? false);
-    if (!matches) return null;
+    if (!matchesTreeSearch(filterText, entityId, friendlyName)) return null;
   }
 
   async function setEntityState(newState: NodeState) {
@@ -329,6 +401,33 @@ interface DeviceGroupProps {
   onGlobalHintsChange: (hints: Record<string, string>) => void;
 }
 
+interface DeviceIdentityProps {
+  deviceId: string;
+  deviceName: string;
+  expanded?: boolean;
+  onToggle?: () => void;
+}
+
+function DeviceIdentity({ deviceId, deviceName, expanded, onToggle }: DeviceIdentityProps) {
+  return (
+    <div className="tree-name">
+      {onToggle ? (
+        <button
+          type="button"
+          className="tree-device-name tree-cursor-pointer"
+          onClick={onToggle}
+          aria-expanded={expanded}
+        >
+          <span className="tree-friendly">{deviceName}</span>
+        </button>
+      ) : (
+        <span className="tree-friendly">{deviceName}</span>
+      )}
+      <code className="tree-device-id" title={deviceId}>{deviceId}</code>
+    </div>
+  );
+}
+
 function DeviceGroup({
   deviceId, deviceName, domainKey, entityIds, domainData,
   permissions, tokenId, filterText, allEntityIds, onPermChange, onEntityClick, collapseKey, revealEntity, revealDepth, revealNonce, mesaProfileEntities, mesaProfileDevices, onOpenMesa, globalHints, onGlobalHintsChange,
@@ -349,10 +448,7 @@ function DeviceGroup({
     return compareStrings(an, bn);
   });
 
-  // Expand if filter matches
-  useEffect(() => {
-    if (filterText) setExpanded(true);
-  }, [filterText]);
+  useTemporarySearchExpansion(filterText, expanded, setExpanded);
 
   // Expand when an entity inside this device is the reveal target. Skip for
   // domain-depth reveals: those target the domain header, not every device.
@@ -394,16 +490,17 @@ function DeviceGroup({
     }
   }
 
-  // Check if any child would be visible under filter
+  // Check the device itself as well as its children. The device-ID branch is
+  // load-bearing: a raw registry ID has no representation in entity_details.
+  const deviceMatches = matchesTreeSearch(filterText, deviceId, deviceName);
   const hasVisibleChild = filterText
     ? entityIds.some((eid) => {
         const detail = domainData.entity_details[eid];
-        const q = filterText.toLowerCase();
-        return eid.toLowerCase().includes(q) || (detail?.friendly_name?.toLowerCase().includes(q) ?? false);
+        return matchesTreeSearch(filterText, eid, detail?.friendly_name);
       })
     : true;
 
-  if (filterText && !hasVisibleChild && !deviceName.toLowerCase().includes(filterText.toLowerCase())) return null;
+  if (filterText && !hasVisibleChild && !deviceMatches) return null;
 
   return (
     <div>
@@ -423,9 +520,12 @@ function DeviceGroup({
             onOpen={onOpenMesa}
           />
         )}
-        <button type="button" className="tree-name tree-cursor-pointer" onClick={() => setExpanded((x) => !x)} aria-expanded={expanded}>
-          <span className="tree-friendly">{deviceName}</span>
-        </button>
+        <DeviceIdentity
+          deviceId={deviceId}
+          deviceName={deviceName}
+          expanded={expanded}
+          onToggle={() => setExpanded((x) => !x)}
+        />
         {isDynamic && (
           <span className="tree-badge tree-badge-dynamic" title={t("perms.dynamicTitle")}>{t("perms.dynamicBadge")}</span>
         )}
@@ -466,6 +566,71 @@ function DeviceGroup({
   );
 }
 
+interface GhostDevicePermissionsProps {
+  deviceIds: string[];
+  permissions: PermissionTree;
+  tokenId: string;
+  onPermChange: (tree: PermissionTree) => void;
+}
+
+function GhostDevicePermissions({
+  deviceIds, permissions, tokenId, onPermChange,
+}: GhostDevicePermissionsProps) {
+  return (
+    <section className="tree-stale-devices" aria-labelledby="tree-stale-devices-title">
+      <h4 id="tree-stale-devices-title" className="tree-stale-title">
+        {t("perms.unmatchedDevicesTitle")}
+      </h4>
+      <p className="tree-stale-note">{t("perms.unmatchedDevicesNote")}</p>
+      {deviceIds.map((deviceId) => (
+        <GhostDeviceRow
+          key={deviceId}
+          deviceId={deviceId}
+          permissions={permissions}
+          tokenId={tokenId}
+          onPermChange={onPermChange}
+        />
+      ))}
+    </section>
+  );
+}
+
+function GhostDeviceRow({
+  deviceId, permissions, tokenId, onPermChange,
+}: Omit<GhostDevicePermissionsProps, "deviceIds"> & { deviceId: string }) {
+  const [permError, setPermError] = useState<string | null>(null);
+  const state: NodeState = permissions.devices[deviceId]?.state ?? "GREY";
+
+  async function setDeviceState(newState: NodeState) {
+    setPermError(null);
+    try {
+      const next = await api.patchDevicePermission(tokenId, deviceId, { state: newState });
+      onPermChange(next);
+    } catch (e: unknown) {
+      setPermError(e instanceof Error ? e.message : t("perms.permSaveFailed"));
+    }
+  }
+
+  return (
+    <div className="tree-node tree-stale-device-row">
+      <span className="tree-spacer" />
+      <DeviceIdentity deviceId={deviceId} deviceName={t("perms.unmatchedDeviceName")} />
+      <span className="tree-badge tree-badge-ghost" title={t("perms.unmatchedDeviceBadgeTitle")}>
+        {t("perms.unmatchedDeviceBadge")}
+      </span>
+      <span className="tree-effective" title={t("perms.effectiveTitle", { state: effectiveLabel("NOT_FOUND") })}>
+        ({effectiveLabel("NOT_FOUND")})
+      </span>
+      <PermissionSelector
+        value={state}
+        onChange={setDeviceState}
+        label={t("perms.permForDevice", { name: deviceId })}
+      />
+      {permError && <span className="tree-perm-error" role="alert" title={permError}>{t("perms.saveFailedShort")}</span>}
+    </div>
+  );
+}
+
 interface DomainGroupProps {
   domainKey: string;
   domainData: DomainTree;
@@ -501,9 +666,7 @@ function DomainGroup({
   const headerRef = React.useRef<HTMLDivElement>(null);
   const isRevealed = revealDepth === "domain" && !!revealEntity && revealEntity.split(".")[0] === domainKey;
 
-  useEffect(() => {
-    if (filterText) setExpanded(true);
-  }, [filterText]);
+  useTemporarySearchExpansion(filterText, expanded, setExpanded);
 
   // Expand when the reveal target lives in this domain. Keyed on revealNonce only
   // (an explicit "jump to"), NOT revealEntity: editing a permission in place
@@ -543,17 +706,11 @@ function DomainGroup({
     }
   }
 
-  const ghostEntityIds = Object.keys(permissions.entities).filter(
-    (eid) => eid.startsWith(`${domainKey}.`) && !allEntityIds.has(eid),
-  );
+  const ghostEntityIds = ghostEntitiesForDomain(domainKey, permissions, allEntityIds);
 
-  const hasVisible = filterText
-    ? (domainKey.toLowerCase().includes(filterText.toLowerCase()) ||
-       Object.values(domainData.entity_details).some((d) => {
-         const q = filterText.toLowerCase();
-         return d.entity_id.toLowerCase().includes(q) || (d.friendly_name?.toLowerCase().includes(q) ?? false);
-       }))
-    : true;
+  const hasVisible = domainMatchesSearch(
+    filterText, domainKey, domainData, permissions, allEntityIds,
+  );
 
   if (filterText && !hasVisible) return null;
 
@@ -724,6 +881,15 @@ export function EntityTree({ tokenId, permissions, onPermissionsChange, onEntity
     return ids;
   }, [tree]);
 
+  const allDeviceIds = React.useMemo(() => {
+    if (!tree) return new Set<string>();
+    const ids = new Set<string>();
+    for (const domain of Object.values(tree)) {
+      for (const deviceId of Object.keys(domain.devices)) ids.add(deviceId);
+    }
+    return ids;
+  }, [tree]);
+
   if (loading) return <div className="loading-wrap"><div className="spinner" /></div>;
   if (error) return <div className="banner banner-error">{error}</div>;
   if (!tree) return null;
@@ -731,6 +897,17 @@ export function EntityTree({ tokenId, permissions, onPermissionsChange, onEntity
   const domainKeys = Object.keys(tree)
     .filter((d) => !domainAllowlist || domainAllowlist.includes(d))
     .sort();
+  const unmatchedDeviceIds = domainAllowlist
+    ? []
+    : Object.keys(permissions.devices)
+      .filter((deviceId) => !allDeviceIds.has(deviceId))
+      .sort();
+  const visibleUnmatchedDeviceIds = unmatchedDeviceIds.filter((deviceId) =>
+    matchesTreeSearch(filter, deviceId, t("perms.unmatchedDeviceName")));
+  const hasDomainMatch = domainKeys.some((domainKey) => domainMatchesSearch(
+    filter, domainKey, tree[domainKey], permissions, allEntityIds,
+  ));
+  const hasFilterResults = !filter.trim() || hasDomainMatch || visibleUnmatchedDeviceIds.length > 0;
 
   return (
     <div>
@@ -770,6 +947,17 @@ export function EntityTree({ tokenId, permissions, onPermissionsChange, onEntity
             onGlobalHintsChange={setGlobalHints}
           />
         ))}
+        {visibleUnmatchedDeviceIds.length > 0 && (
+          <GhostDevicePermissions
+            deviceIds={visibleUnmatchedDeviceIds}
+            permissions={permissions}
+            tokenId={tokenId}
+            onPermChange={onPermissionsChange}
+          />
+        )}
+        {!hasFilterResults && (
+          <p className="tree-empty" role="status">{t("perms.filterEmpty")}</p>
+        )}
       </div>
     </div>
   );
