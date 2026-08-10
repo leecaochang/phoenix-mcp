@@ -85,6 +85,7 @@ const VERSION_RESOURCE_TYPES = {
   dashboard: true,
   blueprint: true,
   entity: true,
+  device: true,
   yaml_config: true,
   esphome_yaml: true,
   energy: true,

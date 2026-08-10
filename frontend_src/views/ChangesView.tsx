@@ -50,6 +50,7 @@ export const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
   dashboard: "changes.typeDashboard",
   blueprint: "changes.typeBlueprint",
   entity: "changes.typeEntity",
+  device: "changes.typeDevice",
   yaml_config: "changes.typeYamlConfig",
   esphome_yaml: "changes.typeEsphomeYaml",
   energy: "changes.typeEnergy",

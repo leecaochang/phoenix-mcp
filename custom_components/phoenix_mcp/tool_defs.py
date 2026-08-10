@@ -844,6 +844,31 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "set_device",
+        "description": (
+            "Update one device's user-controlled registry metadata: display-name override, area, enabled state, "
+            "and labels. Requires cap_registry_write plus an explicit WRITE grant on the device; attached entity "
+            "or domain grants cannot authorize a whole-device mutation. Use null to clear name or area_id. Only "
+            "user-disabled devices may be toggled, and a disabled owning config entry prevents enable. Name, area, "
+            "and enabled-state changes require every attached registry entity to remain writable; label-only edits "
+            "do not. Device rename and enable/disable are evaluated against every attached entity's fully inherited "
+            "MESA profile and may be blocked or merged into the normal approval. Captured in version history."
+        ),
+        "cap": "cap_registry_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "The device registry id."},
+                "name": {"type": ["string", "null"], "description": "New display-name override, or null to clear it."},
+                "area_id": {"type": ["string", "null"], "description": "Assign an existing area_id, or null to clear it."},
+                "enabled": {"type": "boolean", "description": "Enable or user-disable the device. Integration/config-entry-disabled devices cannot be changed here."},
+                "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Existing label IDs to add."},
+                "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to remove; absent labels are ignored."},
+            },
+            "required": ["device_id"],
+        },
+    },
+    {
         "name": "delete_entity",
         "description": (
             "Delete an entity's registry entry, the common use is removing a stale or duplicate entry left "
@@ -2838,6 +2863,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "get_config_entry_options": _annot(True, False, True),
     "set_config_entry_options": _annot(False, True, True),
     "set_entity": _annot(False, True, True),
+    "set_device": _annot(False, True, True),
     "delete_entity": _annot(False, True, True),
     "write_file": _annot(False, True, True),
     "set_yaml_config": _annot(False, True, True),

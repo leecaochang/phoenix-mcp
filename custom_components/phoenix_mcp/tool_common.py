@@ -488,15 +488,17 @@ def _version_change_summary(
         if a is not None:
             return _version_summary("size", size=_fmt_bytes(a))
         return None
-    if resource_type == "entity":
+    if resource_type in ("entity", "device"):
         if after is None:
-            return _version_summary("entity.removed")
+            return _version_summary(f"{resource_type}.removed")
         if before is None:
             return None
         changed = sorted(
             k for k in set(before) | set(after) if before.get(k) != after.get(k)
         )
-        return _version_summary("entity.changed", fields=", ".join(changed)) if changed else None
+        return _version_summary(
+            f"{resource_type}.changed", fields=", ".join(changed)
+        ) if changed else None
     return None
 
 

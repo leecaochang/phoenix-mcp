@@ -599,6 +599,7 @@ export type VersionResourceType =
   | "dashboard"
   | "blueprint"
   | "entity"
+  | "device"
   | "yaml_config"
   | "esphome_yaml"
   | "energy"

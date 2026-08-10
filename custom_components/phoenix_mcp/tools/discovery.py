@@ -1491,12 +1491,19 @@ async def _registry_relationship_preview(
     credentials remain inside the event-loop snapshot and only matching entity
     IDs reach the preview, exactly like get_relationships.
     """
+    return await _registry_relationships_preview(hass, [entity_id])
+
+
+async def _registry_relationships_preview(
+    hass: HomeAssistant, entity_ids: list[str]
+) -> dict[str, Any]:
+    """Full known-consumer preview for one or more registry entities."""
     dashboards, skipped = await _relationship_dashboards(hass)
     entries = _relationship_config_entries(hass)
     consumers, _refs, unreadable = await hass.async_add_executor_job(
         _scan_relationships,
         hass,
-        {entity_id},
+        set(entity_ids),
         dashboards,
         entries,
     )

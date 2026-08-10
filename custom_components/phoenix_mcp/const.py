@@ -83,7 +83,7 @@ MAX_VERSIONS_PER_RESOURCE = 20
 # reached the fixture and the TS union but not here, and every energy version
 # silently failed to record).
 VERSIONED_RESOURCE_TYPES = frozenset(
-    {"automation", "script", "scene", "helper", "dashboard", "yaml_config", "file", "entity",
+    {"automation", "script", "scene", "helper", "dashboard", "yaml_config", "file", "entity", "device",
      "blueprint", "esphome_yaml", "energy", "config_entry"}
 )
 
@@ -1145,6 +1145,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     # Entity registry.
     "set_entity": "Update registry metadata ({fields}) for {entity_id}",
     "delete_entity": "Delete the registry entry for {entity_id}",
+    # Device registry.
+    "set_device": "Update device registry metadata ({fields}) for {device_id}",
     # Zigbee. The bare forms are the error paths, where no device resolved.
     "zigbee_permit": "Open the Zigbee network for joining",
     "zigbee_permit.close": "Close the Zigbee join window",
@@ -1258,6 +1260,8 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "size.was": "{size} (was {before})",
     "entity.removed": "registry entry removed",
     "entity.changed": "changed: {fields}",
+    "device.removed": "device registry entry removed",
+    "device.changed": "changed: {fields}",
     "card.added": "added {subject} ({where})",
     "card.edited": "edited {subject} ({where})",
     "card.deleted": "deleted {subject} ({where})",

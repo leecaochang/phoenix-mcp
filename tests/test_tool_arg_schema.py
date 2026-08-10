@@ -59,13 +59,13 @@ UNPUBLISHED_ARGS = {
         "sending it outside a restore is ignored."
     ),
     ("mcp_view.py", "labels"): (
-        "INTERNAL absolute form used only while restoring an entity version. "
-        "Public set_entity edits labels with add_labels/remove_labels so a stale "
-        "caller cannot replace labels it did not read."
+        "INTERNAL absolute form used only while restoring an entity or device "
+        "version. Public set_entity/set_device edit labels with add/remove so a "
+        "stale caller cannot replace labels it did not read."
     ),
     ("mcp_view.py", "disabled_by"): (
         "INTERNAL restore form preserving Home Assistant's exact disabler. Public "
-        "set_entity exposes only the user-controlled enabled boolean."
+        "set_entity and set_device expose only the user-controlled enabled boolean."
     ),
     ("mcp_view.py", "hidden_by"): (
         "INTERNAL restore form preserving Home Assistant's exact hider. Public "
@@ -128,6 +128,20 @@ def test_set_entity_publishes_reversible_registry_fields_and_null_clears():
         "string",
         "null",
     ]
+
+
+def test_set_device_publishes_only_reversible_user_metadata():
+    properties = _tool_defs()["set_device"]["inputSchema"]["properties"]
+    assert set(properties) == {
+        "device_id",
+        "name",
+        "area_id",
+        "enabled",
+        "add_labels",
+        "remove_labels",
+    }
+    for field in ("name", "area_id"):
+        assert properties[field]["type"] == ["string", "null"]
 
 
 def _modules() -> list[pathlib.Path]:

@@ -5,6 +5,7 @@
     "blueprint",
     "config_entry",
     "dashboard",
+    "device",
     "energy",
     "entity",
     "esphome_yaml",

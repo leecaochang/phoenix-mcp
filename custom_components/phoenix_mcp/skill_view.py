@@ -490,6 +490,28 @@ mode: single
   permissive. Do not retry a MESA refusal or create a second approval: an
   enforced `confirm` rule is already merged into the ordinary registry approval.
 
+### Device registry metadata
+
+- `set_device` changes the display-name override, area, user-controlled enabled
+  state, or labels. It always needs an explicit device WRITE grant; access
+  inherited from a child entity or domain is enough to read the device but never
+  to mutate the whole device.
+- Clear the name or area override with null. Add and remove labels rather than
+  replacing the label set. A label-only edit does not change child authorization.
+- Name, area, and enabled-state edits require every attached registry entity to
+  remain writable. A RED or YELLOW entity restriction blocks the whole update;
+  do not retry by omitting that child.
+- Only user-disabled devices can be toggled, and a device cannot be enabled while
+  any owning config entry is disabled. Enabling may require an integration reload
+  or Home Assistant restart before its entities return.
+- Device rename and enable/disable are evaluated for every attached entity under
+  `device_registry.rename|enable|disable`, so entity, device, area, integration,
+  and domain MESA layers all contribute. One denial blocks the whole device and
+  one enforced confirmation joins the ordinary registry approval. Area and label
+  edits have no MESA gate in this stage. With MESA active, an entity-less device
+  cannot be renamed or enabled/disabled because mesa-core has no complete entity
+  context from which to resolve it.
+
 ### Raw YAML configuration
 
 - These tools reach `configuration.yaml` and any YAML file it loads through an

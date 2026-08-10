@@ -742,13 +742,15 @@ def evaluate_registry_action(
     entity_id: str,
     *,
     action: str,
+    registry_domain: str = "entity_registry",
     service_data: dict[str, Any] | None = None,
     session_id: str = "entity_registry",
 ) -> RegistryMesaDecision:
     """Evaluate rename/delete through the normal inheritance resolver and enforcer.
 
-    The synthetic service names are ``entity_registry.rename`` and
-    ``entity_registry.delete``. The enforcer still resolves the entity's exact
+    The synthetic service name defaults to ``entity_registry.<action>`` and may
+    be switched to another registry domain such as ``device_registry``. The
+    enforcer still resolves the entity's exact
     entity/device/area/integration/domain layers, so a permissive entity profile
     cannot bypass a restrictive ancestor. The returned fingerprint covers the
     whole resolved explanation, not only the final control-mode string; an
@@ -784,7 +786,7 @@ def evaluate_registry_action(
     boundaries = explanation.effective_profile.operational_boundaries
     control_mode = getattr(boundaries.control_mode, "value", boundaries.control_mode)
     effective_rule = {
-        "action": f"entity_registry.{action}",
+        "action": f"{registry_domain}.{action}",
         "control_mode": control_mode,
         "control_reason": boundaries.control_reason,
         "enforcement_mode": (
@@ -801,7 +803,7 @@ def evaluate_registry_action(
         settings.mesa_mode,
         token,
         [entity_id],
-        domain="entity_registry",
+        domain=registry_domain,
         service=action,
         service_data=dict(service_data or {}),
         session_id=session_id,
@@ -811,7 +813,7 @@ def evaluate_registry_action(
         return RegistryMesaDecision(
             decision="confirm",
             rule="control_mode:confirm",
-            reason=f"Entity registry {action} requires confirmation: {reason}",
+            reason=f"{registry_domain} {action} requires confirmation: {reason}",
             warnings=list(verdict.warnings),
             effective_rule=effective_rule,
             profile_fingerprint=fingerprint,
@@ -829,7 +831,7 @@ def evaluate_registry_action(
     return RegistryMesaDecision(
         decision="allow",
         rule=f"control_mode:{control_mode}",
-        reason=f"Entity registry {action} is permitted: {reason}",
+        reason=f"{registry_domain} {action} is permitted: {reason}",
         warnings=list(verdict.warnings),
         effective_rule=effective_rule,
         profile_fingerprint=fingerprint,

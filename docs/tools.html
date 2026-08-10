@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 116 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 117 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 116 of its own, 139 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 117 of its own, 140 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 139 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 140 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -351,6 +351,14 @@
             <p class="tool-desc">Pass <code>null</code> for <code>name</code>, <code>icon</code>, <code>area_id</code>, or <code>device_class</code> to clear that user override. Labels use add/remove operations. <code>categories</code> is a patch keyed by category scope: provide an existing category ID to assign it or <code>null</code> to remove that scope.</p>
             <p class="tool-desc"><strong>Aliases are the alternative spoken names Assist matches an entity by</strong>, and they are the usual fix when a voice command does not resolve: the light is called "Kitchen Light" and you say "lounge lamp". They are edited by <em>adding and removing names</em> rather than by sending a replacement list, and that is a safety property rather than a style choice. Home Assistant builds voice matching from this list alone, and it holds a marker meaning "my own current name" alongside your aliases, so a replacement list that omitted the marker would stop the entity answering to its own name after a rename, and an empty one would remove it from voice control entirely. Adding and removing can reach neither state. Names you list are matched without regard to case, adding one that is already there or removing one that is not are both accepted and reported as having changed nothing, and the result tells you which names the entity now answers to. <code>describe_entity</code> reports the same list, so you can see what it currently matches before changing it.</p>
             <dl><dt>params</dt><dd><code>set_entity</code>: <code>entity_id</code> + at least one of <code>name</code> / <code>icon</code> / <code>area_id</code> / <code>device_class</code> / <code>enabled</code> / <code>hidden</code> / <code>add_aliases</code> / <code>remove_aliases</code> / <code>add_labels</code> / <code>remove_labels</code> / <code>categories</code> / <code>new_entity_id</code>; <code>delete_entity</code>: <code>entity_id</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system" data-search="set_device device registry rename enable disable area labels mesa version restore">
+            <div class="tool-head"><span class="tool-name">set_device</span><span class="badge badge-cap">Registry write</span></div>
+            <p class="tool-desc">Edit a device's reversible user metadata: display-name override, area, enabled state, and labels. This requires <code>cap_registry_write</code> plus an explicit device WRITE grant; child-entity or domain inheritance cannot authorize a whole-device write. Pass <code>null</code> to clear name or area. Only user-disabled devices can be toggled, and an owner-disabled config entry prevents enablement.</p>
+            <p class="tool-desc">Name, area, and enabled-state changes require every attached registry entity to remain writable; a more-specific entity RED/YELLOW restriction blocks the whole operation. Label-only edits do not change child authorization. Disabling previews every affected entity and its known consumers, while enabling reports whether an integration reload or restart may be needed. Changes are versioned and restorable.</p>
+            <p class="tool-desc">Name changes and enable/disable evaluate <code>device_registry.rename</code>, <code>device_registry.enable</code>, or <code>device_registry.disable</code> across every attached entity's fully inherited MESA profile. Any denial blocks the whole device; enforced confirmation merges into the ordinary registry approval, whose fingerprint pins both entity membership and every resolved profile. Area and labels have no MESA gate. Entity-less devices fail closed for those MESA actions while MESA is active.</p>
+            <dl><dt>params</dt><dd><code>device_id</code> (required) + at least one of <code>name</code> / <code>area_id</code> / <code>enabled</code> / <code>add_labels</code> / <code>remove_labels</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="system" data-search="permit_zigbee_join reconfigure_zigbee_device remove_zigbee_device zigbee radio pair join z2m zha zigbee2mqtt">

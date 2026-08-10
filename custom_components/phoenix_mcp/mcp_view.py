@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import dataclasses
+import hashlib
 import json
 import logging
 import time
@@ -90,7 +91,7 @@ from .tools.energy import (
     _tool_get_solar_forecast,
     async_restore_energy_prefs,
 )
-from .tools.discovery import _registry_relationship_preview, _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_entities, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_search_entities, _tool_validate_config, _tool_whatif
+from .tools.discovery import _registry_relationship_preview, _registry_relationships_preview, _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_entities, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_search_entities, _tool_validate_config, _tool_whatif
 from .tools.native import (
     _UNTRUSTED_DATA_BOUNDARY,
     _build_live_context,
@@ -166,7 +167,7 @@ from .tool_defs import (
 )
 from .audit import Outcome
 from .tool_common import _CAP_FORBIDDEN_MESSAGE, _resolve_area_id, _ProgressBus, _approved_exec_ctx, _approval_resource, _gate, _mesa_advisory_ctx, _mesa_confirm_annotation, _operator_accepted_result, _pending_or_inline, _progress_ctx, _record_version, _restore_ctx, _set_progress_status, _tool_error, _tool_success
-from .policy_engine import (EntityCreationNotPermitted, Permission, call_needs_physical_gate, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
+from .policy_engine import (EntityCreationNotPermitted, Permission, call_needs_physical_gate, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
 from .rate_limiter import RateLimitResult
 from .token_store import TokenRecord
 from . import yaml_includes
@@ -1788,6 +1789,742 @@ def _registry_write_precheck(
     return None
 
 
+_SET_DEVICE_UPDATE_ARGUMENTS = frozenset(
+    {"name", "area_id", "enabled", "add_labels", "remove_labels"}
+)
+_SET_DEVICE_RESTORE_ARGUMENTS = frozenset({"labels", "disabled_by"})
+_DEVICE_MESA_FINGERPRINT = "_device_mesa_fingerprint"
+
+
+@dataclasses.dataclass
+class _DeviceMesaDecision:
+    """Aggregate MESA verdict for every entity and action on one device."""
+
+    decision: str
+    actions: list[str]
+    entities: list[dict[str, Any]]
+    warnings: list[str]
+    profile_fingerprint: str
+    blocked: list[tuple[str, str, str]]
+
+
+def _device_meta_snapshot(device: Any) -> dict[str, Any]:
+    """Restorable user metadata for one device registry entry."""
+    return {
+        "device_id": device.id,
+        "name": device.name_by_user,
+        "area_id": device.area_id,
+        "disabled_by": getattr(device.disabled_by, "value", device.disabled_by),
+        "labels": sorted(device.labels),
+    }
+
+
+def _device_public_meta(device: Any) -> dict[str, Any]:
+    """Safe update response extending the restorable device snapshot."""
+    return {
+        **_device_meta_snapshot(device),
+        "name": device.name_by_user or device.name,
+        "original_name": device.name,
+        "name_by_user": device.name_by_user,
+    }
+
+
+def _device_write_perm_error(
+    permission: Permission,
+    device_id: str,
+    token: TokenRecord,
+    hass: HomeAssistant,
+) -> tuple[dict, str, str] | None:
+    """Require explicit whole-device WRITE without hiding an already-visible row."""
+    if permission == Permission.WRITE:
+        return None
+    if permission == Permission.NOT_FOUND:
+        return _tool_error("Device not found."), "not_found", device_id
+    readable = resolve_device_registry_access(device_id, token, hass) in (
+        Permission.READ,
+        Permission.WRITE,
+    )
+    if readable:
+        return (
+            _tool_error(
+                "Whole-device registry edits require an explicit WRITE grant on "
+                "this device; attached entities and domain grants authorize reads only."
+            ),
+            "denied",
+            device_id,
+        )
+    return _tool_error("Device not found."), "denied", device_id
+
+
+def _set_device_value_error(
+    args: dict,
+    hass: HomeAssistant,
+    device: Any,
+    *,
+    restoring: bool,
+) -> str | None:
+    """Validate set_device values and registry references without mutation."""
+    if "name" in args and args["name"] is not None and not isinstance(
+        args["name"], str
+    ):
+        return "name must be a string or null."
+    if "area_id" in args:
+        area_id = args["area_id"]
+        if area_id is not None and not isinstance(area_id, str):
+            return "area_id must be a string or null."
+        if area_id and ar.async_get(hass).async_get_area(area_id) is None:
+            return "Unknown area_id."
+    if "enabled" in args and not isinstance(args["enabled"], bool):
+        return "enabled must be true or false."
+
+    for field in ("add_labels", "remove_labels"):
+        if field not in args:
+            continue
+        parsed = _registry_id_edit(args[field], field)
+        if isinstance(parsed, str):
+            return parsed
+        if field == "add_labels":
+            missing = [
+                label_id
+                for label_id in parsed
+                if lr.async_get(hass).async_get_label(label_id) is None
+            ]
+            if missing:
+                return f"Unknown label id: {missing[0]}."
+    if restoring and "labels" in args:
+        labels = args["labels"]
+        if not isinstance(labels, list) or not all(
+            isinstance(label_id, str) for label_id in labels
+        ):
+            return "labels must be a list of label ids."
+        missing = [
+            label_id
+            for label_id in labels
+            if lr.async_get(hass).async_get_label(label_id) is None
+        ]
+        if missing:
+            return f"Unknown label id: {missing[0]}."
+    if restoring and "disabled_by" in args and args["disabled_by"] is not None:
+        try:
+            dr.DeviceEntryDisabler(args["disabled_by"])
+        except (TypeError, ValueError):
+            return "Invalid stored disabled_by value."
+
+    will_enable = args.get("enabled") is True or (
+        restoring and "disabled_by" in args and args["disabled_by"] is None
+    )
+    if will_enable:
+        disabled_owners = []
+        for entry_id in device_config_entry_ids(device):
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if entry is not None and entry.disabled_by is not None:
+                disabled_owners.append(entry_id)
+        if disabled_owners:
+            return (
+                "The device cannot be enabled while an owning config entry is "
+                f"disabled: {disabled_owners[0]}."
+            )
+    if not restoring and "enabled" in args and device.disabled_by not in (
+        None,
+        dr.DeviceEntryDisabler.USER,
+    ):
+        return f"This device is disabled by {device.disabled_by.value}, not by the user."
+    return None
+
+
+def _set_device_args_error(
+    args: dict,
+    hass: HomeAssistant,
+    device_id: str,
+    *,
+    allow_restore_fields: bool = False,
+) -> tuple[dict, str, str] | None:
+    """Validate supported device fields and reject no-op-shaped requests."""
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
+        return _tool_error("Device not found."), "not_found", device_id
+    supported = _SET_DEVICE_UPDATE_ARGUMENTS | (
+        _SET_DEVICE_RESTORE_ARGUMENTS if allow_restore_fields else set()
+    )
+    if not any(field in args for field in supported):
+        return (
+            _tool_error("Provide at least one supported device registry update."),
+            "invalid_request",
+            device_id,
+        )
+    value_error = _set_device_value_error(
+        args, hass, device, restoring=allow_restore_fields
+    )
+    if value_error is not None:
+        return _tool_error(value_error), "invalid_request", device_id
+    return None
+
+
+def _device_child_write_error(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    device: Any,
+    *,
+    restoring: bool,
+) -> tuple[dict, str, str] | None:
+    """Block authorization-affecting edits when any child is not writable."""
+    affects_children = any(field in args for field in ("name", "area_id", "enabled"))
+    if restoring:
+        affects_children = affects_children or "disabled_by" in args
+    if not affects_children:
+        return None
+    blocked = [
+        entity_id
+        for entity_id in device_registry_entity_ids(hass, device.id)
+        if resolve_registry_access(
+            entity_id, token, hass, force_registry_only=True
+        )
+        != Permission.WRITE
+    ]
+    if not blocked:
+        return None
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": (
+                        "The device update would affect registry entities that are "
+                        "not writable by this token."
+                    ),
+                    "device_id": device.id,
+                    "blocked_entities": blocked,
+                }
+            )
+        ),
+        "denied",
+        device.id,
+    )
+
+
+def _device_mesa_actions(args: dict, *, restoring: bool) -> list[str]:
+    actions: list[str] = []
+    if "name" in args:
+        actions.append("rename")
+    if "enabled" in args:
+        actions.append("enable" if args["enabled"] else "disable")
+    elif restoring and "disabled_by" in args:
+        actions.append("enable" if args["disabled_by"] is None else "disable")
+    return actions
+
+
+def _device_mesa_service_data(args: dict) -> dict[str, Any]:
+    """Metadata parameters for MESA after Phoenix expands the exact targets.
+
+    device_id and area_id are Home Assistant target selectors. Passing either
+    while asking mesa-core to evaluate one already-resolved entity is correctly
+    rejected as contradictory: the selector could expand to other entities.
+    Area/label changes are not MESA actions in this stage, so only the fields
+    that describe rename or enable/disable belong in the synthetic call.
+    """
+    return {
+        field: args[field]
+        for field in ("name", "enabled", "disabled_by")
+        if field in args
+    }
+
+
+def _device_mesa_decision(
+    data: PhoenixData,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    device: Any,
+    *,
+    actions: list[str],
+    service_data: dict[str, Any],
+    session_id: str,
+) -> _DeviceMesaDecision | tuple[dict, str, str]:
+    """Resolve all device MESA actions across the exact attached membership."""
+    entity_ids = device_registry_entity_ids(hass, device.id)
+    mesa_active = (
+        data.mesa is not None
+        and data.store.get_settings().mesa_mode != MESA_MODE_OFF
+    )
+    if mesa_active and not entity_ids:
+        reason = (
+            "MESA is active and this device has no registry entity from which "
+            "mesa-core can resolve its inherited device context."
+        )
+        decision_doc = {
+            "decision": "deny",
+            "actions": actions,
+            "entities": [],
+            "warnings": [],
+            "blocked": [{
+                "entity_id": None,
+                "rule": "mesa:unresolved_device_context",
+                "reason": reason,
+            }],
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(decision_doc, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return _DeviceMesaDecision(
+            decision="deny",
+            actions=actions,
+            entities=[],
+            warnings=[],
+            profile_fingerprint=fingerprint,
+            blocked=[(
+                device.id,
+                "mesa:unresolved_device_context",
+                reason,
+            )],
+        )
+
+    resolved_entities: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    blocked: list[tuple[str, str, str]] = []
+    has_confirm = False
+    try:
+        for action in actions:
+            for entity_id in entity_ids:
+                decision = evaluate_registry_action(
+                    data,
+                    token,
+                    entity_id,
+                    action=action,
+                    registry_domain="device_registry",
+                    service_data=service_data,
+                    session_id=session_id,
+                )
+                resolved_entities.append({
+                    "entity_id": entity_id,
+                    "action": action,
+                    "decision": decision.decision,
+                    "rule": decision.rule,
+                    "reason": decision.reason,
+                    "warnings": decision.warnings,
+                    "effective_rule": decision.effective_rule,
+                    "profile_fingerprint": decision.profile_fingerprint,
+                })
+                for warning in decision.warnings:
+                    if warning not in warnings:
+                        warnings.append(warning)
+                if decision.decision == "deny":
+                    blocked.append((entity_id, decision.rule, decision.reason))
+                elif decision.decision == "confirm":
+                    has_confirm = True
+    except Exception:  # noqa: BLE001 - MESA resolution must fail closed
+        _LOGGER.exception("MESA device registry evaluation failed for %s", device.id)
+        return (
+            _tool_error("MESA safety evaluation failed; no device change was made."),
+            "denied",
+            device.id,
+        )
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "device_id": device.id,
+                "actions": actions,
+                "entities": resolved_entities,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+    return _DeviceMesaDecision(
+        decision="deny" if blocked else "confirm" if has_confirm else "allow",
+        actions=actions,
+        entities=resolved_entities,
+        warnings=warnings,
+        profile_fingerprint=fingerprint,
+        blocked=blocked,
+    )
+
+
+def _device_mesa_preview(decision: _DeviceMesaDecision) -> dict[str, Any]:
+    return {
+        "decision": decision.decision,
+        "actions": decision.actions,
+        "entities": [
+            {key: value for key, value in item.items() if key != "profile_fingerprint"}
+            for item in decision.entities
+        ],
+        "warnings": decision.warnings,
+        "profile_fingerprint": decision.profile_fingerprint[:16],
+    }
+
+
+def _device_mesa_error(
+    device: Any, decision: _DeviceMesaDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": "MESA blocked the device registry update.",
+                    "device_id": device.id,
+                    "mesa": _device_mesa_preview(decision),
+                    "blocked": [
+                        {"entity_id": eid, "rule": rule, "reason": reason}
+                        for eid, rule, reason in decision.blocked
+                    ],
+                },
+                default=str,
+            )
+        ),
+        "denied",
+        device.id,
+    )
+
+
+def _device_mesa_context_changed_error(
+    device: Any, decision: _DeviceMesaDecision
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(
+            json.dumps(
+                {
+                    "error": (
+                        "The device's entity membership or effective MESA profile "
+                        "changed after approval. Review the update again."
+                    ),
+                    "device_id": device.id,
+                    "mesa": _device_mesa_preview(decision),
+                },
+                default=str,
+            )
+        ),
+        "denied",
+        device.id,
+    )
+
+
+def _set_device_precheck(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+) -> tuple[dict, str, str] | None:
+    device_id = str(args.get("device_id") or "").strip()
+    if not device_id:
+        return _tool_error("device_id is required."), "invalid_request", "set_device"
+    perm_error = _device_write_perm_error(
+        resolve_device_registry_write(device_id, token, hass),
+        device_id,
+        token,
+        hass,
+    )
+    if perm_error is not None:
+        return perm_error
+    args_error = _set_device_args_error(args, hass, device_id)
+    if args_error is not None:
+        return args_error
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
+        return _tool_error("Device not found."), "not_found", device_id
+    return _device_child_write_error(
+        args, token, hass, device, restoring=False
+    )
+
+
+async def _build_diff_set_device(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: _DeviceMesaDecision | None = None,
+) -> dict[str, Any]:
+    device_id = str(args.get("device_id") or "")
+    device = dr.async_get(hass).async_get(device_id)
+    before = _device_meta_snapshot(device) if device is not None else {}
+    fields: list[str] = []
+    preview: dict[str, Any] = {}
+    for field in ("name", "area_id"):
+        if field in args:
+            fields.append(field)
+            preview[field] = {"before": before.get(field), "after": args[field]}
+    if "enabled" in args:
+        fields.append("enabled")
+        preview["enabled"] = {
+            "before": before.get("disabled_by") is None,
+            "after": args["enabled"],
+        }
+    if device is not None and (
+        "add_labels" in args or "remove_labels" in args
+    ):
+        fields.append("labels")
+        add = _registry_id_edit(args.get("add_labels", []), "add_labels")
+        remove = _registry_id_edit(args.get("remove_labels", []), "remove_labels")
+        after_labels = None
+        if not isinstance(add, str) and not isinstance(remove, str):
+            after_labels = sorted(
+                _apply_registry_id_edits(set(device.labels), add, remove)[0]
+            )
+        preview["labels"] = {
+            "before": sorted(device.labels),
+            "after": after_labels,
+        }
+    if device is not None and args.get("enabled") is False:
+        affected = device_registry_entity_ids(hass, device.id)
+        preview["affected_entities"] = affected
+        preview["relationships"] = await _registry_relationships_preview(
+            hass, affected
+        )
+        preview["warning"] = (
+            "Home Assistant will stop publishing this device's entities while "
+            "the device is disabled. Consumers are not rewritten."
+        )
+    if device is not None and args.get("enabled") is True:
+        preview["activation"] = {
+            "reload_or_restart_may_be_needed": True,
+            "note": (
+                "The registry entry will be enabled. Its owning integration may "
+                "need to reload, or Home Assistant may need to restart, before "
+                "live entities return."
+            ),
+        }
+    if mesa_decision is not None:
+        preview["mesa"] = _device_mesa_preview(mesa_decision)
+    label = (
+        device.name_by_user or device.name or device_id
+        if device is not None
+        else device_id
+    )
+    return {
+        "kind": "system_action",
+        **_summary(
+            "set_device",
+            fields=", ".join(fields) or "nothing",
+            device_id=device_id,
+        ),
+        "target": {"type": "device", "id": device_id, "label": label},
+        "preview": preview,
+    }
+
+
+async def _tool_set_device(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: edit user-controlled device registry metadata."""
+    if effective_cap(token, "cap_registry_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_device"
+    pre = _set_device_precheck(args, token, hass)
+    if pre is not None:
+        return pre
+    device_id = str(args.get("device_id") or "").strip()
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
+        return _tool_error("Device not found."), "not_found", device_id
+    actions = _device_mesa_actions(args, restoring=False)
+    mesa_decision: _DeviceMesaDecision | None = None
+    approval_args = dict(args)
+    if actions:
+        resolved = _device_mesa_decision(
+            data,
+            token,
+            hass,
+            device,
+            actions=actions,
+            service_data=_device_mesa_service_data(args),
+            session_id=request_id or "set_device",
+        )
+        if isinstance(resolved, tuple):
+            return resolved
+        mesa_decision = resolved
+        if mesa_decision.decision == "deny":
+            if mesa_decision.blocked:
+                fire_mesa_blocked_event(hass, token, mesa_decision.blocked)
+            return _device_mesa_error(device, mesa_decision)
+        # The normal capability gate may create the approval even when MESA's
+        # own verdict is allow. Pin the complete membership/profile context in
+        # either case so a device cannot gain a child or change profile in the
+        # approval window and still execute under the old preview.
+        approval_args[_DEVICE_MESA_FINGERPRINT] = (
+            mesa_decision.profile_fingerprint
+        )
+    diff_builder = lambda: _build_diff_set_device(  # noqa: E731
+        args, token, hass, mesa_decision
+    )
+    blocked = await _gate(
+        "cap_registry_write",
+        token,
+        hass,
+        data,
+        tool_name="set_device",
+        args=approval_args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=diff_builder,
+    )
+    if blocked is not None:
+        return blocked
+    if mesa_decision is not None and mesa_decision.decision == "confirm":
+        return await _create_registry_mesa_approval(
+            hass,
+            data,
+            token,
+            tool_name="set_device",
+            args=approval_args,
+            diff=await diff_builder(),
+            request_id=request_id,
+            client_ip=client_ip,
+        )
+    return await _execute_set_device(args, token, hass, data)
+
+
+async def _execute_set_device(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    device_id = str(args.get("device_id") or "").strip()
+    if not device_id:
+        return _tool_error("device_id is required."), "invalid_request", "set_device"
+    perm_error = _device_write_perm_error(
+        resolve_device_registry_write(device_id, token, hass),
+        device_id,
+        token,
+        hass,
+    )
+    if perm_error is not None:
+        return perm_error
+    registry = dr.async_get(hass)
+    device = registry.async_get(device_id)
+    if device is None:
+        return _tool_error("Device not found."), "not_found", device_id
+    restoring = _restore_ctx.get() is not None
+    args_error = _set_device_args_error(
+        args, hass, device_id, allow_restore_fields=restoring
+    )
+    if args_error is not None:
+        return args_error
+    child_error = _device_child_write_error(
+        args, token, hass, device, restoring=restoring
+    )
+    if child_error is not None:
+        return child_error
+
+    actions = _device_mesa_actions(args, restoring=restoring)
+    mesa_decision: _DeviceMesaDecision | None = None
+    if actions:
+        resolved = _device_mesa_decision(
+            data,
+            token,
+            hass,
+            device,
+            actions=actions,
+            service_data=_device_mesa_service_data(args),
+            session_id="set_device_execute",
+        )
+        if isinstance(resolved, tuple):
+            return resolved
+        mesa_decision = resolved
+        saved_fingerprint = args.get(_DEVICE_MESA_FINGERPRINT)
+        if (
+            _approved_exec_ctx.get()
+            and isinstance(saved_fingerprint, str)
+            and saved_fingerprint != mesa_decision.profile_fingerprint
+        ):
+            return _device_mesa_context_changed_error(device, mesa_decision)
+        mesa_confirmed = (
+            _approved_exec_ctx.get()
+            and isinstance(saved_fingerprint, str)
+            and saved_fingerprint == mesa_decision.profile_fingerprint
+        )
+        if mesa_decision.decision == "deny" or (
+            mesa_decision.decision == "confirm" and not mesa_confirmed
+        ):
+            if mesa_decision.blocked:
+                fire_mesa_blocked_event(hass, token, mesa_decision.blocked)
+            return _device_mesa_error(device, mesa_decision)
+
+    updates: dict[str, Any] = {}
+    if "name" in args:
+        updates["name_by_user"] = args["name"] or None
+    if "area_id" in args:
+        updates["area_id"] = args["area_id"] or None
+    if "enabled" in args:
+        updates["disabled_by"] = (
+            None if args["enabled"] else dr.DeviceEntryDisabler.USER
+        )
+    label_add: list[str] = []
+    label_remove: list[str] = []
+    for field, sink in (("add_labels", label_add), ("remove_labels", label_remove)):
+        if field not in args:
+            continue
+        parsed = _registry_id_edit(args[field], field)
+        if isinstance(parsed, str):
+            return _tool_error(parsed), "invalid_request", device_id
+        sink.extend(parsed)
+    labels_added: list[str] = []
+    labels_removed: list[str] = []
+    if label_add or label_remove:
+        new_labels, labels_added, labels_removed = _apply_registry_id_edits(
+            set(device.labels), label_add, label_remove
+        )
+        updates["labels"] = new_labels
+    if restoring:
+        if "labels" in args:
+            updates["labels"] = set(args["labels"])
+        if "disabled_by" in args:
+            updates["disabled_by"] = (
+                dr.DeviceEntryDisabler(args["disabled_by"])
+                if args["disabled_by"] is not None
+                else None
+            )
+    if not updates:
+        return (
+            _tool_error("Provide at least one supported device registry update."),
+            "invalid_request",
+            device_id,
+        )
+
+    before = _device_meta_snapshot(device)
+    try:
+        updated = registry.async_update_device(device_id, **updates)
+    except Exception as exc:  # noqa: BLE001 - surface a clean tool error
+        _LOGGER.error("set_device failed for %s: %s", device_id, exc)
+        return _tool_error("Failed to update device."), "denied", device_id
+    if updated is None:
+        return _tool_error("Failed to read updated device."), "denied", device_id
+    after = _device_meta_snapshot(updated)
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=device_id,
+        action="edit",
+        before=before,
+        after=after,
+        alias=updated.name_by_user or updated.name or device_id,
+    )
+    body: dict[str, Any] = {
+        "device_id": device_id,
+        "updated": _device_public_meta(updated),
+    }
+    if label_add or label_remove:
+        body["labels_added"] = labels_added
+        body["labels_removed"] = labels_removed
+    if "enabled" in args and args["enabled"]:
+        entity_ids = device_registry_entity_ids(hass, device_id)
+        body["activation"] = {
+            "reload_or_restart_may_be_needed": any(
+                hass.states.get(entity_id) is None for entity_id in entity_ids
+            ),
+            "note": (
+                "The registry entry is enabled. Its owning integration may need "
+                "to reload, or Home Assistant may need to restart, before live "
+                "entities return."
+            ),
+        }
+    if mesa_decision is not None and mesa_decision.warnings:
+        body["mesa_advisory"] = mesa_decision.warnings
+        _mesa_advisory_ctx.set(True)
+    return _tool_success(json.dumps(body, default=str)), "allowed", device_id
+
+
 async def _build_diff_set_entity(
     args: dict,
     token: TokenRecord,
@@ -2902,6 +3639,19 @@ async def async_restore_version(
                 return _tool_error("This version has no entity metadata to restore."), "invalid_request", "async_restore_version"
             return await _execute_set_entity(
                 {"entity_id": current_entity_id, **fields}, token, hass, data
+            )
+        if resource_type == "device":
+            fields = {
+                key: target[key]
+                for key in ("name", "area_id", "labels", "disabled_by")
+                if key in target
+            }
+            if not fields:
+                return _tool_error(
+                    "This version has no device metadata to restore."
+                ), "invalid_request", "async_restore_version"
+            return await _execute_set_device(
+                {"device_id": resource_id, **fields}, token, hass, data
             )
         return _tool_error(f"Cannot restore resource type '{resource_type}'."), "invalid_request", "async_restore_version"
     finally:
@@ -4779,6 +5529,7 @@ _register_executor("delete_dashboard_card", _execute_delete_dashboard_card)
 _register_executor("patch_dashboard", _execute_patch_dashboard)
 _register_executor("edit_energy_config", _execute_edit_energy_config)
 _register_executor("set_entity", _execute_set_entity)
+_register_executor("set_device", _execute_set_device)
 _register_executor("delete_entity", _execute_delete_entity)
 _register_executor("permit_zigbee_join", _execute_permit_zigbee_join)
 _register_executor("reconfigure_zigbee_device", _execute_reconfigure_zigbee_device)
@@ -4851,6 +5602,7 @@ _register_tool("create_blueprint", _tool_create_blueprint)
 _register_tool("edit_blueprint", _tool_edit_blueprint)
 _register_tool("delete_blueprint", _tool_delete_blueprint)
 _register_tool("set_entity", _tool_set_entity)
+_register_tool("set_device", _tool_set_device)
 _register_tool("delete_entity", _tool_delete_entity)
 _register_tool("get_radio_network", _tool_get_radio_network)
 _register_tool("get_radio_device", _tool_get_radio_device)

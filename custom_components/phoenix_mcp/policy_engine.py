@@ -278,6 +278,36 @@ def resolve_device_registry_access(
     return Permission.NO_ACCESS
 
 
+def resolve_device_registry_write(
+    device_id: str, token: TokenRecord, hass: HomeAssistant
+) -> Permission:
+    """Resolve the explicit device permission required for whole-device writes.
+
+    Attached entities may make a device readable, but they never authorize a
+    registry mutation that affects the whole device. Scoped callers therefore
+    need GREEN on the exact device node; pass-through remains unrestricted.
+    """
+    if not isinstance(device_id, str):
+        return Permission.NOT_FOUND
+    device = dr.async_get(hass).async_get(device_id)
+    if device is None:
+        return Permission.NOT_FOUND
+    if _phoenix_owned_device(device, hass):
+        return Permission.NO_ACCESS
+    if token.pass_through:
+        return Permission.WRITE
+    node = token.permissions.devices.get(device_id)
+    if node is None:
+        return Permission.NO_ACCESS
+    if node.state == "GREEN":
+        return Permission.WRITE
+    if node.state == "YELLOW":
+        return Permission.READ
+    if node.state == "RED":
+        return Permission.DENY
+    return Permission.NO_ACCESS
+
+
 def is_sensitive_key(key: Any) -> bool:
     """Whether an attribute/response key name marks its value as sensitive.
 
