@@ -5,8 +5,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from datetime import timedelta
-from typing import Any, cast
+from typing import Any
 
 import voluptuous as vol
 from aiohttp import web
@@ -18,8 +17,6 @@ from homeassistant.exceptions import (
     ServiceNotFound,
     ServiceValidationError,
 )
-from homeassistant.util.dt import utcnow as _utcnow
-
 from .approvals import PendingApprovalCapacityError
 from .audit import Outcome, generate_request_id
 
@@ -32,7 +29,6 @@ from .const import (
     HIGH_RISK_DOMAINS,
     LOG_LEVEL_ERROR_MESSAGE,
     LOG_LEVELS,
-    MAX_HISTORY_RANGE_DAYS,
     MAX_LOG_ENTRIES,
     NO_TARGET_SERVICES,
     PROXY_TIMEOUT_SECONDS,
@@ -42,7 +38,6 @@ from .mesa import async_apply_mesa_to_call, fire_mesa_blocked_event
 from .helpers import (
     SystemLogUnavailableError,
     build_error_response as _error,
-    build_permitted_entity_ids as _build_permitted_entity_ids,
     build_safe_config,
     collect_log_entries as _collect_log_entries,
     effective_cap,
@@ -50,7 +45,6 @@ from .helpers import (
     async_get_authenticated_token as _async_get_authenticated_token,
     get_client_ip as _get_client_ip,
     log_request as _log,
-    parse_time_param as _parse_time_param,
     async_read_json_body as _read_json_body,
     render_template_for_token as _render_template_for_token,
     sanitize_service_data as _sanitize_service_data,
@@ -69,7 +63,6 @@ from .policy_engine import (
     resolve_esphome_user_service,
     resolve_service_targets,
     scrub_sensitive_attributes,
-    scrub_state_dict as _scrub_state_dict,
 )
 from .rate_limiter import RateLimitResult
 
@@ -97,9 +90,6 @@ def _json_response(
         text=json.dumps(body, default=str),
         headers=headers,
     )
-
-
-_MAX_HISTORY_STATES_PER_ENTITY = 10_000
 
 
 class PhoenixRootView(PhoenixView):
@@ -681,221 +671,6 @@ class PhoenixServiceView(PhoenixView):
         return _json_response(resp_body, 200, request_id, rl_result, extra_headers=extra)
 
 
-class PhoenixHistoryView(PhoenixView):
-    """GET /api/phoenix-mcp/history/period/{timestamp} - state history for permitted entities."""
-
-    url = "/api/phoenix-mcp/history/period/{timestamp}"
-    name = "api:phoenix-mcp:history"
-    requires_auth = False
-
-    async def get(self, request: web.Request, timestamp: str) -> web.Response:
-        hass = self.hass
-        data: PhoenixData = hass.data[DOMAIN]
-        request_id = generate_request_id()
-        resource = "/api/phoenix-mcp/history"
-        client_ip = _get_client_ip(request)
-
-        result = await _async_get_authenticated_token(hass, request, data, request_id, resource)
-        if isinstance(result, web.Response):
-            return result
-        token, rl_result = result
-
-        start_time_raw = request.query.get("start_time", timestamp)
-        try:
-            start_time = _parse_time_param(start_time_raw)
-        except ValueError:
-            return _error("invalid_request", "Invalid start_time.", 400, request_id)
-
-        end_time = None
-        end_time_raw = request.query.get("end_time")
-        if end_time_raw:
-            try:
-                end_time = _parse_time_param(end_time_raw)
-            except ValueError:
-                return _error("invalid_request", "Invalid end_time.", 400, request_id)
-
-        # Use build_permitted_entity_ids (not filter_entities_for_token) so that entities
-        # in the entity registry but not currently in hass.states (e.g. integration offline)
-        # are still included in permission checks and don't silently drop from history.
-        permitted_set: set[str] = _build_permitted_entity_ids(token, hass)
-
-        filter_entity_id = request.query.get("filter_entity_id")
-        if filter_entity_id:
-            requested_ids = [e.strip() for e in filter_entity_id.split(",")]
-            permitted_ids = [e for e in requested_ids if e in permitted_set]
-        else:
-            permitted_ids = list(permitted_set)
-
-        if not permitted_ids:
-            _log(data, token, request_id=request_id, method="GET", resource=resource,
-                 outcome="allowed", client_ip=client_ip)
-            return _json_response({}, 200, request_id, rl_result)
-
-        # Validate time ordering before touching the DB.
-        effective_end = end_time if end_time is not None else _utcnow()
-        if start_time > effective_end:
-            return _error("invalid_request", "start_time must not be after end_time.", 400, request_id)
-
-        # Clamp the query time range to prevent unbounded DB reads. The cap is applied
-        # to the DB query itself, not just the response, to bound recorder thread load.
-        max_start = effective_end - timedelta(days=MAX_HISTORY_RANGE_DAYS)
-        if start_time < max_start:
-            start_time = max_start
-
-        limit_int: int | None = None
-        limit_raw = request.query.get("limit")
-        if limit_raw:
-            try:
-                limit_int = int(limit_raw)
-                if limit_int <= 0:
-                    return _error("invalid_request", "limit must be a positive integer.", 400, request_id)
-            except ValueError:
-                return _error("invalid_request", "limit must be a positive integer.", 400, request_id)
-
-        try:
-            import functools
-
-            from homeassistant.components.recorder import get_instance
-            from homeassistant.components.recorder import history as rec_history
-
-            fn = functools.partial(
-                rec_history.get_significant_states,
-                hass,
-                start_time,
-                end_time,
-                permitted_ids,
-                None,   # filters
-                False,  # include_start_time_state
-                request.query.get("significant_changes_only", "1") != "0",
-                "minimal_response" in request.query,
-                "no_attributes" in request.query,
-            )
-            history_result = await get_instance(hass).async_add_executor_job(fn)
-        except Exception:
-            _LOGGER.warning("History call failed for request %s", request_id, exc_info=True)
-            return _error("gateway_timeout", "History call failed.", 504, request_id)
-
-        # Response shape: dict keyed by entity_id with {"states": [...], "truncated": bool}.
-        # This differs from native HA's list-of-lists format but is intentional: a
-        # per-entity truncated flag requires a dict structure, not a positional list.
-        # Consumers should use the entity_id key, not positional list indexing.
-        output: dict[str, Any] = {}
-        effective_limit = limit_int if limit_int is not None else _MAX_HISTORY_STATES_PER_ENTITY
-        for eid, states in history_result.items():
-            state_dicts = [
-                _scrub_state_dict(s.as_dict() if hasattr(s, "as_dict") else s)
-                for s in states
-            ]
-            if len(state_dicts) > effective_limit:
-                output[eid] = {"states": state_dicts[:effective_limit], "truncated": True}
-            else:
-                output[eid] = {"states": state_dicts, "truncated": False}
-
-        _log(data, token, request_id=request_id, method="GET", resource=resource,
-             outcome="allowed", client_ip=client_ip)
-        range_headers = {
-            "X-Phoenix-History-Start": start_time.isoformat(),
-            "X-Phoenix-History-End": effective_end.isoformat(),
-        }
-        return _json_response(output, 200, request_id, rl_result, extra_headers=range_headers)
-
-
-class PhoenixStatisticsView(PhoenixView):
-    """GET /api/phoenix-mcp/statistics - long-term statistics for permitted entities."""
-
-    url = "/api/phoenix-mcp/statistics"
-    name = "api:phoenix-mcp:statistics"
-    requires_auth = False
-
-    async def get(self, request: web.Request) -> web.Response:
-        hass = self.hass
-        data: PhoenixData = hass.data[DOMAIN]
-        request_id = generate_request_id()
-        resource = "/api/phoenix-mcp/statistics"
-        client_ip = _get_client_ip(request)
-
-        result = await _async_get_authenticated_token(hass, request, data, request_id, resource)
-        if isinstance(result, web.Response):
-            return result
-        token, rl_result = result
-
-        start_time_raw = request.query.get("start_time")
-        if not start_time_raw:
-            return _error("invalid_request", "start_time is required.", 400, request_id)
-        try:
-            start_time = _parse_time_param(start_time_raw)
-        except ValueError:
-            return _error("invalid_request", "Invalid start_time.", 400, request_id)
-
-        end_time = None
-        end_time_raw = request.query.get("end_time")
-        if end_time_raw:
-            try:
-                end_time = _parse_time_param(end_time_raw)
-            except ValueError:
-                return _error("invalid_request", "Invalid end_time.", 400, request_id)
-
-        effective_end = end_time or _utcnow()
-        max_start = effective_end - timedelta(days=MAX_HISTORY_RANGE_DAYS)
-        if start_time < max_start:
-            start_time = max_start
-
-        period = request.query.get("period", "hour")
-        if period not in ("5minute", "hour", "day", "week", "month"):
-            return _error("invalid_request", "Invalid period.", 400, request_id)
-
-        valid_types = {"mean", "min", "max", "sum", "state", "change"}
-        raw_types = request.query.get("statistic_types", "")
-        if raw_types:
-            type_set: set[str] | None = {t.strip() for t in raw_types.split(",") if t.strip() in valid_types}
-            if not type_set:
-                return _error("invalid_request", "No valid statistic_types provided.", 400, request_id)
-        else:
-            type_set = None
-
-        # Use build_permitted_entity_ids so entities temporarily out of hass.states
-        # (integration offline, entity disabled) are not silently dropped from stats.
-        permitted_set: set[str] = _build_permitted_entity_ids(token, hass)
-
-        entity_ids_raw = request.query.get("entity_ids", "")
-        if entity_ids_raw:
-            requested_ids = {e.strip() for e in entity_ids_raw.split(",") if e.strip()}
-            statistic_ids: set[str] = requested_ids & permitted_set
-        else:
-            statistic_ids = permitted_set
-
-        if not statistic_ids:
-            _log(data, token, request_id=request_id, method="GET", resource=resource,
-                 outcome="allowed", client_ip=client_ip)
-            return _json_response({}, 200, request_id, rl_result)
-
-        try:
-            import functools
-
-            from homeassistant.components.recorder import get_instance
-            from homeassistant.components.recorder import statistics as recorder_stats
-
-            fn = functools.partial(
-                recorder_stats.statistics_during_period,
-                hass,
-                start_time,
-                end_time,
-                statistic_ids,
-                cast(Any, period),  # validated against the allowlist above
-                None,
-                # types became non-optional in HA 2026.4; default to all types when not specified.
-                cast(Any, type_set or {"mean", "min", "max", "sum", "state", "change"}),
-            )
-            stat_result = await get_instance(hass).async_add_executor_job(fn)
-        except Exception:
-            _LOGGER.warning("Statistics call failed for request %s", request_id, exc_info=True)
-            return _error("gateway_timeout", "Statistics call failed.", 504, request_id)
-
-        _log(data, token, request_id=request_id, method="GET", resource=resource,
-             outcome="allowed", client_ip=client_ip)
-        return _json_response(stat_result, 200, request_id, rl_result)
-
-
 class PhoenixConfigView(PhoenixView):
     """GET /api/phoenix-mcp/config - HA configuration (requires cap_config_read)."""
 
@@ -1143,8 +918,6 @@ ALL_VIEWS: list[type[PhoenixView]] = [
     PhoenixStatesView,
     PhoenixStateView,
     PhoenixServiceView,
-    PhoenixHistoryView,
-    PhoenixStatisticsView,
     PhoenixConfigView,
     PhoenixTemplateView,
     PhoenixEventsView,

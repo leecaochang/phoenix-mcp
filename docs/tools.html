@@ -508,7 +508,7 @@
 
           <article class="tool" data-cap="read" data-search="get_history state history time">
             <div class="tool-head"><span class="tool-name">get_history</span><span class="badge badge-neutral">tree-scoped</span></div>
-            <p class="tool-desc">Historical state changes for an entity, read from the Recorder integration (enabled by default in Home Assistant; this tool fails when it is disabled). Accepts relative times (<code>24h</code>, <code>7d</code>, <code>2w</code>, <code>1m</code>). Ranges over 7 days are clamped. Returns <code>entity_id</code>, <code>mode</code>, <code>count</code>, and <code>history</code> (each entry's <code>state</code> and <code>when</code>); the REST proxy additionally returns the queried range in <code>X-Phoenix-History-Start/End</code> headers.</p>
+            <p class="tool-desc">Historical state changes for an entity, read from the Recorder integration (enabled by default in Home Assistant; this tool fails when it is disabled). Accepts relative times (<code>24h</code>, <code>7d</code>, <code>2w</code>, <code>1m</code>). Ranges over 7 days are clamped. Returns <code>entity_id</code>, <code>mode</code>, <code>count</code>, and <code>history</code> (each entry's <code>state</code> and <code>when</code>).</p>
             <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>mode</code> (<code>transitions</code>, the default, returns one entry per state change; <code>raw</code> returns every recorded sample)</dd></dl>
           </article>
 

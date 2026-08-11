@@ -1046,7 +1046,18 @@ async def test_service_view_service_not_found_generic_for_unmapped_domain(hass, 
 
 def test_all_views_exported():
     from custom_components.phoenix_mcp.proxy_view import ALL_VIEWS
-    assert len(ALL_VIEWS) == 11
+
+    assert {view.url for view in ALL_VIEWS} == {
+        "/api/phoenix-mcp/health",
+        "/api/phoenix-mcp/states",
+        "/api/phoenix-mcp/states/{entity_id}",
+        "/api/phoenix-mcp/services/{domain}/{service}",
+        "/api/phoenix-mcp/config",
+        "/api/phoenix-mcp/template",
+        "/api/phoenix-mcp/events",
+        "/api/phoenix-mcp/services",
+        "/api/phoenix-mcp/logs",
+    }
 
 
 @pytest.mark.asyncio

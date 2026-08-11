@@ -148,8 +148,6 @@ X-RateLimit-Reset: 1712345678</code></pre>
         <pre class="code" data-lang="http" data-label="Proxy API"><code>GET        /api/phoenix-mcp/states                             All accessible entity states
 GET        /api/phoenix-mcp/states/{entity_id}                 One entity state
 POST       /api/phoenix-mcp/services/{domain}/{service}        Call a service
-GET        /api/phoenix-mcp/history/period/{timestamp}         State history (max 7-day range)
-GET        /api/phoenix-mcp/statistics                         Long-term statistics
 POST       /api/phoenix-mcp/template                           Render a Jinja2 template
 GET        /api/phoenix-mcp/config                             HA configuration
 GET        /api/phoenix-mcp/events                             HA event-bus listeners

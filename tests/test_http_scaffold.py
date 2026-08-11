@@ -165,6 +165,35 @@ async def scoped_client(hass: HomeAssistant, hass_client_no_auth):
     return client, raw
 
 
+@pytest.fixture
+async def proxy_client(hass: HomeAssistant, hass_client_no_auth):
+    """Register the complete token proxy surface on HA's real router."""
+    assert await async_setup_component(hass, "http", {})
+    token, _raw = _make_token()
+    hass.data[DOMAIN] = _make_data(token)
+
+    from custom_components.phoenix_mcp.proxy_view import ALL_VIEWS
+
+    for view_cls in ALL_VIEWS:
+        view = view_cls()
+        view.hass = hass
+        hass.http.register_view(view)
+
+    return await hass_client_no_auth()
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/phoenix-mcp/history/period/2026-08-11T00:00:00+00:00",
+        "/api/phoenix-mcp/statistics",
+    ),
+)
+async def test_recorder_proxy_routes_are_not_registered(proxy_client, path):
+    resp = await proxy_client.get(path)
+    assert resp.status == 404
+
+
 async def test_scoped_list_excludes_out_of_scope_entity(hass: HomeAssistant, scoped_client):
     client, raw = scoped_client
     hass.states.async_set("sensor.allowed", "1", {})
