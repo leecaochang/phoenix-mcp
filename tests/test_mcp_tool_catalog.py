@@ -142,18 +142,83 @@ async def test_tools_list_exposes_annotations_and_still_strips_cap():
         assert set(tool["annotations"]) == _HINT_KEYS
 
 
-def test_catalog_payload_metrics_cover_both_provider_wires():
-    """The zero-growth benchmark stays deterministic and exposes both wires."""
+def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wires():
+    """Pin deterministic payload bytes for read, write, and announce-all tokens."""
     from tests.test_mcp_view import _make_data, _make_token
 
-    token, _ = _make_token()
-    token.announce_all_tools = True
-    metrics = agentcli.catalog_payload_metrics(token, _make_data(token))
-    assert metrics["tool_count"] == len(_static_defs()) == 141
+    read_only, _ = _make_token(cap_config_read="allow", cap_log_read="allow")
+    read_only.cap_search = "allow"
+    read_only.cap_registry_read = "allow"
+    read_only.cap_diagnostics = "allow"
+
+    write_capable, _ = _make_token(
+        cap_config_read="allow", cap_log_read="allow", cap_automation_write="allow"
+    )
+    write_capable.cap_search = "allow"
+    write_capable.cap_registry_read = "allow"
+    write_capable.cap_diagnostics = "allow"
+    write_capable.cap_helper_write = "allow"
+    write_capable.cap_lovelace_write = "confirm"
+    write_capable.cap_registry_write = "allow"
+    write_capable.permissions = PermissionTree(
+        domains={"light": PermissionNode(state="GREEN")}
+    )
+
+    announce_all, _ = _make_token()
+    announce_all.announce_all_tools = True
+    profiles = {
+        "read_only": read_only,
+        "write_capable": write_capable,
+        "announce_all": announce_all,
+    }
+    metrics = {
+        name: agentcli.catalog_payload_metrics(token, _make_data(token))
+        for name, token in profiles.items()
+    }
+    assert metrics == {
+        "read_only": {
+            "tool_count": 47,
+            "canonical_bytes": 37625,
+            "claude_bytes": 32786,
+            "openai_bytes": 34149,
+        },
+        "write_capable": {
+            "tool_count": 91,
+            "canonical_bytes": 83270,
+            "claude_bytes": 73886,
+            "openai_bytes": 76525,
+        },
+        "announce_all": {
+            "tool_count": 141,
+            "canonical_bytes": 130763,
+            "claude_bytes": 116211,
+            "openai_bytes": 120300,
+        },
+    }
+    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 141
     assert mcp_view.tool_catalog_counts()["total"] == 147
-    assert metrics["canonical_bytes"] > 0
-    assert metrics["claude_bytes"] > 0
-    assert metrics["openai_bytes"] > 0
+
+
+def test_every_public_parameter_has_a_description():
+    """Every property at every schema depth must explain its public meaning."""
+    missing: list[str] = []
+
+    def walk(tool: str, schema: dict, path: str = "") -> None:
+        for name, child in schema.get("properties", {}).items():
+            current = f"{path}.{name}" if path else name
+            if not isinstance(child, dict) or not str(child.get("description", "")).strip():
+                missing.append(f"{tool}.{current}")
+            if not isinstance(child, dict):
+                continue
+            walk(tool, child, current)
+            for keyword in ("oneOf", "anyOf", "allOf"):
+                for index, branch in enumerate(child.get(keyword, [])):
+                    if isinstance(branch, dict):
+                        walk(tool, branch, f"{current}.{keyword}[{index}]")
+
+    for definition in _all_defs():
+        walk(definition["name"], definition["inputSchema"])
+    assert not missing, f"public parameters without descriptions: {missing}"
 
 
 def test_every_tool_capability_name_is_known():

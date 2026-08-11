@@ -5,24 +5,108 @@ from __future__ import annotations
 from typing import Any
 
 
-_RETIRED: dict[str, set[str]] = {
-    "get_state": {"detailed", "fields"},
-    "get_states": {"detailed", "fields"},
-    "get_calendar_events": {"calendar_id"},
-    "wait_for_approval": {"approval_id"},
-    "call_service": {"domain", "service_data", "entity_id", "device_id", "area_id"},
-    "dry_run_service": {"domain", "service_data", "entity_id", "device_id", "area_id"},
-    "get_relationships": {"entity_id", "device_id", "integration", "area", "label"},
-    "get_logbook": {"entity_ids", "device_ids", "context_id"},
-    "get_esphome_job": {"job_id", "file"},
-    "edit_energy_config": {"op", "statistic", "device_name", "new_statistic", "name", "source_type", "stat_energy_from", "stat_energy_to", "number_energy_price", "number_energy_price_export", "entity_energy_price", "entity_energy_price_export", "stat_cost", "stat_compensation"},
-    "patch_yaml_config": {"key", "path", "op", "content"},
-    "patch_dashboard": {"url_path", "path", "op", "value"},
-    "set_entity": {"name", "icon", "area_id", "device_class", "new_entity_id", "enabled", "hidden", "add_aliases", "remove_aliases", "add_labels", "remove_labels", "categories"},
-    "set_device": {"name", "area_id", "enabled", "add_labels", "remove_labels"},
-    "set_integration": {"title", "pref_disable_new_entities", "pref_disable_polling"},
-    "compare_states": {"entity_id"},
+_RETIRED_REPLACEMENTS: dict[str, dict[str, str]] = {
+    "get_state": {
+        "detailed": 'projection: {"kind":"full"} (or {"kind":"compact"})',
+        "fields": 'projection: {"kind":"fields","fields":[...]}',
+    },
+    "get_states": {
+        "detailed": 'projection: {"kind":"full"} (or {"kind":"compact"})',
+        "fields": 'projection: {"kind":"fields","fields":[...]}',
+    },
+    "get_calendar_events": {"calendar_id": "entity_id"},
+    "wait_for_approval": {"approval_id": 'approval_ids: ["<approval_id>"]'},
+    "call_service": {
+        "domain": 'service: {"domain":"...","name":"...","data":{...}}',
+        "service_data": "service.data",
+        "entity_id": 'targets: [{"kind":"entity","ids":[...]}]',
+        "device_id": 'targets: [{"kind":"device","ids":[...]}]',
+        "area_id": 'targets: [{"kind":"area","ids":[...]}]',
+    },
+    "dry_run_service": {
+        "domain": 'service: {"domain":"...","name":"...","data":{...}}',
+        "service_data": "service.data",
+        "entity_id": 'targets: [{"kind":"entity","ids":[...]}]',
+        "device_id": 'targets: [{"kind":"device","ids":[...]}]',
+        "area_id": 'targets: [{"kind":"area","ids":[...]}]',
+    },
+    "get_relationships": {
+        "entity_id": 'scope: {"kind":"entity","id":"..."}',
+        "device_id": 'scope: {"kind":"device","id":"..."}',
+        "integration": 'scope: {"kind":"integration","id":"..."}',
+        "area": 'scope: {"kind":"area","id":"..."}',
+        "label": 'scope: {"kind":"label","id":"..."}',
+    },
+    "get_logbook": {
+        "entity_ids": 'target: {"kind":"resources","entity_ids":[...]}',
+        "device_ids": 'target: {"kind":"resources","device_ids":[...]}',
+        "context_id": 'target: {"kind":"context","id":"..."}',
+    },
+    "get_esphome_job": {
+        "job_id": 'lookup: {"kind":"job","id":"..."}',
+        "file": 'lookup: {"kind":"file","id":"..."}',
+    },
+    "edit_energy_config": {
+        "op": "operation",
+        "statistic": 'target: {"kind":"statistic","id":"..."}',
+        "device_name": 'target: {"kind":"device_name","name":"..."}',
+        "source_type": 'target: {"kind":"source","source_type":"..."}',
+        "new_statistic": "changes.new_statistic",
+        "name": "changes.name",
+        "stat_energy_from": "changes.stat_energy_from",
+        "stat_energy_to": "changes.stat_energy_to",
+        "number_energy_price": "changes.number_energy_price",
+        "number_energy_price_export": "changes.number_energy_price_export",
+        "entity_energy_price": "changes.entity_energy_price",
+        "entity_energy_price_export": "changes.entity_energy_price_export",
+        "stat_cost": "changes.stat_cost",
+        "stat_compensation": "changes.stat_compensation",
+    },
+    "patch_yaml_config": {
+        "key": 'address: {"kind":"key","value":"..."}',
+        "path": 'address: {"kind":"path","value":[...]}',
+        "op": "change.kind",
+        "content": "change.content",
+    },
+    "patch_dashboard": {
+        "url_path": "target.url_path",
+        "path": "target.path",
+        "op": "change.kind",
+        "value": "change.value",
+    },
+    "set_entity": {
+        field: f"changes.{field}" for field in (
+            "name", "icon", "area_id", "device_class", "new_entity_id", "enabled",
+            "hidden", "add_aliases", "remove_aliases", "add_labels", "remove_labels",
+            "categories",
+        )
+    },
+    "set_device": {
+        field: f"changes.{field}"
+        for field in ("name", "area_id", "enabled", "add_labels", "remove_labels")
+    },
+    "set_integration": {
+        field: f"changes.{field}"
+        for field in ("title", "pref_disable_new_entities", "pref_disable_polling")
+    },
+    "compare_states": {"entity_id": "entity_ids: [...]"},
 }
+
+
+_SERVICE_OBJECT_SYNTAX = 'service: {"domain":"...","name":"...","data":{...}}'
+
+
+def _migration_error(
+    tool: str, retired: set[str], extra: dict[str, str] | None = None
+) -> str:
+    """Actionable field-by-field replacement syntax for a retired v1 shape."""
+    replacements = {**_RETIRED_REPLACEMENTS[tool], **(extra or {})}
+    fields = sorted(retired)
+    mapping = "; ".join(f"{field} -> {replacements[field]}" for field in fields)
+    return (
+        f"Catalog v2 no longer accepts {', '.join(fields)} for {tool}. "
+        f"Replace with: {mapping}."
+    )
 
 
 def normalize_tool_args(tool: str, args: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -31,11 +115,15 @@ def normalize_tool_args(tool: str, args: dict[str, Any]) -> tuple[dict[str, Any]
     Unknown keys intentionally remain untouched. Only fields that were publicly
     retired by Catalog v2 receive a migration error.
     """
-    retired = sorted(_RETIRED.get(tool, set()) & set(args))
-    if retired:
-        return args, (
-            f"Catalog v2 no longer accepts {', '.join(retired)} for {tool}. "
-            f"Use the structured inputSchema for this tool."
+    replacements = _RETIRED_REPLACEMENTS.get(tool, {})
+    retired = set(replacements) & set(args)
+    service_string = tool in {"call_service", "dry_run_service"} and isinstance(
+        args.get("service"), str
+    )
+    if retired or service_string:
+        extra = {"service": _SERVICE_OBJECT_SYNTAX} if service_string else None
+        return args, _migration_error(
+            tool, retired | ({"service"} if service_string else set()), extra
         )
     out = dict(args)
     if tool in {"get_state", "get_states"}:

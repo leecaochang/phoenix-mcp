@@ -66,7 +66,7 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string"},
+                "entity_id": {"type": "string", "description": "Accessible entity whose Recorder history to read."},
                 "start_time": {
                     "type": "string",
                     "description": "ISO timestamp or relative string (24h, 7d, 2w, 1m). Defaults to 24h before end_time.",
@@ -107,13 +107,14 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string"},
+                "entity_id": {"type": "string", "description": "Accessible entity whose Recorder statistics to read."},
                 "start_time": {"type": "string", "description": "ISO or relative time. Defaults to 30 days before end_time."},
                 "end_time": {"type": "string", "description": "ISO or relative time. Defaults to now."},
                 "period": {
                     "type": "string",
                     "enum": ["5minute", "hour", "day", "week", "month", "year"],
                     "default": "hour",
+                    "description": "Aggregation period, aligned to Home Assistant's local calendar.",
                 },
                 "statistic_types": {
                     "type": "array",
@@ -252,7 +253,7 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50, "description": "Maximum recent audit entries to return."},
                 "outcome": {
                     "type": "string",
                     "description": "Optional filter: allowed, denied, not_found, rate_limited, invalid_request, pending_approval.",
@@ -660,6 +661,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                     "minimum": 1,
                     "maximum": 100,
                     "default": 50,
+                    "description": "Maximum Phoenix diagnostic buckets to return.",
                 },
                 "cursor": {
                     "type": "string",
@@ -987,7 +989,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "cap": "cap_registry_write",
         "inputSchema": {
             "type": "object",
-            "properties": {"entity_id": {"type": "string"}},
+            "properties": {"entity_id": {"type": "string", "description": "Entity registry ID to delete."}},
             "required": ["entity_id"],
         },
     },
@@ -1012,7 +1014,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "cap": "cap_diagnostics",
         "inputSchema": {
             "type": "object",
-            "properties": {"device_id": {"type": "string"}},
+            "properties": {"device_id": {"type": "string", "description": "Device registry ID to inspect."}},
             "required": ["device_id"],
         },
     },
@@ -1055,7 +1057,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "cap": "cap_radio_write",
         "inputSchema": {
             "type": "object",
-            "properties": {"device_id": {"type": "string"}},
+            "properties": {"device_id": {"type": "string", "description": "Zigbee device registry ID to reconfigure."}},
             "required": ["device_id"],
         },
     },
@@ -1069,7 +1071,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "cap": "cap_radio_write",
         "inputSchema": {
             "type": "object",
-            "properties": {"device_id": {"type": "string"}},
+            "properties": {"device_id": {"type": "string", "description": "Zigbee device registry ID to remove."}},
             "required": ["device_id"],
         },
     },
@@ -1086,7 +1088,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "message": {"type": "string"},
+                "message": {"type": "string", "description": "Message to announce throughout the home."},
             },
             "required": ["message"],
         },
@@ -1191,7 +1193,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                     "default": "enabled",
                     "description": "enabled searches live enabled entities; disabled searches explicitly disabled registry entries; all includes both plus enabled registry entries with no live state.",
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100, "description": "Maximum matching entities to return."},
             },
         },
     },
@@ -1756,8 +1758,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "minutes": {"type": "integer", "minimum": 1, "maximum": 1440, "default": 30},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "minutes": {"type": "integer", "minimum": 1, "maximum": 1440, "default": 30, "description": "Lookback window in minutes."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50, "description": "Maximum changed entities to return."},
             },
         },
     },
@@ -1792,7 +1794,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "enum": ["automation", "script"]},
+                "type": {"type": "string", "enum": ["automation", "script"], "description": "Configuration kind to validate."},
                 "config": {"type": "object", "description": "The automation or script config to validate."},
             },
             "required": ["type", "config"],
@@ -1853,7 +1855,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "scene_id": {"type": "string", "description": "The scene id (from list_scenes)."},
-                "config": {"type": "object"},
+                "config": {"type": "object", "description": "Complete replacement scene configuration."},
                 "expected_hash": {"type": "string", "description": "Optional content_hash from get_scene. When given, the edit is refused if the scene changed since that read."},
             },
             "required": ["scene_id", "config"],
@@ -1866,7 +1868,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "scene_id": {"type": "string"},
+                "scene_id": {"type": "string", "description": "Scene ID to delete, as returned by list_scenes."},
             },
             "required": ["scene_id"],
         },
@@ -1896,7 +1898,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string"},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, or timer."},
                 "config": {"type": "object", "description": "Helper fields, e.g. {\"name\": \"Guest mode\"}."},
             },
             "required": ["helper_type", "config"],
@@ -1909,9 +1911,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string"},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, or timer."},
                 "helper_id": {"type": "string", "description": "The helper id (from list_helpers)."},
-                "config": {"type": "object"},
+                "config": {"type": "object", "description": "Complete helper configuration to apply."},
             },
             "required": ["helper_type", "helper_id", "config"],
         },
@@ -1923,8 +1925,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string"},
-                "helper_id": {"type": "string"},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, or timer."},
+                "helper_id": {"type": "string", "description": "Helper ID to delete, as returned by list_helpers."},
             },
             "required": ["helper_type", "helper_id"],
         },
@@ -1940,8 +1942,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string"},
-                "timeout": {"type": "integer", "minimum": 1, "maximum": 30, "default": 30},
+                "entity_id": {"type": "string", "description": "Accessible entity to watch for a state change."},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": 30, "default": 30, "description": "Maximum seconds to wait for a change."},
             },
             "required": ["entity_id"],
         },
@@ -1972,7 +1974,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
+                "path": {"type": "string", "description": "File path under www/, themes/, or custom_templates/."},
             },
             "required": ["path"],
         },
@@ -1992,8 +1994,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
+                "path": {"type": "string", "description": "Destination path under www/, themes/, or custom_templates/."},
+                "content": {"type": "string", "description": "Complete UTF-8 text to write."},
                 "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior read_file; the write is refused if the file changed since then."},
             },
             "required": ["path", "content"],
@@ -2201,7 +2203,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "entry_id": {"type": "string", "description": "The config entry id (from list_integrations)."},
-                "enabled": {"type": "boolean"},
+                "enabled": {"type": "boolean", "description": "True to enable the integration; false to disable it."},
             },
             "required": ["entry_id", "enabled"],
         },
@@ -2320,7 +2322,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "dashboard_id": {"type": "string", "description": "The dashboard id (from list_dashboards)."},
-                "config": {"type": "object"},
+                "config": {"type": "object", "description": "Dashboard metadata fields to update."},
             },
             "required": ["dashboard_id", "config"],
         },
@@ -2332,7 +2334,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "dashboard_id": {"type": "string"},
+                "dashboard_id": {"type": "string", "description": "Dashboard ID to delete, as returned by list_dashboards."},
             },
             "required": ["dashboard_id"],
         },
@@ -2603,8 +2605,8 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
                 "domain": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DOMAIN},
                 "brightness": {"type": "integer", "minimum": 0, "maximum": 100, "description": "The brightness percentage of the light between 0 and 100, where 0 is off and 100 is fully lit"},
-                "color": {"type": "string"},
-                "temperature": {"type": "integer", "minimum": 0},
+                "color": {"type": "string", "description": "Requested light color in a Home Assistant-supported color form."},
+                "temperature": {"type": "integer", "minimum": 0, "description": "Requested light color temperature."},
             },
         },
     },
@@ -2632,7 +2634,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "name": {"type": "string", "description": _TARGET_NAME},
                 "area": {"type": "string", "description": _TARGET_AREA},
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
-                "temperature": {"type": "number"},
+                "temperature": {"type": "number", "description": "Target temperature in the entity's configured unit."},
             },
             "required": ["temperature"],
         },
@@ -2648,7 +2650,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
                 "domain": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DOMAIN},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
-                "position": {"type": "integer", "minimum": 0, "maximum": 100},
+                "position": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Target position from 0 to 100 percent."},
             },
         },
     },
@@ -2676,7 +2678,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "name": {"type": "string", "description": _TARGET_NAME},
                 "area": {"type": "string", "description": _TARGET_AREA},
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
-                "volume_step": {"anyOf": [{"type": "string", "enum": ["up", "down"]}, {"type": "integer", "minimum": -100, "maximum": 100}]},
+                "volume_step": {"anyOf": [{"type": "string", "enum": ["up", "down"]}, {"type": "integer", "minimum": -100, "maximum": 100}], "description": "Relative volume direction or signed percentage step."},
             },
         },
     },
@@ -2745,8 +2747,8 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "name": {"type": "string", "description": _TARGET_NAME},
                 "area": {"type": "string", "description": _TARGET_AREA},
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
-                "search_query": {"type": "string"},
-                "media_class": {"type": "string", "enum": ["album", "app", "artist", "channel", "composer", "contributing_artist", "directory", "episode", "game", "genre", "image", "movie", "music", "playlist", "podcast", "season", "track", "tv_show", "url", "video"]},
+                "search_query": {"type": "string", "description": "Media title, artist, channel, URL, or other search text."},
+                "media_class": {"type": "string", "enum": ["album", "app", "artist", "channel", "composer", "contributing_artist", "directory", "episode", "game", "genre", "image", "movie", "music", "playlist", "podcast", "season", "track", "tv_show", "url", "video"], "description": "Kind of media to search for."},
             },
         },
     },

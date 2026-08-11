@@ -43,6 +43,11 @@ from custom_components.phoenix_mcp.tool_defs import (
     _NATIVE_TOOL_DEFS,
     _SYSTEM_TOOL_DEFS,
 )
+from custom_components.phoenix_mcp.tool_contracts import (
+    _RETIRED_REPLACEMENTS,
+    _SERVICE_OBJECT_SYNTAX,
+    normalize_tool_args,
+)
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "phoenix_mcp"
 
@@ -175,6 +180,40 @@ def test_catalog_v2_removes_retired_flat_public_fields():
     }
     for tool, fields in retired.items():
         assert not fields & set(defs[tool]["inputSchema"]["properties"])
+
+
+def test_every_retired_field_error_contains_exact_replacement_syntax():
+    for tool, replacements in _RETIRED_REPLACEMENTS.items():
+        for field, replacement in replacements.items():
+            _, error = normalize_tool_args(tool, {field: "retired-value"})
+            assert error is not None
+            assert f"{field} -> {replacement}" in error
+
+
+@pytest.mark.parametrize("tool", ["call_service", "dry_run_service"])
+def test_retired_flat_service_string_has_exact_object_migration(tool):
+    _, error = normalize_tool_args(tool, {"service": "turn_on"})
+    assert error is not None
+    assert f"service -> {_SERVICE_OBJECT_SYNTAX}" in error
+
+
+@pytest.mark.parametrize("tool", ["call_service", "dry_run_service"])
+def test_mixed_retired_service_fields_are_reported_together(tool):
+    _, error = normalize_tool_args(
+        tool, {"domain": "light", "service": "turn_on", "entity_id": "light.a"}
+    )
+    assert error is not None
+    assert "domain ->" in error
+    assert "entity_id ->" in error
+    assert f"service -> {_SERVICE_OBJECT_SYNTAX}" in error
+
+
+def test_unrelated_unknown_fields_remain_tolerated():
+    normalized, error = normalize_tool_args(
+        "get_logbook", {"unrelated_future_field": True}
+    )
+    assert error is None
+    assert normalized["unrelated_future_field"] is True
 
 
 def test_remove_device_publishes_only_owner_selection():

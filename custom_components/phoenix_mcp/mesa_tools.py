@@ -20,6 +20,7 @@ from homeassistant.helpers import entity_registry as er_mod
 
 import hashlib
 import json
+import copy
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -88,6 +89,46 @@ _MESA_TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "mesa_release_lease": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
 }
 
+_MESA_PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "mesa_query_profiles": {
+        "domains": "Optional entity domains to match.",
+        "tags": "Optional semantic tags to match.",
+        "tags_match": "Whether any or all requested tags must match.",
+        "areas": "Optional Home Assistant area IDs or names to match.",
+        "intents": "Optional semantic intent names to match.",
+        "min_origin_authority": "Minimum accepted profile-origin authority.",
+        "include_inferred": "Whether inferred effective profiles may be returned.",
+        "include_fields": "Optional profile fields to include in each row.",
+        "limit": "Maximum profile rows to return.",
+        "cursor": "Opaque cursor from the previous page with the same filters.",
+    },
+    "mesa_get_profile": {
+        "entity_id": "Accessible entity whose effective MESA profile to return.",
+        "include_diagnostic": "Whether to include profile-resolution diagnostics.",
+    },
+    "mesa_explain_profile": {
+        "entity_id": "Accessible entity whose MESA inheritance to explain.",
+        "show_conflicts": "Whether to include conflicting inherited values.",
+    },
+    "mesa_request_lease": {
+        "entities": "Entity IDs the advisory lease should cover.",
+        "intent": "Short description of the operation protected by the lease.",
+        "priority_level": "Requested advisory lease priority.",
+        "preemption_handling": "How competing higher-priority leases should be handled.",
+    },
+    "mesa_release_lease": {
+        "lease_id": "Lease identifier returned by mesa_request_lease.",
+    },
+}
+
+
+def _described_mesa_schema(name: str) -> dict[str, Any]:
+    """Copy a vendored schema and add Phoenix's public parameter prose."""
+    schema = copy.deepcopy(TOOL_SCHEMAS[name])
+    for parameter, description in _MESA_PARAM_DESCRIPTIONS.get(name, {}).items():
+        schema["properties"][parameter]["description"] = description
+    return schema
+
 
 def mesa_tool_defs() -> list[dict[str, Any]]:
     """tools/list entries for the mesa_* tools, tagged with the gating cap.
@@ -100,7 +141,7 @@ def mesa_tool_defs() -> list[dict[str, Any]]:
             "name": name,
             "description": TOOL_DESCRIPTIONS[name],
             "cap": MESA_TOOLS_CAP,
-            "inputSchema": TOOL_SCHEMAS[name],
+            "inputSchema": _described_mesa_schema(name),
             "annotations": _MESA_TOOL_ANNOTATIONS[name],
         }
         for name in ("mesa_query_profiles", "mesa_get_profile",
