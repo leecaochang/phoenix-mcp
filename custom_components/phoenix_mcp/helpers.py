@@ -32,7 +32,6 @@ from .const import (
     CAPABILITY_NAMES,
     DOMAIN,
     DOMAIN_SERVICE_HINTS,
-    MAX_REQUEST_BODY_BYTES,
     PASS_THROUGH_EXEMPT_CAPS,
     SENSITIVE_ATTRIBUTES,
     SENSOR_WRITE_DEBOUNCE_SECONDS,
@@ -73,9 +72,8 @@ def build_permitted_states(token: TokenRecord, hass: HomeAssistant) -> dict:
     sensor.phoenix_mcp_* block, pass-through WRITE, scoped READ/WRITE), plus the shared
     assist_expose_check for pass_through tokens with use_assist_exposure.
 
-    This is the single source of truth for template sandboxes in both proxy_view.py
-    and mcp_view.py. All template handlers must use this function so the filtering
-    never diverges.
+    This is the single source of truth for MCP template sandboxes. All template
+    handlers must use this function so the filtering never diverges.
     """
     expose = assist_expose_check(token, hass)
     return {
@@ -226,54 +224,6 @@ def fire_rate_limit_events(hass: HomeAssistant, data: PhoenixData, token: TokenR
                     },
                 )
             )
-
-
-async def async_read_json_body(request: web.Request, request_id: str) -> dict | web.Response:
-    """Read and size-check the request body, return a parsed dict or an error response."""
-    if request.content_length is not None and request.content_length > MAX_REQUEST_BODY_BYTES:
-        return build_error_response("request_too_large", "Request body too large.", 413, request_id)
-
-    # aiohttp's StreamReader.read(n) is a SHORT read: it returns as soon as the
-    # buffer has ANY data, up to n bytes, not once n bytes have arrived. A
-    # single read(MAX_REQUEST_BODY_BYTES + 1) call could therefore silently
-    # truncate a larger body arriving across multiple TCP/chunked segments.
-    # Loop until EOF instead, bailing as soon as the cap is exceeded.
-    chunks: list[bytes] = []
-    total = 0
-    try:
-        while True:
-            chunk = await request.content.read(MAX_REQUEST_BODY_BYTES - total + 1)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > MAX_REQUEST_BODY_BYTES:
-                return build_error_response("request_too_large", "Request body too large.", 413, request_id)
-            at_eof = getattr(request.content, "at_eof", None)
-            if callable(at_eof) and at_eof():
-                break
-    except Exception:
-        return build_error_response("invalid_request", "Failed to read request body.", 400, request_id)
-
-    body_bytes = b"".join(chunks)
-
-    if not body_bytes:
-        return {}
-
-    try:
-        parsed = json.loads(body_bytes)
-    except json.JSONDecodeError:
-        _LOGGER.warning(
-            "%s %s: invalid JSON body (%d bytes read, Content-Length %s) rid=%s",
-            request.method, request.path, len(body_bytes),
-            request.content_length, request_id,
-        )
-        return build_error_response("invalid_request", "Invalid JSON body.", 400, request_id)
-
-    if not isinstance(parsed, dict):
-        return build_error_response("invalid_request", "Request body must be a JSON object.", 400, request_id)
-
-    return parsed
 
 
 def content_hash(content: str | bytes | dict | list) -> str:

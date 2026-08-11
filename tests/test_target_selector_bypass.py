@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import secrets
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -92,21 +91,6 @@ def _make_data(token: TokenRecord) -> PhoenixData:
     audit = MagicMock(spec=AuditLog)
     audit.record = MagicMock()
     return PhoenixData(store=store, rate_limiter=rate_limiter, audit=audit, rate_limit_notified={})
-
-
-def _make_service_request(raw: str, body: bytes) -> MagicMock:
-    request = MagicMock()
-    request.method = "POST"
-    request.remote = "127.0.0.1"
-    request.headers = MagicMock()
-    request.headers.get = MagicMock(
-        side_effect=lambda k, d="": {"Authorization": f"Bearer {raw}"}.get(k, d)
-    )
-    request.query = {}
-    request.content_length = None
-    request.content = MagicMock()
-    request.content.read = AsyncMock(return_value=body)
-    return request
 
 
 def _hass_with(data: PhoenixData) -> MagicMock:
@@ -193,35 +177,6 @@ def test_sanitizer_returns_a_new_dict_and_never_mutates():
 def test_sanitizer_degrades_a_wrong_shaped_value_to_empty():
     for bad in (None, "entity_id=light.a", ["light.a"], 7, True):
         assert sanitize_service_data(bad) == {}
-
-
-# --- the surfaces ------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_rest_call_service_strips_selectors(hass, token_store):
-    """REST previously stripped three of the five, so floor_id and label_id rode
-    the body straight through to Home Assistant."""
-    from custom_components.phoenix_mcp.proxy_view import PhoenixServiceView
-
-    token, raw = _make_token()
-    data = _make_data(token)
-    hass = _hass_with(data)
-
-    view = PhoenixServiceView()
-    view.hass = hass
-    body = json.dumps({**_ALL_SELECTORS, "brightness_pct": 40}).encode()
-
-    with patch(
-        "custom_components.phoenix_mcp.proxy_view.resolve_service_targets",
-        return_value=(["light.kitchen"], 1),
-    ):
-        resp = await view.post(_make_service_request(raw, body), "light", "turn_on")
-
-    assert resp.status == 200
-    call_data = _call_data(hass)
-    _assert_no_selectors_but_entity_list(call_data, ["light.kitchen"])
-    assert call_data["brightness_pct"] == 40
 
 
 @pytest.mark.asyncio

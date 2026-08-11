@@ -3,7 +3,7 @@
 Replacing hmac.compare_digest with == is BEHAVIOUR-PRESERVING: both return the
 same answer for every input, so no functional test can distinguish them, and
 swapping the comparison leaves every behavioural assertion over the token store
-and the proxy views green. The property is about how long the comparison takes,
+and MCP endpoint green. The property is about how long the comparison takes,
 and the only way to assert it is to assert the source says so.
 
 That is also why this is the one rule most likely to decay quietly. Someone

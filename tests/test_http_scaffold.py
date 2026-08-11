@@ -1,180 +1,42 @@
-"""Real-HTTP scaffold smoke tests.
-
-Most view tests drive handlers with MagicMock requests, which skips aiohttp's
-routing, path-variable parsing, request middleware, and real response headers.
-These tests register the Phoenix MCP views on HA's real aiohttp app and hit them through
-an actual client, covering what the MagicMock path structurally cannot: routing,
-the {entity_id} path variable, token auth context, body-size (413) enforcement,
-and the X-Phoenix-Request-ID response header on both success and error paths.
-"""
+"""Real-HTTP coverage for Phoenix MCP route registration."""
 
 from __future__ import annotations
 
-import hashlib
-import secrets
-import uuid
 from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-from homeassistant.util.dt import utcnow
 
-from custom_components.phoenix_mcp.audit import AuditLog
-from custom_components.phoenix_mcp.const import DOMAIN, MAX_REQUEST_BODY_BYTES, TOKEN_PREFIX
-from custom_components.phoenix_mcp.data import PhoenixData
-from custom_components.phoenix_mcp.rate_limiter import RateLimiter, RateLimitResult
-from custom_components.phoenix_mcp.token_store import (
-    PermissionNode,
-    PermissionTree,
-    TokenRecord,
-    TokenStore,
-)
+from custom_components.phoenix_mcp.const import DOMAIN
 
 
-def _make_token() -> tuple[TokenRecord, str]:
-    raw = TOKEN_PREFIX + secrets.token_hex(32)
-    return (
-        TokenRecord(
-            id=str(uuid.uuid4()), name="http-token",
-            token_hash=hashlib.sha256(raw.encode()).hexdigest(),
-            created_at=utcnow(), created_by="user1", pass_through=True,
-        ),
-        raw,
-    )
+def _client_view_classes():
+    """Return the complete kill-switch-gated client route set."""
+    from custom_components.phoenix_mcp.agentcli import ALL_AGENTCLI_CHAT_VIEWS
+    from custom_components.phoenix_mcp.mcp_view import ALL_MCP_VIEWS
+    from custom_components.phoenix_mcp.skill_view import ALL_SKILL_VIEWS
+
+    return list(ALL_MCP_VIEWS) + list(ALL_SKILL_VIEWS) + list(ALL_AGENTCLI_CHAT_VIEWS)
 
 
-def _make_scoped_token() -> tuple[TokenRecord, str]:
-    """A scoped (non-pass-through) token granting READ on exactly sensor.allowed."""
-    raw = TOKEN_PREFIX + secrets.token_hex(32)
-    return (
-        TokenRecord(
-            id=str(uuid.uuid4()), name="scoped-token",
-            token_hash=hashlib.sha256(raw.encode()).hexdigest(),
-            created_at=utcnow(), created_by="user1", pass_through=False,
-            permissions=PermissionTree(
-                entities={"sensor.allowed": PermissionNode(state="YELLOW")},
-            ),
-        ),
-        raw,
-    )
+def _all_view_classes():
+    """Return every route class registered by the integration."""
+    from custom_components.phoenix_mcp.admin_view import ALL_ADMIN_VIEWS
+    from custom_components.phoenix_mcp.agentcli import ALL_AGENTCLI_ADMIN_VIEWS
 
-
-def _make_data(token: TokenRecord) -> PhoenixData:
-    store = MagicMock(spec=TokenStore)
-    store.get_token_by_hash.return_value = token
-    store.get_settings.return_value = MagicMock(
-        kill_switch=False, disable_all_logging=False, log_allowed=True,
-        log_denied=True, log_rate_limited=True, log_entity_names=True,
-        log_client_ip=True, notify_on_rate_limit=False,
-    )
-    store.update_last_used = MagicMock()
-    rate_limiter = MagicMock(spec=RateLimiter)
-    rate_limiter.check.return_value = RateLimitResult(
-        allowed=True, rate_limiting_enabled=True, limit=60,
-        remaining=59, reset=9999999999, retry_after=0,
-    )
-    audit = MagicMock(spec=AuditLog)
-    return PhoenixData(store=store, rate_limiter=rate_limiter, audit=audit, rate_limit_notified={})
+    return list(ALL_ADMIN_VIEWS) + list(ALL_AGENTCLI_ADMIN_VIEWS) + _client_view_classes()
 
 
 @pytest.fixture
-async def http_client(hass: HomeAssistant, hass_client_no_auth):
-    """Set up HA http, register the Phoenix MCP views, and return (client, raw_token).
-
-    Uses hass_client_no_auth (a TestClient over HA's real aiohttp app that does not
-    inject an HA Authorization header) so we control the Phoenix MCP Bearer token ourselves;
-    the HA test client also avoids binding a real socket.
-    """
+async def client_routes(hass: HomeAssistant, hass_client_no_auth):
+    """Register the supported client routes on Home Assistant's real router."""
     assert await async_setup_component(hass, "http", {})
-    token, raw = _make_token()
-    hass.data[DOMAIN] = _make_data(token)
+    data = MagicMock(shutting_down=False)
+    data.store.get_settings.return_value.kill_switch = False
+    hass.data[DOMAIN] = data
 
-    from custom_components.phoenix_mcp.proxy_view import PhoenixStatesView, PhoenixStateView, PhoenixTemplateView
-    from custom_components.phoenix_mcp.skill_view import PhoenixSkillView
-
-    for view_cls in (PhoenixStatesView, PhoenixStateView, PhoenixTemplateView, PhoenixSkillView):
-        view = view_cls()
-        view.hass = hass
-        hass.http.register_view(view)
-
-    client = await hass_client_no_auth()
-    return client, raw
-
-
-async def test_states_requires_auth_and_sets_request_id(http_client):
-    client, _raw = http_client
-    resp = await client.get("/api/phoenix-mcp/states")
-    assert resp.status == 401
-    # The request-id header is present even on the auth-failure path.
-    assert resp.headers.get("X-Phoenix-Request-ID")
-
-
-async def test_states_with_token_returns_list_and_request_id(http_client):
-    client, raw = http_client
-    resp = await client.get("/api/phoenix-mcp/states", headers={"Authorization": f"Bearer {raw}"})
-    assert resp.status == 200
-    assert resp.headers.get("X-Phoenix-Request-ID")
-    assert isinstance(await resp.json(), list)
-
-
-async def test_state_path_variable_routes(hass: HomeAssistant, http_client):
-    client, raw = http_client
-    hass.states.async_set("sensor.scaffold", "42", {})
-    # The {entity_id} path variable must route to the single-state handler.
-    resp = await client.get(
-        "/api/phoenix-mcp/states/sensor.scaffold", headers={"Authorization": f"Bearer {raw}"})
-    assert resp.status == 200
-    body = await resp.json()
-    assert body["entity_id"] == "sensor.scaffold"
-
-
-async def test_body_size_413_enforced(http_client):
-    client, raw = http_client
-    oversized = b"x" * (MAX_REQUEST_BODY_BYTES + 100)
-    resp = await client.post(
-        "/api/phoenix-mcp/template", data=oversized,
-        headers={"Authorization": f"Bearer {raw}"})
-    assert resp.status == 413
-    assert (await resp.json())["error"] == "request_too_large"
-
-
-async def test_skill_route_unauthenticated(http_client):
-    client, _raw = http_client
-    # The skill guide is intentionally unauthenticated.
-    resp = await client.get("/api/phoenix-mcp/skill")
-    assert resp.status == 200
-    assert "Phoenix MCP" in await resp.text()
-
-
-@pytest.fixture
-async def scoped_client(hass: HomeAssistant, hass_client_no_auth):
-    """Same scaffold as http_client but with a scoped (non-pass-through) token."""
-    assert await async_setup_component(hass, "http", {})
-    token, raw = _make_scoped_token()
-    hass.data[DOMAIN] = _make_data(token)
-
-    from custom_components.phoenix_mcp.proxy_view import PhoenixStatesView, PhoenixStateView
-
-    for view_cls in (PhoenixStatesView, PhoenixStateView):
-        view = view_cls()
-        view.hass = hass
-        hass.http.register_view(view)
-
-    client = await hass_client_no_auth()
-    return client, raw
-
-
-@pytest.fixture
-async def proxy_client(hass: HomeAssistant, hass_client_no_auth):
-    """Register the complete token proxy surface on HA's real router."""
-    assert await async_setup_component(hass, "http", {})
-    token, _raw = _make_token()
-    hass.data[DOMAIN] = _make_data(token)
-
-    from custom_components.phoenix_mcp.proxy_view import ALL_VIEWS
-
-    for view_cls in ALL_VIEWS:
+    for view_cls in _client_view_classes():
         view = view_cls()
         view.hass = hass
         hass.http.register_view(view)
@@ -182,102 +44,74 @@ async def proxy_client(hass: HomeAssistant, hass_client_no_auth):
     return await hass_client_no_auth()
 
 
+def test_client_route_list_contains_no_rest_proxy() -> None:
+    """Only MCP, context, skill, and Agent Chat remain token-facing."""
+    assert {view.url for view in _client_view_classes()} == {
+        "/api/phoenix-mcp",
+        "/api/phoenix-mcp/context",
+        "/api/phoenix-mcp/skill",
+        "/api/phoenix-mcp/agentcli/chat",
+    }
+
+
 @pytest.mark.parametrize(
-    "path",
+    ("method", "path"),
     (
-        "/api/phoenix-mcp/history/period/2026-08-11T00:00:00+00:00",
-        "/api/phoenix-mcp/statistics",
+        ("GET", "/api/phoenix-mcp/health"),
+        ("GET", "/api/phoenix-mcp/states"),
+        ("GET", "/api/phoenix-mcp/states/sensor.example"),
+        ("POST", "/api/phoenix-mcp/services/light/turn_on"),
+        ("GET", "/api/phoenix-mcp/config"),
+        ("POST", "/api/phoenix-mcp/template"),
+        ("GET", "/api/phoenix-mcp/events"),
+        ("GET", "/api/phoenix-mcp/services"),
+        ("GET", "/api/phoenix-mcp/logs"),
+        ("GET", "/api/phoenix-mcp/history/period/2026-08-11T00:00:00+00:00"),
+        ("GET", "/api/phoenix-mcp/statistics"),
     ),
 )
-async def test_recorder_proxy_routes_are_not_registered(proxy_client, path):
-    resp = await proxy_client.get(path)
-    assert resp.status == 404
+async def test_removed_rest_proxy_routes_return_404(client_routes, method, path):
+    response = await client_routes.request(method, path)
+    assert response.status == 404
 
 
-async def test_scoped_list_excludes_out_of_scope_entity(hass: HomeAssistant, scoped_client):
-    client, raw = scoped_client
-    hass.states.async_set("sensor.allowed", "1", {})
-    hass.states.async_set("sensor.secret", "2", {})
-    resp = await client.get("/api/phoenix-mcp/states", headers={"Authorization": f"Bearer {raw}"})
-    assert resp.status == 200
-    ids = {e["entity_id"] for e in await resp.json()}
-    # Entity filtering runs through the real HTTP layer: only the granted entity is returned.
-    assert "sensor.allowed" in ids
-    assert "sensor.secret" not in ids
-
-
-async def test_scoped_single_state_in_scope_vs_out_of_scope(hass: HomeAssistant, scoped_client):
-    client, raw = scoped_client
-    hass.states.async_set("sensor.allowed", "1", {})
-    hass.states.async_set("sensor.secret", "2", {})
-    auth = {"Authorization": f"Bearer {raw}"}
-
-    in_scope = await client.get("/api/phoenix-mcp/states/sensor.allowed", headers=auth)
-    assert in_scope.status == 200
-    assert (await in_scope.json())["entity_id"] == "sensor.allowed"
-
-    # An out-of-scope (but real) entity returns the same 404 as a nonexistent one.
-    out_of_scope = await client.get("/api/phoenix-mcp/states/sensor.secret", headers=auth)
-    ghost = await client.get("/api/phoenix-mcp/states/sensor.ghost_xyz", headers=auth)
-    assert out_of_scope.status == ghost.status == 404
-    assert await out_of_scope.json() == await ghost.json()
-
-
-# --- routes are registered once per process ----------------------------------
+async def test_skill_route_still_registers(client_routes):
+    response = await client_routes.get("/api/phoenix-mcp/skill")
+    assert response.status == 200
+    assert "Phoenix MCP" in await response.text()
 
 
 class TestRouteRegistrationIsIdempotent:
-    """A config-entry reload must not add a second set of routes.
-
-    HA's register_view is one-way (aiohttp cannot remove a route), so unload
-    leaves every Phoenix route in place and the next setup re-registers them all.
-    It does not raise: aiohttp reuses a resource only when it is the LAST one
-    added, so re-registering the whole set silently builds a second complete set
-    that shadows the first and can never be reached.
-
-    These use HA's REAL aiohttp router. A MagicMock hass.http counts calls and
-    can say nothing about what ended up on the router, which is why the leak
-    survived a happy-path setup/unload test.
-    """
-
-    @staticmethod
-    def _all_view_classes():
-        from custom_components.phoenix_mcp.admin_view import ALL_ADMIN_VIEWS
-        from custom_components.phoenix_mcp.mcp_view import ALL_MCP_VIEWS
-        from custom_components.phoenix_mcp.proxy_view import ALL_VIEWS
-        from custom_components.phoenix_mcp.skill_view import ALL_SKILL_VIEWS
-
-        return list(ALL_ADMIN_VIEWS) + list(ALL_VIEWS) + list(ALL_MCP_VIEWS) + list(ALL_SKILL_VIEWS)
+    """A config-entry reload must not add a second set of routes."""
 
     @pytest.mark.asyncio
-    async def test_repeat_registration_adds_no_routes(self, hass):
+    async def test_repeat_registration_adds_no_routes(self, hass: HomeAssistant):
         from custom_components.phoenix_mcp import _register_views
 
         assert await async_setup_component(hass, "http", {})
         await hass.async_block_till_done()
-        views = self._all_view_classes()
+        views = _all_view_classes()
 
         _register_views(hass, views)
         after_first = len(list(hass.http.app.router.routes()))
         assert after_first > 0, "the first registration put nothing on the router"
 
-        # Two more setups' worth, as a reload would do.
         _register_views(hass, views)
         _register_views(hass, views)
 
         assert len(list(hass.http.app.router.routes())) == after_first
 
     @pytest.mark.asyncio
-    async def test_a_route_still_resolves_after_repeat_registration(self, hass):
-        # Skipping must leave the surface WORKING, not merely small: the views
-        # hold no per-setup state, so the first registration serves every later
-        # setup. If that were wrong this is where it would show.
+    async def test_a_route_still_resolves_after_repeat_registration(
+        self, hass: HomeAssistant
+    ):
         from aiohttp.test_utils import make_mocked_request
+
         from custom_components.phoenix_mcp import _register_views
 
         assert await async_setup_component(hass, "http", {})
         await hass.async_block_till_done()
-        views = self._all_view_classes()
+        views = _all_view_classes()
 
         _register_views(hass, views)
         _register_views(hass, views)

@@ -19,8 +19,8 @@ unchanged, and there is no runtime behaviour here whatsoever. Views keep
 inheriting everything else from `HomeAssistantView`.
 
 Kept in its own module rather than `helpers.py` so it can be imported by every
-view module (admin_view, agentcli, mcp_view, proxy_view, skill_view) with no
-possibility of an import cycle.
+view module (admin_view, agentcli, mcp_view, skill_view) with no possibility of
+an import cycle.
 """
 
 from __future__ import annotations

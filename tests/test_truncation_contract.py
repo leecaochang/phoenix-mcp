@@ -9,12 +9,10 @@ for to answer "is anything wrong with this instance", so it was the worst place
 in the surface to be silent.
 
 Two kinds of test here. The behavioural ones pin the actual field values for each
-paginating read, on both the MCP and REST surfaces, because a caller must not
-have to know which surface it used to learn whether it saw everything. The AST
-guard covers the tools nobody has written yet: it finds every limit-slice in the
-package and requires the enclosing function to report either `truncated`, a
-pre-slice `total`, or the cursor pair `has_more` plus `next_cursor`, so a new
-paginating read cannot ship silent.
+paginating MCP read. The AST guard covers the tools nobody has written yet: it
+finds every limit-slice in the package and requires the enclosing function to
+report either `truncated`, a pre-slice `total`, or the cursor pair `has_more`
+plus `next_cursor`, so a new paginating read cannot ship silent.
 """
 
 from __future__ import annotations
@@ -134,37 +132,6 @@ class TestGetLogsReportsTruncation:
         assert page.total == 7
 
 
-class TestRestLogsMatchesTheMcpTool:
-    """Surface parity: the same question answered the same way on both."""
-
-    @pytest.mark.asyncio
-    async def test_rest_reports_the_same_three_fields(self):
-        from custom_components.phoenix_mcp.helpers import collect_log_entries as rest_collect
-        data = MagicMock()
-        hass = MagicMock()
-        syslog = MagicMock()
-        syslog.records = {f"k{i}": _log_record() for i in range(10)}
-        hass.data = {DOMAIN: data, "system_log": syslog}
-        page = rest_collect(hass, "WARNING", None, 4)
-        # The REST view builds its body from exactly these, so pinning the pair
-        # pins both surfaces without standing up an aiohttp request here; the
-        # AST guard below is what keeps the view from drifting away from it.
-        body = {
-            "count": len(page.entries),
-            "total": page.total,
-            "truncated": page.total > len(page.entries),
-        }
-        assert body == {"count": 4, "total": 10, "truncated": True}
-
-    def test_rest_view_builds_all_three_fields(self):
-        """Read the view's own source, so deleting a field there fails here."""
-        source = (PACKAGE / "proxy_view.py").read_text(encoding="utf-8")
-        marker = source.index('"The system_log integration is not loaded')
-        tail = source[marker:marker + 1200]
-        for field in ("count", "total", "truncated", "entries"):
-            assert f'"{field}"' in tail, f"REST logs response dropped {field}"
-
-
 class TestLimitSlicesReportTruncation:
     """Every limit-slice in the package must be reportable by its caller.
 
@@ -279,4 +246,4 @@ class TestLimitSlicesReportTruncation:
             str(p.relative_to(PACKAGE)) for p in PACKAGE.rglob("*.py")
             if not any(part in _SKIP_DIRS for part in p.relative_to(PACKAGE).parts)
         }
-        assert {"helpers.py", "mcp_view.py", "proxy_view.py"} <= scanned
+        assert {"helpers.py", "mcp_view.py"} <= scanned

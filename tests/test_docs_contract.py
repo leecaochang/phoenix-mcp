@@ -222,19 +222,19 @@ def test_admin_api_documents_every_sse_frame() -> None:
     assert missing == [], f"admin-api.html SSE frame list missing: {missing}"
 
 
-def test_operations_route_table_lists_every_token_facing_route() -> None:
+def test_operations_route_table_lists_every_mcp_and_skill_route() -> None:
     from homeassistant.components.http import HomeAssistantView
 
-    from custom_components.phoenix_mcp import mcp_view, proxy_view
+    from custom_components.phoenix_mcp import mcp_view, skill_view
 
     urls: set[str] = set()
-    for module in (proxy_view, mcp_view):
+    for module in (mcp_view, skill_view):
         for obj in vars(module).values():
             if isinstance(obj, type) and issubclass(obj, HomeAssistantView):
                 url = obj.__dict__.get("url")
                 if isinstance(url, str):
                     urls.add(url)
-    assert len(urls) >= 10, f"route extraction broke: {sorted(urls)}"
+    assert len(urls) == 3, f"route extraction broke: {sorted(urls)}"
     html = (DOCS / "operations.html").read_text(encoding="utf-8")
     missing = sorted(u for u in urls if u not in html)
     assert missing == [], f"operations.html route table missing: {missing}"

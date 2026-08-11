@@ -233,7 +233,7 @@ POST    /api/phoenix-mcp/agentcli/chat                                  Run one 
         <p>The response is <code>text/event-stream</code>, not a single JSON body: named SSE frames (<code>ready</code>, <code>assistant_delta</code>, <code>thinking_delta</code>, <code>tool_call</code>, <code>tool_progress</code> (a live status line from a long-running tool, e.g. a firmware build percentage), <code>tool_result</code>, <code>approval_required</code>, <code>approval_resolved</code>, <code>continue_required</code> (the turn paused at the steps-before-check-in limit; re-POST with <code>"continue": true</code> to resume it, the panel's Continue button), <code>usage</code>, <code>notice</code>, <code>messages</code>, <code>error</code>, <code>done</code>) carry the turn's progress as it streams, with periodic unnamed keepalive comments so an idle stretch (the model thinking, an approval awaiting a decision) does not get dropped by an intermediary. The <code>usage</code> frame reports provider-exact token counts for the turn so far (<code>input_tokens</code>, <code>output_tokens</code>, and <code>context_tokens</code>, the newest model call's input size); it only appears when the provider reports usage. Every tool call the agent makes runs through the same capability gates, MESA checks, and audit log as a real MCP client on that token; a confirm-gated call surfaces as an inline approval card in the panel rather than a plain <code>pending_approval</code> reply.</p>
         <div class="callout note">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>
-          <div class="callout-body"><p class="callout-title">The chat route is kill-switch-gated; provider config is not</p><p>The four provider config/model routes above are kill-switch-immune, like the rest of the admin API. <code>POST /api/phoenix-mcp/agentcli/chat</code> is agent activity, not administration, so it is gated by the <a href="security.html">kill switch</a> the same way the MCP and REST proxy endpoints are: with the kill switch on, the route is not even registered.</p></div>
+          <div class="callout-body"><p class="callout-title">The chat route is kill-switch-gated; provider config is not</p><p>The four provider config/model routes above are kill-switch-immune, like the rest of the admin API. <code>POST /api/phoenix-mcp/agentcli/chat</code> is agent activity, not administration, so it is gated by the <a href="security.html">kill switch</a> the same way the MCP endpoint is: with the kill switch on, the route is not even registered.</p></div>
         </div>
 
         <h2 id="settings-system">Settings and system</h2>
@@ -293,7 +293,7 @@ DELETE /api/phoenix-mcp/admin/wipe                      Wipe tokens, audit log, 
           <div class="callout-body"><p class="callout-title">PATCH is read-modify-write under a lock</p><p>Token and record PATCH handlers load, modify, and save atomically, so two admins editing the same token at once cannot clobber each other.</p></div>
         </div>
 
-        <p>The token-scoped proxy routes (states, services, history, and so on) are listed in <a href="operations.html#route-reference">Operations</a>.</p>
+        <p>The token-facing MCP and skill routes are listed in <a href="operations.html#route-reference">Operations</a>.</p>
 
         <nav class="pager" id="pager" aria-label="Page navigation"></nav>
       </div>

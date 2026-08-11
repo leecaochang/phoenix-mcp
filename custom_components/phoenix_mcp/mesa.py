@@ -545,8 +545,8 @@ async def async_setup_mesa(hass: HomeAssistant, mesa_mode: str) -> MesaRuntime:
     """Construct the MESA runtime, loading any persisted profiles.
 
     Built even when the kill switch is on: the admin profile API must work
-    regardless, and the enforcement gate is simply never reached when no proxy
-    or MCP routes are registered.
+    regardless, and the enforcement gate is simply never reached when no client
+    routes are registered.
     """
     ha_store: Store[dict] = Store(hass, MESA_STORAGE_VERSION, MESA_STORAGE_KEY)
     raw = await ha_store.async_load() or {}

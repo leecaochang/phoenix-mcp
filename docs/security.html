@@ -69,10 +69,10 @@
           <div class="kv-row"><dt>stream_url</dt><dd>Direct stream URLs (for example from cameras) that may contain credentials or expose internal topology.</dd></div>
         </dl>
         <p>Beyond that fixed list, any attribute or response field whose <em>key name</em> contains a secret-like marker (<code>token</code>, <code>password</code>, <code>secret</code>, <code>api_key</code>, <code>authorization</code>, <code>credential</code>, <code>session</code>) is dropped or redacted as well. This catches secrets that third-party integrations surface under their own attribute names. Over-redaction is the deliberate trade-off here.</p>
-        <p>This applies to high-permission scoped tokens and pass-through tokens alike. Permission grants control which <em>actions</em> a token can take, not which <em>secrets</em> it can read. Scrubbing happens on the proxy views, on the MCP tools, and inside service-response filtering.</p>
+        <p>This applies to high-permission scoped tokens and pass-through tokens alike. Permission grants control which <em>actions</em> a token can take, not which <em>secrets</em> it can read. Scrubbing happens on MCP tools and inside service-response filtering.</p>
 
         <h2 id="log-redaction">Log redaction</h2>
-        <p>The <strong>Log read</strong> tools (<code>get_logs</code> and <code>/api/phoenix-mcp/logs</code>) return Home Assistant system-log records. Before any record leaves Phoenix MCP, its message and traceback are run through a redactor that removes Phoenix MCP tokens, JWTs and long-lived access tokens (anything shaped like a Home Assistant token), and credentials embedded in URLs (<code>?token=&hellip;</code>, <code>https://user:pass@host</code>). A leaked token in a log line is never handed back to a caller.</p>
+        <p>The <strong>Log read</strong> tool <code>get_logs</code> returns Home Assistant system-log records. Before any record leaves Phoenix MCP, its message and traceback are run through a redactor that removes Phoenix MCP tokens, JWTs and long-lived access tokens (anything shaped like a Home Assistant token), and credentials embedded in URLs (<code>?token=&hellip;</code>, <code>https://user:pass@host</code>). A leaked token in a log line is never handed back to a caller.</p>
 
         <h2 id="residual-exposure">What scrubbing cannot guarantee</h2>
         <div class="callout note">
@@ -99,7 +99,7 @@
         </div>
 
         <h2 id="kill-switch">Kill switch</h2>
-        <p>When the kill switch is enabled at startup, Phoenix MCP registers no client routes at all: the proxy, MCP, and skill endpoints simply do not exist. If you enable it later, at runtime, those routes were already registered and Home Assistant's web server cannot unregister them, so they refuse service with a 503 instead. Either way no client request is served. The admin panel and admin API are separate and stay accessible so you can turn the kill switch back off, and disabling it re-registers every route immediately without a Home Assistant restart.</p>
+        <p>When the kill switch is enabled at startup, Phoenix MCP registers no client routes at all: the MCP endpoint, context endpoint, skill route, and Agent Chat route simply do not exist. If you enable it later, at runtime, those routes were already registered and Home Assistant's web server cannot unregister them, so they refuse service with a 503 instead. Either way no client request is served. The admin panel and admin API are separate and stay accessible so you can turn the kill switch back off, and disabling it re-registers every route immediately without a Home Assistant restart.</p>
 
         <h2>Request limits</h2>
         <dl class="kv">

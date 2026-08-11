@@ -1,7 +1,7 @@
 """Tests for integration setup/unload orchestration in __init__.py.
 
 These cover async_setup_entry's wiring decisions, not the HA primitives it drives:
-the kill-switch gate on proxy/MCP route registration (admin routes + panel always
+the kill-switch gate on client route registration (admin routes + panel always
 register), MESA degrading to off without failing setup, and async_unload_entry
 cleaning up hass.data. Real timers and background tasks are neutralized so the test
 asserts the orchestration without scheduling anything that would linger past it.
@@ -75,7 +75,7 @@ async def test_setup_registers_routes_when_kill_switch_off(hass: HomeAssistant):
     assert result is True
     data = hass.data[DOMAIN]
     assert data.routes_registered is True
-    # Admin views plus the proxy/MCP/skill views were all registered.
+    # Admin views plus the client views were all registered.
     from custom_components.phoenix_mcp.admin_view import ALL_ADMIN_VIEWS
     assert view_count > len(ALL_ADMIN_VIEWS)
 

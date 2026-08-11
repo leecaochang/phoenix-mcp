@@ -572,7 +572,7 @@ class TestResolveGhostAndBlocklist:
 
         Each caller now coerces its own arguments, so nothing in the tool surface
         reaches here with a non-string any more; this stays as the fail-closed
-        floor for the REST, Assist and Agent Chat paths, and is pinned directly
+        floor for the MCP, Assist and Agent Chat paths, and is pinned directly
         because a guard that nothing tests is a guard someone deletes.
         """
         token = _make_token(domains={"light": "GREEN"})

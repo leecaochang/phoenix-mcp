@@ -947,19 +947,16 @@ async def _dispatch_no_target_tool_call(
 ) -> tuple[dict, Outcome, str]:
     """Call a service that takes NO entity target, and map the outcome.
 
-    The MCP-side twin of proxy_view._dispatch_no_target_call, for the same three
-    families: the dual-gate services (no entities in hass.states), the
-    config-reload family (whose schemas reject an entity_id), and ESPHome
+    Covers three families: the dual-gate services (no entities in hass.states),
+    the config-reload family (whose schemas reject an entity_id), and ESPHome
     user-defined actions (schema built from only the arguments the device
-    declared). Each ran its own near-identical copy.
+    declared).
 
     Authorization has already happened by the time this runs; it decides nothing.
 
-    NOTE the two surfaces deliberately differ on one flag, so do not "unify"
-    them by changing a default here. For NO_TARGET_SERVICES, MCP passes
-    surface_validation_errors=True (the message describes the caller's own
-    reloadable config, post-cap_yaml_edit) while the REST proxy passes False.
-    Changing either is a product decision, not a cleanup.
+    The caller chooses whether validation detail is safe to surface. For
+    NO_TARGET_SERVICES it is safe because the message describes the caller's
+    own reloadable config after the cap_yaml_edit authorization gate.
     """
     if domain in HIGH_RISK_DOMAINS:
         _LOGGER.info(
@@ -1042,7 +1039,7 @@ async def _execute_call_service(
     if service_key in NO_TARGET_SERVICES:
         # surface_validation_errors=True: post-authorization (cap_yaml_edit is
         # already granted) and the message describes the caller's own reloadable
-        # config, not hidden state. The REST proxy deliberately differs here.
+        # config, not hidden state.
         return await _dispatch_no_target_tool_call(
             hass, token, domain=domain, service=service, service_data=service_data,
             resource=resource, timeout_noun="Service",
@@ -1244,8 +1241,7 @@ async def _tool_get_logs(
 
     integration = str_arg(args.get("integration")).strip() or None
 
-    # Default matches _DEFAULT_LOG_LIMIT in proxy_view.py. Both are 50 intentionally;
-    # they are not shared via a constant to avoid coupling the two view modules.
+    # Default is the same as Home Assistant's stock system-log ring size.
     limit = 50
     raw_limit = args.get("limit")
     if raw_limit is not None:

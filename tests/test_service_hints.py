@@ -4,9 +4,9 @@ The hint turns an opaque ServiceNotFound into an actionable list of valid core
 service verbs for a curated set of actuator domains, so an agent that guessed the
 wrong verb (e.g. valve.open instead of valve.open_valve) can self-correct. It is
 only ever consulted post-authorization; see DOMAIN_SERVICE_HINTS in const.py for
-the leak-safety rationale. These tests pin the contract the two call sites
-(mcp_view + proxy_view) rely on, and cross-check the hardcoded verbs against the
-installed HA core so an upgrade that renames or drops one fails here.
+the leak-safety rationale. These tests pin the contract mcp_view relies on and
+cross-check the hardcoded verbs against the installed HA core so an upgrade
+that renames or drops one fails here.
 """
 
 from __future__ import annotations

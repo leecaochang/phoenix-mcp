@@ -259,7 +259,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Build the MESA runtime unconditionally (even under the kill switch): the
     # admin profile API must work regardless, and the enforcement gate is simply
-    # never reached when no proxy/MCP routes are registered. A failure here must
+    # never reached when no client routes are registered. A failure here must
     # not block Phoenix MCP setup; MESA degrades to off (data.mesa stays None).
     from .mesa import async_setup_mesa
     try:
@@ -317,12 +317,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     settings = store.get_settings()
 
     async def _register_routes() -> None:
-        """Register the proxy and MCP views. Skipped when kill switch is active."""
-        from .proxy_view import ALL_VIEWS
+        """Register agent-facing views. Skipped when kill switch is active."""
         from .mcp_view import ALL_MCP_VIEWS
         from .skill_view import ALL_SKILL_VIEWS
         from .agentcli import ALL_AGENTCLI_CHAT_VIEWS
-        _register_views(hass, ALL_VIEWS + ALL_MCP_VIEWS + ALL_SKILL_VIEWS + ALL_AGENTCLI_CHAT_VIEWS)
+        _register_views(hass, ALL_MCP_VIEWS + ALL_SKILL_VIEWS + ALL_AGENTCLI_CHAT_VIEWS)
 
     data.async_register_routes = _register_routes
     if not settings.kill_switch:

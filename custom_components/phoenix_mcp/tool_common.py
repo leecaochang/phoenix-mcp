@@ -370,9 +370,6 @@ async def _pending_or_inline(
     revising a change the operator already accepted, which is exactly the loop a
     MESA-gated actuation invites.
 
-    The REST surface deliberately does NOT route through this: it has no inline
-    wait for capability confirms either, so it stays internally consistent.
-
     THE WAIT IS SKIPPED WHEN A BACKLOG ALREADY EXISTS, and that is what makes
     batch approval usable at all. The hold is a per-request block, and tool calls
     arrive one at a time, so approval N+1 cannot even be CREATED until approval N

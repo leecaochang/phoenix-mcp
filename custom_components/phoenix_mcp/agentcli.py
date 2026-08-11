@@ -2683,7 +2683,7 @@ class PhoenixAgentCliChatView(PhoenixView):
 
         # Agent Chat bypasses async_get_authenticated_token (it is admin-authed, not
         # bearer-authed), so it must enforce the same invariants that gate every
-        # MCP/REST request: shutdown, the runtime kill switch, and token validity.
+        # MCP request: shutdown, the runtime kill switch, and token validity.
         if data.shutting_down or data.store.get_settings().kill_switch:
             return _err("service_unavailable", "Phoenix MCP is disabled (kill switch).", 503, rid)
 

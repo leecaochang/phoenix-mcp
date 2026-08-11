@@ -1,6 +1,6 @@
 """Tests for build_safe_config, the cap_config_read-safe view of hass.config.
 
-get_config (REST + MCP) must not hand a cap_config_read token precise home
+The MCP get_config tool must not hand a cap_config_read token precise home
 coordinates, internal/external URLs, or host filesystem paths; it returns an
 allowlisted subset of agent-useful context with Phoenix MCP's own components stripped.
 """
