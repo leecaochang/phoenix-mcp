@@ -145,8 +145,10 @@
 
           <article class="tool" data-cap="read" data-search="get_logbook human readable event history logbook">
             <div class="tool-head"><span class="tool-name">get_logbook</span><span class="badge badge-cap">Log read</span></div>
-            <p class="tool-desc">The human-readable logbook (state changes, automations and scripts triggered). Scoped to entities the token can access; entries for out-of-scope entities are dropped. This is the narrative event history, distinct from <code>get_logs</code> (error log) and <code>get_history</code> (Recorder states).</p>
-            <dl><dt>params</dt><dd><code>start_time</code> (default 24h), <code>end_time</code>, <code>entity_id</code> (optional, focus on one entity), <code>limit</code> (default 100, max 1000)</dd></dl>
+            <p class="tool-desc">Read the human-readable event narrative (state changes, triggered automations and scripts) in chronological order. Narrow one query with up to 100 unique accessible <code>entity_ids</code> and <code>device_ids</code> together, or with one causal <code>context_id</code>. Context cannot be combined with entity or device filters. Every requested resource must be accessible; a missing and an inaccessible resource answer identically.</p>
+            <p class="tool-desc">Home-wide reads are limited to 7 days; entity-, device-, or context-narrowed reads to 31 days. Search is a bounded, case-insensitive literal match over the safe <code>name</code>, <code>message</code>, and <code>state</code> fields after permission filtering and service-response redaction. It does not qualify as database narrowing. The response reports the matching <code>total</code> before the most-recent limit, plus <code>count</code>, <code>truncated</code>, and effective filters. Narrow the time window when truncated; there is no response-only cursor over Home Assistant's unpaginated query.</p>
+            <p class="tool-desc">This is the narrative event history, distinct from <code>get_logs</code> (error log) and <code>get_history</code> (Recorder states).</p>
+            <dl><dt>params</dt><dd><code>start_time</code> (default 24h), <code>end_time</code> (default now), <code>entity_ids</code> (unique, max 100), <code>device_ids</code> (unique, max 100), <code>context_id</code>, <code>search</code>, <code>limit</code> (default 100, max 1000)</dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="render_template jinja2">

@@ -734,11 +734,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "get_logbook",
         "description": (
-            "Read the human-readable Home Assistant logbook (state changes, automations and scripts "
-            "triggered, and other events), most recent within the window. Omit entity_id for a "
-            "home-wide view scoped to entities you can access, or pass one to focus on a single entity. "
-            "This is the narrative event history; get_logs is the system error log, and get_history is "
-            "raw state samples."
+            "Read the human-readable Home Assistant logbook in chronological order. Narrow by up to "
+            "100 accessible entities and devices together, or by one causal context_id. Home-wide "
+            "queries are limited to 7 days and resource- or context-narrowed queries to 31 days. The "
+            "response reports the post-permission, post-search total before limiting and whether the "
+            "most-recent slice is truncated. This is narrative event history; get_logs is the system "
+            "error log, and get_history is raw state history."
         ),
         "cap": "cap_log_read",
         "inputSchema": {
@@ -752,16 +753,35 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                     "type": "string",
                     "description": "ISO timestamp or relative string. Defaults to now.",
                 },
-                "entity_id": {
+                "entity_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 100,
+                    "uniqueItems": True,
+                    "description": "Optional unique accessible entity IDs. May be combined with device_ids, but not context_id.",
+                },
+                "device_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 100,
+                    "uniqueItems": True,
+                    "description": "Optional unique accessible Home Assistant device-registry IDs. May be combined with entity_ids, but not context_id.",
+                },
+                "context_id": {
                     "type": "string",
-                    "description": "Optional: limit to one accessible entity.",
+                    "description": "Optional Home Assistant causal context ULID. Cannot be combined with entity_ids or device_ids.",
+                },
+                "search": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Case-insensitive literal search over safe name, message, and state fields after permission filtering and redaction. Does not widen the allowed time range.",
                 },
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 1000,
                     "default": 100,
-                    "description": "Maximum entries to return (most recent kept).",
+                    "description": "Maximum entries to return (1-1000, default 100). The most recent matching entries are kept and returned chronologically.",
                 },
             },
         },

@@ -76,6 +76,10 @@
         <p><code>get_phoenix_diagnostics</code> is a separate dual-capability read requiring both Diagnostics and Log read. It includes only Phoenix's own retained warning-and-above records and applies a stronger second boundary: network topology, URLs, filesystem paths, UUIDs, ULIDs, long opaque identifiers, and inaccessible or unknown entity IDs are replaced before search. Entity IDs the token can read remain visible for useful diagnosis.</p>
         <p>Phoenix does not expose the raw <code>home-assistant.log</code> file. Both tools read the same bounded <code>system_log</code> ring, report its capacity and retained time coverage, and surface missing or incompatible source state instead of returning a misleading healthy-looking empty list.</p>
 
+        <h2 id="logbook-scoping">Logbook scoping</h2>
+        <p><code>get_logbook</code> validates every requested entity and device before querying Home Assistant. One missing, inaccessible, or invalid resource refuses the entire request with the same public not-found response, so a guessed identifier cannot become an existence oracle. Returned entries are scoped again: an attached entity must itself be readable even when its device is accessible; device access authorizes only entries that have no entity. Entries with neither are dropped.</p>
+        <p>Service-response redaction runs before the optional literal search, and search examines only the safe <code>name</code>, <code>message</code>, and <code>state</code> fields. This prevents a sensitive value or an incidental context field from becoming searchable through match/no-match behavior. Home-wide reads are capped at 7 days and resource- or context-narrowed reads at 31 days; search runs after retrieval and never widens those bounds.</p>
+
         <h2 id="residual-exposure">What scrubbing cannot guarantee</h2>
         <div class="callout note">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
@@ -107,6 +111,7 @@
         <dl class="kv">
           <div class="kv-row"><dt>Request body</dt><dd>Bodies over 1&nbsp;MB are rejected with 413 before any processing.</dd></div>
           <div class="kv-row"><dt>Recorder reads</dt><dd>Recorder responses are cursor-paginated with a default limit of 100 and a maximum request limit of 1000. State changes use Home Assistant's database limit and can span arbitrary ranges. Full significant-state reads refuse ranges over 7 days. Statistics use local-calendar page windows with stricter safe caps for expensive aggregate periods.</dd></div>
+          <div class="kv-row"><dt>Logbook reads</dt><dd>Home-wide event reads are limited to 7 days; reads narrowed by entity, device, or causal context are limited to 31 days. Up to 100 unique entity IDs and 100 unique device IDs may narrow one request. Responses return at most 1000 entries and report the full post-scope, post-search total plus whether the most-recent slice was truncated.</dd></div>
           <div class="kv-row"><dt>Request ID</dt><dd>Every token-facing API response includes an <code>X-Phoenix-Request-ID</code> that matches the request's audit log entry. Admin responses carry the same header for support correlation, but admin actions are recorded in Home Assistant's own log rather than the Phoenix audit store.</dd></div>
         </dl>
 

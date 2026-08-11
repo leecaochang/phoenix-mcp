@@ -1450,9 +1450,9 @@ async def test_get_logbook_scopes_to_accessible_entities():
         return Permission.READ if eid == "light.ok" else Permission.NO_ACCESS
 
     entries = [
-        {"entity_id": "light.ok", "message": "turned on"},
-        {"entity_id": "light.secret", "message": "turned off"},
-        {"name": "Some event", "message": "no entity id"},
+        {"entity_id": "light.ok", "message": "turned on", "when": 1.0},
+        {"entity_id": "light.secret", "message": "turned off", "when": 2.0},
+        {"name": "Some event", "message": "no entity id", "when": 3.0},
     ]
     # _logbook_entry_visible (mcp_view.resolve) does the scoping under test; the
     # extra filter_service_response redaction pass has its own coverage, so stub it

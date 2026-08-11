@@ -192,6 +192,11 @@ KNOWN_IMPORTS: dict[str, dict[str, str]] = {
     "homeassistant.util.file": {
         "write_utf8_file_atomic": "0.0.0",
     },
+    "homeassistant.util.ulid": {
+        # Re-exported from ulid_transform. Verified absent in 2024.7.0 and
+        # present in 2024.8.0, before Phoenix MCP's 2025.2.0 floor.
+        "ulid_to_bytes_or_none": "2024.8.0",
+    },
     "homeassistant.util.yaml": {
         "dump": "0.0.0",
         "load_yaml": "0.0.0",

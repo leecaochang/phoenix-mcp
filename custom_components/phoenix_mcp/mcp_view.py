@@ -8,6 +8,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -36,9 +37,10 @@ from homeassistant.config_entries import (
 from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
+from homeassistant.util.ulid import ulid_to_bytes_or_none
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_SEARCH_QUERY_LEN, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_LOGBOOK_HOME_DAYS, MAX_LOGBOOK_NARROWED_DAYS, MAX_LOGBOOK_RESOURCE_IDS, MAX_SEARCH_QUERY_LEN, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import (
     RegistryMesaDecision,
@@ -1391,16 +1393,59 @@ async def _tool_get_phoenix_diagnostics(
     )
 
 
-def _logbook_entry_visible(entry: dict, token: TokenRecord, hass: HomeAssistant) -> bool:
-    """A logbook entry is visible only if its entity is accessible to the token.
+def _logbook_string_list(args: dict, key: str) -> tuple[list[str], str | None]:
+    """Validate, trim, and deduplicate one narrowing list without widening drift."""
+    raw = args.get(key)
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list) or any(
+        not isinstance(item, str) or not item.strip() for item in raw
+    ):
+        return [], f"{key} must be an array of non-empty strings."
+    unique = list(dict.fromkeys(item.strip() for item in raw))
+    if len(unique) > MAX_LOGBOOK_RESOURCE_IDS:
+        return [], f"{key} accepts at most {MAX_LOGBOOK_RESOURCE_IDS} unique values."
+    return unique, None
 
-    Entries without an entity_id cannot be scope-checked, so they are dropped
-    (conservative: never reveal activity the token has no entity-level access to).
-    """
-    eid = entry.get("entity_id")
-    if not isinstance(eid, str) or not eid:
+
+def _logbook_time(value: Any, default: datetime) -> datetime:
+    """Parse one logbook bound and normalize timezone-less ISO input to UTC."""
+    if value in (None, ""):
+        return default
+    if not isinstance(value, str):
+        raise ValueError
+    parsed = _parse_time_param(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _logbook_entry_visible(
+    entry: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    entity_permissions: dict[str, Permission],
+    device_permissions: dict[str, Permission],
+) -> bool:
+    """Enforce entity-first visibility, with device access for device-only rows."""
+    if "entity_id" in entry:
+        entity_id = entry.get("entity_id")
+        if not isinstance(entity_id, str) or not entity_id:
+            return False
+        permission = entity_permissions.get(entity_id)
+        if permission is None:
+            permission = entity_permissions[entity_id] = resolve(entity_id, token, hass)
+        return permission in (Permission.READ, Permission.WRITE)
+
+    device_id = entry.get("device_id")
+    if not isinstance(device_id, str) or not device_id:
         return False
-    return resolve(eid, token, hass) in (Permission.READ, Permission.WRITE)
+    permission = device_permissions.get(device_id)
+    if permission is None:
+        permission = device_permissions[device_id] = resolve_device_registry_access(
+            device_id, token, hass
+        )
+    return permission in (Permission.READ, Permission.WRITE)
 
 
 async def _tool_get_logbook(
@@ -1410,25 +1455,97 @@ async def _tool_get_logbook(
     if effective_cap(token, "cap_log_read") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "get_logbook"
 
-    try:
-        start_time = _parse_time_param(str(args.get("start_time") or "24h"))
-    except ValueError:
-        return _tool_error("Invalid start_time format."), "invalid_request", "get_logbook"
-    payload: dict[str, Any] = {"start_time": start_time.isoformat()}
-    if args.get("end_time"):
-        try:
-            payload["end_time"] = _parse_time_param(args["end_time"]).isoformat()
-        except ValueError:
-            return _tool_error("Invalid end_time format."), "invalid_request", "get_logbook"
+    entity_ids, entity_error = _logbook_string_list(args, "entity_ids")
+    device_ids, device_error = _logbook_string_list(args, "device_ids")
+    if entity_error or device_error:
+        return (
+            _tool_error(entity_error or device_error or "Invalid filters."),
+            "invalid_request",
+            "get_logbook",
+        )
 
-    entity_id = str(args.get("entity_id") or "").strip()
-    if entity_id:
-        perm = resolve(entity_id, token, hass)
-        if perm == Permission.NOT_FOUND:
-            return _tool_error("Entity not found."), "not_found", entity_id
-        if perm in (Permission.NO_ACCESS, Permission.DENY):
-            return _tool_error("Entity not found."), "denied", entity_id
-        payload["entity_ids"] = [entity_id]
+    raw_context = args.get("context_id")
+    context_id = None
+    if raw_context is not None:
+        if (
+            not isinstance(raw_context, str)
+            or not (context_id := raw_context.strip())
+            or ulid_to_bytes_or_none(context_id) is None
+        ):
+            return _tool_error("Invalid context_id."), "invalid_request", "get_logbook"
+    if context_id and (entity_ids or device_ids):
+        return _tool_error(
+            "context_id cannot be combined with entity_ids or device_ids."
+        ), "invalid_request", "get_logbook"
+    if any(not valid_entity_id(entity_id) for entity_id in entity_ids):
+        return _tool_error("Requested resource not found."), "not_found", "get_logbook"
+
+    raw_search = args.get("search")
+    if raw_search is not None and not isinstance(raw_search, str):
+        return _tool_error("search must be a string."), "invalid_request", "get_logbook"
+    search = raw_search.strip() if raw_search is not None else None
+    search = search or None
+    if search and len(search) > MAX_SEARCH_QUERY_LEN:
+        return _tool_error(
+            f"search must be at most {MAX_SEARCH_QUERY_LEN} characters."
+        ), "invalid_request", "get_logbook"
+
+    raw_limit = args.get("limit")
+    if raw_limit is None:
+        limit = 100
+    elif type(raw_limit) is not int or not 1 <= raw_limit <= 1000:
+        return _tool_error(
+            "limit must be an integer from 1 through 1000."
+        ), "invalid_request", "get_logbook"
+    else:
+        limit = raw_limit
+
+    now = utcnow()
+    try:
+        start_time = _logbook_time(args.get("start_time"), now - timedelta(hours=24))
+        end_time = _logbook_time(args.get("end_time"), now)
+    except ValueError:
+        return _tool_error(
+            "Invalid start_time or end_time format."
+        ), "invalid_request", "get_logbook"
+    if start_time >= end_time:
+        return _tool_error(
+            "start_time must be earlier than end_time."
+        ), "invalid_request", "get_logbook"
+    narrowed = bool(entity_ids or device_ids or context_id)
+    max_days = MAX_LOGBOOK_NARROWED_DAYS if narrowed else MAX_LOGBOOK_HOME_DAYS
+    if end_time - start_time > timedelta(days=max_days):
+        return _tool_error(
+            f"This logbook query supports at most {max_days} days."
+        ), "invalid_request", "get_logbook"
+
+    requested_permissions: list[Permission] = [
+        resolve(entity_id, token, hass) for entity_id in entity_ids
+    ]
+    requested_permissions.extend(
+        resolve_device_registry_access(device_id, token, hass)
+        for device_id in device_ids
+    )
+    if any(
+        permission not in (Permission.READ, Permission.WRITE)
+        for permission in requested_permissions
+    ):
+        return (
+            _tool_error("Requested resource not found."),
+            "not_found",
+            "get_logbook",
+        )
+
+    payload: dict[str, Any] = {
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat(),
+    }
+    if entity_ids:
+        payload["entity_ids"] = entity_ids
+    if device_ids:
+        payload["device_ids"] = device_ids
+    if context_id:
+        payload["context_id"] = context_id
 
     try:
         result = await async_ws_command(hass, "logbook/get_events", payload)
@@ -1441,19 +1558,58 @@ async def _tool_get_logbook(
         return _tool_error(
             "Unexpected logbook response from Home Assistant."
         ), "invalid_request", "get_logbook"
-    entries = result
-    # Scope: keep only entries for entities this token can read, then redact any
-    # remaining out-of-scope ids (e.g. a context_entity_id) defensively.
-    scoped = [e for e in entries if isinstance(e, dict) and _logbook_entry_visible(e, token, hass)]
+    entity_permissions = dict(zip(entity_ids, requested_permissions[:len(entity_ids)]))
+    device_permissions = dict(zip(device_ids, requested_permissions[len(entity_ids):]))
+    scoped = [
+        entry
+        for entry in result
+        if isinstance(entry, dict)
+        and _logbook_entry_visible(
+            entry, token, hass, entity_permissions, device_permissions
+        )
+    ]
     scoped = filter_service_response(scoped, token, hass)
+    if not isinstance(scoped, list) or any(
+        not isinstance(entry, dict)
+        or not isinstance(entry.get("when"), (int, float))
+        or isinstance(entry.get("when"), bool)
+        or not math.isfinite(float(entry["when"]))
+        for entry in scoped
+    ):
+        return _tool_error(
+            "Unexpected logbook entry shape from Home Assistant."
+        ), "invalid_request", "get_logbook"
 
-    try:
-        limit = int(args.get("limit") or 100)
-    except (TypeError, ValueError):
-        limit = 100
-    limit = max(1, min(limit, 1000))
-    scoped = scoped[-limit:]  # logbook is chronological; keep the most recent
-    return _tool_success(json.dumps({"count": len(scoped), "entries": scoped}, default=str)), "allowed", "get_logbook"
+    if search:
+        needle = search.casefold()
+        scoped = [
+            entry
+            for entry in scoped
+            if any(
+                isinstance(entry.get(field), str)
+                and needle in entry[field].casefold()
+                for field in ("name", "message", "state")
+            )
+        ]
+    scoped.sort(key=lambda entry: float(entry["when"]))
+    total = len(scoped)
+    scoped = scoped[-limit:]
+    body = {
+        "count": len(scoped),
+        "total": total,
+        "truncated": total > len(scoped),
+        "filters": {
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "entity_ids": entity_ids,
+            "device_ids": device_ids,
+            "context_id": context_id,
+            "search": search,
+            "limit": limit,
+        },
+        "entries": scoped,
+    }
+    return _tool_success(json.dumps(body, default=str)), "allowed", "get_logbook"
 
 
 def _entity_meta_snapshot(entry: Any) -> dict:
