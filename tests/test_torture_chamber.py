@@ -319,9 +319,19 @@ async def test_unknown_arguments_are_tolerated_not_rejected(hass: HomeAssistant)
     """
     token, data = _token("allow"), _data()
     hass.states.async_set("light.kitchen", "on")
-    clean, _, _ = await _call_tool("get_states", {}, token, hass, data)
+    clean, _, _ = await _call_tool(
+        "get_states", {"projection": {"kind": "compact"}}, token, hass, data
+    )
     dirty, outcome, _ = await _call_tool(
-        "get_states", {f"{MARKER}_unknown": MARKER, "nonsense": [1, 2]}, token, hass, data,
+        "get_states",
+        {
+            "projection": {"kind": "compact"},
+            f"{MARKER}_unknown": MARKER,
+            "nonsense": [1, 2],
+        },
+        token,
+        hass,
+        data,
     )
     assert outcome == "allowed"
     assert dirty["content"][0]["text"] == clean["content"][0]["text"]

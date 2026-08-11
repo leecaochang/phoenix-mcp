@@ -23,6 +23,15 @@ async def _call(args: dict, *, token=None, hass=None, data=None):
         data = _make_data(token)
     if hass is None:
         hass = _make_hass(data)
+    args = dict(args)
+    if "context_id" in args and not {"entity_ids", "device_ids"} & set(args):
+        args["target"] = {"kind": "context", "id": args.pop("context_id")}
+    elif {"entity_ids", "device_ids"} & set(args):
+        target = {"kind": "resources"}
+        for key in ("entity_ids", "device_ids"):
+            if key in args:
+                target[key] = args.pop(key)
+        args["target"] = target
     response, _method, _resource, outcome = await _dispatch_mcp(
         "tools/call",
         3,
@@ -62,9 +71,11 @@ async def test_capability_denial_runs_before_hostile_argument_validation():
     token, _ = _make_token(cap_log_read="deny")
     body, result, outcome = await _call(
         {
-            "entity_ids": ["marker.secret"],
-            "device_ids": ["marker-device"],
-            "context_id": "marker-context",
+            "target": {
+                "kind": "resources",
+                "entity_ids": ["marker.secret"],
+                "device_ids": ["marker-device"],
+            },
         },
         token=token,
     )
@@ -81,7 +92,7 @@ async def test_capability_denial_runs_before_hostile_argument_validation():
         ({"entity_ids": "light.one"}, "entity_ids must be an array"),
         ({"entity_ids": ["light.one", 7]}, "entity_ids must be an array"),
         ({"device_ids": [""]}, "device_ids must be an array"),
-        ({"context_id": ["bad"]}, "Invalid context_id"),
+        ({"context_id": ["bad"]}, "target must be a context id"),
         ({"context_id": "not-a-ulid"}, "Invalid context_id"),
         ({"search": ["not", "text"]}, "search must be a string"),
         ({"search": "x" * 513}, "search must be at most"),
@@ -142,7 +153,7 @@ async def test_context_cannot_be_combined_with_entity_or_device_narrowing():
         ) as command:
             body, _result, outcome = await _call(args)
         assert outcome == "invalid_request"
-        assert "cannot be combined" in body
+        assert "no longer accepts" in body
         command.assert_not_awaited()
 
 
@@ -416,7 +427,7 @@ def test_published_resource_lists_are_unique_and_bounded():
     definition = next(
         item for item in _SYSTEM_TOOL_DEFS if item["name"] == "get_logbook"
     )
-    properties = definition["inputSchema"]["properties"]
+    properties = definition["inputSchema"]["properties"]["target"]["properties"]
     for key in ("entity_ids", "device_ids"):
         assert properties[key]["maxItems"] == 100
         assert properties[key]["uniqueItems"] is True

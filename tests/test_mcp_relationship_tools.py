@@ -47,6 +47,19 @@ def _dangling(body: dict) -> list[str]:
 
 
 async def _call(name, args, token, hass):
+    args = dict(args)
+    if name == "get_relationships":
+        selectors = {
+            "entity_id": "entity",
+            "device_id": "device",
+            "integration": "integration",
+            "area": "area",
+            "label": "label",
+        }
+        for legacy, kind in selectors.items():
+            if legacy in args:
+                args["scope"] = {"kind": kind, "id": args.pop(legacy)}
+                break
     data = MagicMock()
     data.mesa = None  # deterministic: describe_entity skips the MESA block
     return await _call_tool(name, args, token, hass, data)
@@ -223,7 +236,10 @@ class TestRelationshipSelectors:
         for args in ({}, {"entity_id": "light.kitchen", "integration": "test_integration"}):
             content, outcome, _ = await _call("get_relationships", args, _token(), hass)
             assert outcome == "invalid_request"
-            assert "exactly one" in content["content"][0]["text"]
+            assert any(
+                phrase in content["content"][0]["text"]
+                for phrase in ("scope must", "no longer accepts")
+            )
 
     async def test_integration_scope_covers_every_entity_at_once(self, hass, rel_env):
         content, outcome, _ = await _call(

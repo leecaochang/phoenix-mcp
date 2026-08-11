@@ -1172,6 +1172,7 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "set_yaml_config.removing_entry": "Replace {file}, removing 1 entry",
     "set_yaml_config.removing_entries": "Replace {file}, removing {count} entries",
     "patch_yaml_config.set": "Set {path} in {file}",
+    "patch_yaml_config.append": "Append to {path} in {file}",
     "patch_yaml_config.remove": "Remove {path} from {file}",
     "config_entry.options": "Change {keys} on helper '{label}'",
     "write_file": "Write file '{path}'",

@@ -1116,7 +1116,7 @@ async def test_tools_call_get_state_denied_entity_not_accessible():
         result, _m, _r, outcome = await _dispatch_mcp(
             "tools/call",
             3,
-            {"name": "get_state", "arguments": {"entity_id": "light.kitchen"}},
+            {"name": "get_state", "arguments": {"entity_id": "light.kitchen", "projection": {"kind": "compact"}}},
             token,
             hass,
             data,
@@ -1153,7 +1153,7 @@ async def test_tools_call_get_state_success():
             result, _m, _r, outcome = await _dispatch_mcp(
                 "tools/call",
                 3,
-                {"name": "get_state", "arguments": {"entity_id": "light.kitchen"}},
+                {"name": "get_state", "arguments": {"entity_id": "light.kitchen", "projection": {"kind": "compact"}}},
                 token,
                 hass,
                 data,
@@ -1408,12 +1408,12 @@ async def test_tools_call_get_state_lean_default_and_detailed():
         with patch("custom_components.phoenix_mcp.mcp_view.scrub_sensitive_attributes", return_value=full):
             res_lean, _m, _r, out_lean = await _dispatch_mcp(
                 "tools/call", 3,
-                {"name": "get_state", "arguments": {"entity_id": "light.kitchen"}},
+                {"name": "get_state", "arguments": {"entity_id": "light.kitchen", "projection": {"kind": "compact"}}},
                 token, hass, data, "127.0.0.1", base_url="http://h",
             )
             res_full, _m2, _r2, out_full = await _dispatch_mcp(
                 "tools/call", 4,
-                {"name": "get_state", "arguments": {"entity_id": "light.kitchen", "detailed": True}},
+                {"name": "get_state", "arguments": {"entity_id": "light.kitchen", "projection": {"kind": "full"}}},
                 token, hass, data, "127.0.0.1", base_url="http://h",
             )
     assert out_lean == "allowed" and out_full == "allowed"
@@ -1482,7 +1482,7 @@ async def test_get_calendar_events_returns_events_for_accessible_calendar():
     with patch("custom_components.phoenix_mcp.mcp_view.resolve", return_value=Permission.READ):
         res, _m, _r, outcome = await _dispatch_mcp(
             "tools/call", 3,
-            {"name": "get_calendar_events", "arguments": {"calendar_id": "calendar.fam"}},
+            {"name": "get_calendar_events", "arguments": {"entity_id": "calendar.fam"}},
             token, hass, data, "127.0.0.1", base_url="http://h",
         )
     assert outcome == "allowed"
@@ -1500,7 +1500,7 @@ async def test_get_calendar_events_rejects_non_calendar_entity():
     with patch("custom_components.phoenix_mcp.mcp_view.resolve", return_value=Permission.READ):
         res, _m, _r, outcome = await _dispatch_mcp(
             "tools/call", 3,
-            {"name": "get_calendar_events", "arguments": {"calendar_id": "light.kitchen"}},
+            {"name": "get_calendar_events", "arguments": {"entity_id": "light.kitchen"}},
             token, hass, data, "127.0.0.1", base_url="http://h",
         )
     assert outcome == "invalid_request"
@@ -1515,7 +1515,7 @@ async def test_get_calendar_events_not_found_when_inaccessible():
     with patch("custom_components.phoenix_mcp.mcp_view.resolve", return_value=Permission.NO_ACCESS):
         res, _m, _r, outcome = await _dispatch_mcp(
             "tools/call", 3,
-            {"name": "get_calendar_events", "arguments": {"calendar_id": "calendar.fam"}},
+            {"name": "get_calendar_events", "arguments": {"entity_id": "calendar.fam"}},
             token, hass, data, "127.0.0.1", base_url="http://h",
         )
     assert outcome == "denied"
@@ -2555,7 +2555,7 @@ async def test_call_service_cover_toggle_denied_without_physical_control(hass):
     data = PhoenixData(store=store, rate_limiter=MagicMock(), audit=MagicMock(), mesa=None)
 
     result, outcome, _res = await _tool_call_service(
-        {"domain": "cover", "service": "toggle", "entity_id": "cover.g"},
+        {"service": {"domain": "cover", "name": "toggle"}, "targets": [{"kind": "entity", "ids": ["cover.g"]}]},
         token, hass, data, "rid", "1.2.3.4",
     )
     assert outcome == "denied"
@@ -3573,7 +3573,7 @@ async def test_no_target_reload_denied_without_cap_yaml_edit(hass):
     data = PhoenixData(store=store, rate_limiter=MagicMock(), audit=MagicMock(), mesa=None)
 
     result, outcome, _res = await _tool_call_service(
-        {"domain": "automation", "service": "reload"},
+        {"service": {"domain": "automation", "name": "reload"}},
         token, hass, data, "rid-nt", "1.2.3.4",
     )
     assert outcome == "denied"
@@ -3616,7 +3616,7 @@ async def test_no_target_reload_pending_under_confirm(hass):
     data = PhoenixData(store=store, rate_limiter=MagicMock(), audit=MagicMock(), mesa=None)
 
     result, outcome, _res = await _tool_call_service(
-        {"domain": "automation", "service": "reload"},
+        {"service": {"domain": "automation", "name": "reload"}},
         token, hass, data, "rid-nt2", "1.2.3.4",
     )
     assert outcome == "pending_approval"
@@ -3641,7 +3641,7 @@ async def test_dry_run_no_target_reload_predicts_cap_yaml_edit(hass):
     data = PhoenixData(store=store, rate_limiter=MagicMock(), audit=MagicMock(), mesa=None)
 
     result, outcome, _res = await _tool_dry_run_service(
-        {"domain": "automation", "service": "reload"}, token, hass, data,
+        {"service": {"domain": "automation", "name": "reload"}}, token, hass, data,
     )
     assert outcome == "allowed"
     body = json.loads(result["content"][0]["text"])
@@ -4049,11 +4049,8 @@ async def test_single_id_wait_still_returns_the_full_result(hass):
     token = _make_physical_token("confirm")
     token.id = "tid"
 
-    content, _o, _r = await _tool_wait_for_approval({"approval_id": "appr-1"}, token, hass, data)
-
-    body = json.loads(content["content"][0]["text"])
-    assert body["result"]["tool_result"]["content"][0]["text"].count("sensor.temp_") == 12
-    assert "result_text" not in body
+    content, outcome, _r = await _tool_wait_for_approval({"approval_id": "appr-1"}, token, hass, data)
+    assert outcome == "invalid_request" and content["isError"] is True
 
 
 @pytest.mark.asyncio
@@ -4106,7 +4103,4 @@ async def test_single_id_form_is_untouched(hass):
 
     content, outcome, _r = await _tool_wait_for_approval(
         {"approval_id": "appr-1"}, token, hass, data)
-
-    body = json.loads(content["content"][0]["text"])
-    assert outcome == "allowed"
-    assert body["approval_id"] == "appr-1" and "approvals" not in body
+    assert outcome == "invalid_request" and content["isError"] is True

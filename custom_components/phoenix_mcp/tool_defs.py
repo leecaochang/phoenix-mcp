@@ -25,32 +25,17 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "name": "get_state",
         "description": (
             "Get the current state of a Home Assistant entity. Returns a compact, domain-aware view by "
-            "default (state plus that domain's key attributes); pass detailed=true for the full state, or "
-            "fields=[...] to select exact fields (e.g. \"state\", \"attr.brightness\"). For everything "
+            "default (state plus that domain's key attributes); use projection kind full for the full state, or "
+            "projection kind fields with fields=[...] to select exact fields (e.g. \"state\", \"attr.brightness\"). For everything "
             "about one entity, use describe_entity."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "entity_id": {"type": "string", "description": "Entity ID, e.g. light.living_room."},
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Optional: return only these fields. Use top-level keys (state, last_changed, "
-                        "last_updated) and 'attr.<name>' for a single attribute, or 'attributes' for all. "
-                        "Overrides the default lean view."
-                    ),
-                },
-                "detailed": {
-                    "type": "boolean",
-                    "description": (
-                        "Return the full state with all attributes. Default false returns a compact, "
-                        "domain-aware view (key attributes only)."
-                    ),
-                },
+                "projection": {"type": "object", "description": "Required output projection: compact, full, or exact fields.", "properties": {"kind": {"type": "string", "enum": ["compact", "full", "fields"], "description": "Projection mode."}, "fields": {"type": "array", "items": {"type": "string"}, "description": "Exact fields when kind is fields."}}, "required": ["kind"]},
             },
-            "required": ["entity_id"],
+            "required": ["entity_id", "projection"],
         },
     },
     {
@@ -59,28 +44,14 @@ _ENTITY_TOOL_DEFS: list[dict] = [
             "Get the current state of every entity this token can access (may be a large response). "
             "To find specific entities or filter by domain, area, or state use search_entities; "
             "for a counts-only orientation use get_overview. Returns a compact, domain-aware view per "
-            "entity by default; pass detailed=true for full states, or fields=[...] to select exact fields."
+            "entity when projection.kind is compact; choose full or fields for another projection."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Optional: return only these fields per entity. Use top-level keys (state, "
-                        "last_changed) and 'attr.<name>' for a single attribute, or 'attributes' for all. "
-                        "Overrides the default lean view."
-                    ),
-                },
-                "detailed": {
-                    "type": "boolean",
-                    "description": (
-                        "Return full states with all attributes. Default false returns a compact, "
-                        "domain-aware view per entity."
-                    ),
-                },
+                "projection": {"type": "object", "description": "Required output projection for every state.", "properties": {"kind": {"type": "string", "enum": ["compact", "full", "fields"], "description": "Projection mode."}, "fields": {"type": "array", "items": {"type": "string"}, "description": "Exact fields when kind is fields."}}, "required": ["kind"]},
             },
+            "required": ["projection"],
         },
     },
     {
@@ -174,7 +145,7 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "calendar_id": {"type": "string", "description": "A calendar.* entity id."},
+                "entity_id": {"type": "string", "description": "A calendar.* entity ID."},
                 "start_time": {
                     "type": "string",
                     "description": "ISO timestamp or relative string (24h, 7d). Defaults to now.",
@@ -184,7 +155,7 @@ _ENTITY_TOOL_DEFS: list[dict] = [
                     "description": "ISO timestamp or relative string. Defaults to 7 days after start.",
                 },
             },
-            "required": ["calendar_id"],
+            "required": ["entity_id"],
         },
     },
     {
@@ -199,20 +170,10 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Service domain, e.g. light."},
-                "service": {"type": "string", "description": "Service name, e.g. turn_on."},
-                "service_data": {"type": "object", "description": "Additional service parameters."},
-                "entity_id": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {"type": "array", "items": {"type": "string"}},
-                    ],
-                    "description": "Target entity ID or list of entity IDs.",
-                },
-                "device_id": {"type": "string"},
-                "area_id": {"type": "string"},
+                "service": {"type": "object", "description": "Service to execute.", "properties": {"domain": {"type": "string", "description": "Service domain."}, "name": {"type": "string", "description": "Service name."}, "data": {"type": "object", "description": "Additional service data."}}, "required": ["domain", "name"]},
+                "targets": {"type": "array", "description": "Optional resolved target groups.", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["entity", "device", "area", "all"], "description": "Target selector kind."}, "ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "IDs for entity, device, or area targets."}}, "required": ["kind"]}},
             },
-            "required": ["domain", "service"],
+            "required": ["service"],
         },
     },
     {
@@ -259,20 +220,15 @@ _ENTITY_TOOL_DEFS: list[dict] = [
                 "approval_ids": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "minItems": 1,
                     "description": "Several approval_ids to wait for together. Use instead of approval_id after a run of confirm-gated calls.",
-                },
-                "approval_id": {
-                    "type": "string",
-                    "description": "The approval_id returned by the tool call that is pending.",
                 },
                 "timeout": {
                     "type": "integer",
                     "description": "Max seconds to wait (capped by the server). Default is the server cap.",
                 },
             },
-            # Neither is required on its own: exactly one of approval_id /
-            # approval_ids must be given, which JSON Schema cannot express here
-            # without oneOf, so the handler refuses a call carrying neither.
+            "required": ["approval_ids"],
         },
     },
     {
@@ -362,38 +318,18 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "op": {
+                "operation": {
                     "type": "string",
                     "enum": [
                         "replace_statistic", "add_device", "remove_device",
                         "rename_device", "set_source", "remove_source",
                     ],
-                    "description": "Which change to make.",
+                    "description": "Which addressed Energy change to make.",
                 },
-                "statistic": {
-                    "type": "string",
-                    "description": (
-                        "Entity id (or external statistic id) addressing an existing entry, and the "
-                        "entity to track for add_device."
-                    ),
-                },
-                "device_name": {
-                    "type": "string",
-                    "description": (
-                        "Address a device entry by its display name instead of its statistic. Use this "
-                        "for an entry get_energy_config returned as <redacted>."
-                    ),
-                },
-                "new_statistic": {
-                    "type": "string",
-                    "description": "For replace_statistic: the entity id to point the entry at.",
-                },
-                "name": {"type": "string", "description": "For add_device: the label shown on the dashboard."},
-                "source_type": {
-                    "type": "string",
-                    "enum": ["grid", "solar", "battery", "gas", "water"],
-                    "description": "For set_source: which source to update or create.",
-                },
+                "target": {"type": "object", "description": "The existing statistic, redacted device name, or Energy source addressed by the operation.", "properties": {"kind": {"type": "string", "enum": ["statistic", "device_name", "source"], "description": "Address kind."}, "id": {"type": "string", "description": "Statistic ID."}, "name": {"type": "string", "description": "Device display name."}, "source_type": {"type": "string", "enum": ["grid", "solar", "battery", "gas", "water"], "description": "Energy source kind."}}, "required": ["kind"]},
+                "changes": {"type": "object", "description": "Fields changed by the selected operation. Empty for a removal.", "properties": {
+                "new_statistic": {"type": "string", "description": "Replacement statistic."},
+                "name": {"type": "string", "description": "Device display name."},
                 "stat_energy_from": {
                     "type": "string",
                     "description": "For set_source: grid import, solar production, battery discharge, or the gas/water meter.",
@@ -432,8 +368,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                     "type": ["string", "null"],
                     "description": "For set_source: an existing statistic of export compensation received. Grid only.",
                 },
+                }},
             },
-            "required": ["op"],
+            "required": ["operation", "target", "changes"],
         },
     },
     {
@@ -753,24 +690,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                     "type": "string",
                     "description": "ISO timestamp or relative string. Defaults to now.",
                 },
-                "entity_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "maxItems": 100,
-                    "uniqueItems": True,
-                    "description": "Optional unique accessible entity IDs. May be combined with device_ids, but not context_id.",
-                },
-                "device_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "maxItems": 100,
-                    "uniqueItems": True,
-                    "description": "Optional unique accessible Home Assistant device-registry IDs. May be combined with entity_ids, but not context_id.",
-                },
-                "context_id": {
-                    "type": "string",
-                    "description": "Optional Home Assistant causal context ULID. Cannot be combined with entity_ids or device_ids.",
-                },
+                "target": {"type": "object", "description": "Optional resource or causal-context filter.", "properties": {"kind": {"type": "string", "enum": ["resources", "context"], "description": "Filter mode."}, "id": {"type": "string", "description": "Context ULID when kind is context."}, "entity_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 100, "uniqueItems": True, "description": "Entity IDs when kind is resources."}, "device_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 100, "uniqueItems": True, "description": "Device registry IDs when kind is resources."}}, "required": ["kind"]},
                 "search": {
                     "type": "string",
                     "maxLength": 512,
@@ -980,25 +900,27 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string"},
+                "entity_id": {"type": "string", "description": "Entity registry ID to update."},
+                "changes": {"type": "object", "minProperties": 1, "description": "User-controlled metadata changes.", "properties": {
                 "name": {"type": ["string", "null"], "description": "New friendly-name override, or null to clear it."},
-                "icon": {"type": ["string", "null"], "description": "New icon such as mdi:lightbulb, or null to clear it."},
-                "area_id": {"type": ["string", "null"], "description": "Assign to an existing area_id, or null to clear the assignment."},
+                "icon": {"type": ["string", "null"], "description": "New icon, or null to clear it."},
+                "area_id": {"type": ["string", "null"], "description": "Area assignment, or null to clear it."},
                 "device_class": {"type": ["string", "null"], "description": "User device-class override, or null to clear it."},
-                "new_entity_id": {"type": "string", "description": "Rename to this unoccupied entity ID in the same domain. References are previewed but are not rewritten."},
-                "enabled": {"type": "boolean", "description": "Enable or user-disable the entity. Integration/system-disabled entries cannot be changed here. Disabling is refused unless inherited device/domain WRITE will remain."},
-                "hidden": {"type": "boolean", "description": "Set or clear the user-hidden state. Integration-hidden entries cannot be changed here."},
-                "add_aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative spoken names to ADD, e.g. ['lounge lamp']. Aliases are how Assist matches an entity, so this is the fix when a voice command does not resolve. Already-present aliases are ignored; matching is case-insensitive."},
-                "remove_aliases": {"type": "array", "items": {"type": "string"}, "description": "Alternative spoken names to REMOVE. Only names you list are removed; the entity keeps responding to its own name. Names it does not have are ignored."},
-                "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Existing label IDs to add."},
-                "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to remove; absent labels are ignored."},
+                "new_entity_id": {"type": "string", "description": "New same-domain entity ID."},
+                "enabled": {"type": "boolean", "description": "Enable or user-disable the entity."},
+                "hidden": {"type": "boolean", "description": "Set user-hidden state."},
+                "add_aliases": {"type": "array", "items": {"type": "string"}, "description": "Aliases to add."},
+                "remove_aliases": {"type": "array", "items": {"type": "string"}, "description": "Aliases to remove."},
+                "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to add."},
+                "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to remove."},
                 "categories": {
                     "type": "object",
                     "additionalProperties": {"type": ["string", "null"]},
                     "description": "Category patch keyed by scope. Values are existing category IDs; null removes that scope.",
                 },
+                }},
             },
-            "required": ["entity_id"],
+            "required": ["entity_id", "changes"],
         },
     },
     {
@@ -1017,13 +939,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "device_id": {"type": "string", "description": "The device registry id."},
-                "name": {"type": ["string", "null"], "description": "New display-name override, or null to clear it."},
-                "area_id": {"type": ["string", "null"], "description": "Assign an existing area_id, or null to clear it."},
-                "enabled": {"type": "boolean", "description": "Enable or user-disable the device. Integration/config-entry-disabled devices cannot be changed here."},
-                "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Existing label IDs to add."},
-                "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to remove; absent labels are ignored."},
+                "changes": {"type": "object", "minProperties": 1, "description": "User-controlled device metadata changes.", "properties": {"name": {"type": ["string", "null"], "description": "Display-name override."}, "area_id": {"type": ["string", "null"], "description": "Area assignment."}, "enabled": {"type": "boolean", "description": "Enabled state."}, "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to add."}, "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Label IDs to remove."}}},
             },
-            "required": ["device_id"],
+            "required": ["device_id", "changes"],
         },
     },
     {
@@ -1632,17 +1550,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "file": {
-                    "type": "string",
-                    "description": (
-                        "Device YAML filename, e.g. living-room.yaml. Reports that device's "
-                        "most recent job. Use when you do not have a job_id."
-                    ),
-                },
-                "job_id": {"type": "string", "description": "job_id returned when the build was started."},
+                "lookup": {"type": "object", "description": "Job lookup by job ID or device YAML file.", "properties": {"kind": {"type": "string", "enum": ["job", "file"], "description": "Lookup kind."}, "id": {"type": "string", "description": "Job ID or device YAML filename."}}, "required": ["kind", "id"]},
             },
-            # Neither is required on its own: give job_id when you have it, file
-            # when you do not. Supplying neither is refused at call time.
+            "required": ["lookup"],
         },
     },
     {
@@ -1732,7 +1642,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "check_config",
+        "name": "check_ha_config",
         "description": "Validate the Home Assistant configuration files and return any errors and warnings.",
         "cap": "cap_diagnostics",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1741,8 +1651,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "get_relationships",
         "description": (
             "Find what still USES a set of entities, before you change or remove anything. Pass "
-            "exactly ONE selector: entity_id for a single entity, or device_id / integration / "
-            "area / label to ask the same question about everything that covers at once. Ask it "
+            "one required scope object: kind entity, device, integration, area, or label plus its id. Ask it "
             "the broadest way you can: 'what references this integration' is one call, where the "
             "same question per entity can be dozens. Results are grouped by CONSUMER, each naming "
             "the in-scope entities it touches and their roles, so the response is the list of "
@@ -1751,19 +1660,16 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "helpers built on another entity. 'searched' lists the consumer kinds actually "
             "checked and 'not_searched' names any skipped for lack of a capability, so a partial "
             "answer is never mistaken for a clean one. 'dangling_references' reports entity IDs "
-            "referenced by something but no longer existing anywhere. With entity_id it also "
+            "referenced by something but no longer existing anywhere. With an entity scope it also "
             "returns 'references': what that automation or script itself uses."
         ),
         "cap": "cap_search",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "Ask about one entity."},
-                "device_id": {"type": "string", "description": "Ask about every accessible entity of one device."},
-                "integration": {"type": "string", "description": "Ask about every accessible entity created by one integration, by its platform name, e.g. 'hue' or 'smartthings'. Use this before removing an integration."},
-                "area": {"type": "string", "description": "Ask about every accessible entity in one area, by area id or name."},
-                "label": {"type": "string", "description": "Ask about every accessible entity carrying one label, by label id."},
+                "scope": {"type": "object", "description": "The one scope to inspect.", "properties": {"kind": {"type": "string", "enum": ["entity", "device", "integration", "area", "label"], "description": "Scope kind."}, "id": {"type": "string", "description": "Identifier for the selected scope."}}, "required": ["kind", "id"]},
             },
+            "required": ["scope"],
         },
     },
     {
@@ -1801,7 +1707,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "compare_state",
+        "name": "compare_states",
         "description": (
             "Compare the state of accessible entities between two times (ISO or relative like 24h, 7d). "
             "Returns each entity's state at each time and whether it changed. Useful for 'what changed while I was away'."
@@ -1810,17 +1716,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "entity_id": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {"type": "array", "items": {"type": "string"}, "maxItems": 100},
-                    ],
-                    "description": "One entity id or a list.",
-                },
+                "entity_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100, "description": "One or more entity IDs."},
                 "t1": {"type": "string", "description": "Earlier time (ISO or relative: 24h, 7d, 2w, 1m)."},
                 "t2": {"type": "string", "description": "Later time. Defaults to now."},
             },
-            "required": ["entity_id", "t1"],
+            "required": ["entity_ids", "t1"],
         },
     },
     {
@@ -1874,18 +1774,14 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string"},
-                "service": {"type": "string"},
-                "service_data": {"type": "object"},
-                "entity_id": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
-                "device_id": {"type": "string"},
-                "area_id": {"type": "string"},
+                "service": {"type": "object", "description": "Service to preview.", "properties": {"domain": {"type": "string", "description": "Service domain."}, "name": {"type": "string", "description": "Service name."}, "data": {"type": "object", "description": "Additional service data."}}, "required": ["domain", "name"]},
+                "targets": {"type": "array", "description": "Optional target groups to resolve.", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["entity", "device", "area", "all"], "description": "Target selector kind."}, "ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "IDs for non-all targets."}}, "required": ["kind"]}},
             },
-            "required": ["domain", "service"],
+            "required": ["service"],
         },
     },
     {
-        "name": "validate_config",
+        "name": "validate_automation_or_script",
         "description": (
             "Validate an automation or script config without saving it. Returns structural validity plus, "
             "for each referenced entity, whether it is accessible to this token (entities outside the "
@@ -2173,23 +2069,24 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "approval an administrator sees is that one key rather than the whole file. With no "
             "file argument this edits configuration.yaml; pass file to edit an !include target "
             "such as templates.yaml, subject to the same rules set_yaml_config applies to it. "
-            "Address with EITHER key or path, never both. key is a "
-            "dotted path of mapping keys, e.g. 'recorder' or 'recorder.include'; path is a list "
+            "Address with the address object: kind key or path plus value. A key is a "
+            "dotted path of mapping keys, e.g. 'recorder' or 'recorder.include'; a path is a list "
             "mixing mapping keys and list indexes, e.g. [0, 'binary_sensor', 0, 'state'], and is "
             "the only way to reach an entry in a file whose top level is a list (templates.yaml "
             "and sensors.yaml usually are). Indexes count from 0; one past the last entry appends. "
-            "content is the "
+            "For a set change, content is the "
             "YAML for that key's new VALUE, the shape get_yaml_config returns when you pass the "
             "same key. Address the NARROWEST key you are changing: your content is written "
             "verbatim, but a value read back arrives in standard YAML style rather than the "
             "file's own layout and carries none of the comments inside it, so re-writing an "
-            "outer key reformats that whole block. op defaults to 'set' (replace the key, or add it when it is "
-            "absent); 'remove' deletes it. The key's parent must already exist: nothing is "
+            "outer key reformats that whole block. change.kind set replaces the addressed value, or adds a "
+            "missing mapping key; append adds one value to an existing list; remove deletes the addressed "
+            "value. The key's parent must already exist: nothing is "
             "created along the way, so to add 'recorder.include.entities' when 'recorder.include' "
             "is absent, set 'recorder.include' with the whole subtree. Read the key first, then "
             "pass the content_hash from that read as expected_hash to refuse the write if the "
             "file changed in between; the result returns the new content_hash so further patches "
-            "can be chained. May require admin approval. Run check_config and restart HA "
+            "can be chained. May require admin approval. Run check_ha_config and restart HA "
             "afterwards to apply. The same security keys set_yaml_config refuses cannot be "
             "changed here either."
         ),
@@ -2198,20 +2095,15 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "file": {"type": "string", "description": "Optional. Path relative to the configuration directory, e.g. 'templates.yaml'. Defaults to configuration.yaml. Must be a .yaml or .yml file that configuration.yaml loads."},
-                "key": {"type": "string", "description": "Dotted path to the mapping key to change, e.g. 'recorder' or 'homeassistant.customize'. A key containing a literal dot cannot be addressed; use path instead. Mapping keys only: for a list entry use path."},
-                "path": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Alternative to key: the address as a list mixing mapping keys and 0-based list indexes, e.g. [0, 'binary_sensor', 0, 'state']. Required for a file whose top level is a list. Pass either key or path, not both."},
-                "content": {"type": "string", "description": "The YAML text for that key's new value, e.g. 'purge_keep_days: 10' or '- sensor.a\\n- sensor.b'. Required for op 'set'. Indentation is adjusted to the key's depth, so paste it at the left margin."},
-                "op": {
-                    "type": "string",
-                    "enum": ["set", "remove"],
-                    "description": "set (default) replaces the key's value, adding the key when it is absent; remove deletes the key.",
-                },
+                "address": {"type": "object", "description": "Key or path addressed by this patch.", "properties": {"kind": {"type": "string", "enum": ["key", "path"], "description": "Address kind."}, "value": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": ["string", "integer"]}}], "description": "Dotted key or key/index path."}}, "required": ["kind", "value"]},
+                "change": {"type": "object", "description": "Set, append, or remove operation.", "properties": {"kind": {"type": "string", "enum": ["set", "append", "remove"], "description": "Change kind."}, "content": {"type": "string", "description": "YAML value for set or append."}}, "required": ["kind"]},
                 "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_yaml_config; the write is refused if configuration.yaml changed since then."},
             },
+            "required": ["address", "change"],
         },
     },
     {
-        "name": "get_config_entry_options",
+        "name": "get_helper_settings",
         "description": (
             "Read a HELPER's settings and the schema for changing them. Helpers are the "
             "entries Home Assistant classifies as helpers: threshold, derivative, switch_as_x, "
@@ -2221,7 +2113,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "current options, a content_hash to pass back as expected_hash, and schema: the "
             "fields the helper accepts with their types, defaults and, for entity fields, the "
             "domains they allow. editable_settings is the subset of the current settings the "
-            "flow actually offers, and is what you send back to set_config_entry_options: a "
+            "flow actually offers, and is what you send back to set_helper_settings: a "
             "helper often stores keys its flow does not expose, and sending one of those is "
             "rejected. mechanism says which flow the helper uses (options or reconfigure); "
             "both are driven the same way from your side. Integration entries are not "
@@ -2237,12 +2129,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "set_config_entry_options",
+        "name": "set_helper_settings",
         "description": (
             "Change a HELPER's settings, for example repointing one at a different source "
             "entity after the original was removed. This is what finishes a migration: a helper "
             "whose source is gone keeps existing and quietly produces nothing, and no other tool "
-            "can repoint it. Read get_config_entry_options first and send back its "
+            "can repoint it. Read get_helper_settings first and send back its "
             "editable_settings with your change applied, NOT the full settings: your input is "
             "merged over what is stored, a key the flow does not offer is rejected if you send "
             "it and left alone if you do not, and an OPTIONAL key the flow does offer is CLEARED "
@@ -2260,9 +2152,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 "entry_id": {"type": "string", "description": "The config entry id of the helper."},
                 "settings": {
                     "type": "object",
-                    "description": "The new settings, matching the schema from get_config_entry_options. Send its editable_settings with your change applied.",
+                    "description": "The new settings, matching the schema from get_helper_settings. Send its editable_settings with your change applied.",
                 },
-                "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_config_entry_options; the write is refused if the settings changed since then."},
+                "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior get_helper_settings; the write is refused if the settings changed since then."},
             },
             "required": ["entry_id", "settings"],
         },
@@ -2292,11 +2184,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "entry_id": {"type": "string", "description": "The config entry id (from list_integrations)."},
-                "title": {"type": "string", "minLength": 1},
-                "pref_disable_new_entities": {"type": "boolean"},
-                "pref_disable_polling": {"type": "boolean"},
+                "changes": {"type": "object", "minProperties": 1, "description": "Reversible integration metadata to update.", "properties": {"title": {"type": "string", "minLength": 1, "description": "New entry title."}, "pref_disable_new_entities": {"type": "boolean", "description": "Whether newly discovered entities start disabled."}, "pref_disable_polling": {"type": "boolean", "description": "Whether polling is disabled."}}},
             },
-            "required": ["entry_id"],
+            "required": ["entry_id", "changes"],
         },
     },
     {
@@ -2579,12 +2469,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "Change ONE path-addressed value anywhere in a Lovelace dashboard without "
             "resending the layout. Use this for what the card tools cannot reach: a "
             "view-level badge, a view option, or a single field inside a card. Call "
-            "get_dashboard_config first to find the path and its content_hash. path is "
+            "get_dashboard_config first to find the target path and its content_hash. target.path is "
             "an array of keys and 0-based indexes, e.g. [\"views\", 0, \"badges\", 4, "
-            "\"entity\"] addresses that badge's entity. op defaults to 'set' (replace "
-            "the value at path); 'append' adds to a list the path addresses; 'remove' "
+            "\"entity\"] addresses that badge's entity. change.kind set replaces "
+            "the value at target.path; append adds to a list it addresses; remove "
             "deletes it. Nothing is created along the way, so a path whose parent does "
-            "not exist is refused rather than built. Omit url_path for the default "
+            "not exist is refused rather than built. Omit target.url_path for the default "
             "dashboard. Storage-mode dashboards only. May require admin approval. Pass "
             "expected_hash to refuse the write if the layout changed since your read; "
             "the result returns the new content_hash for chaining further patches. "
@@ -2596,30 +2486,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "url_path": {"type": "string", "description": "Dashboard url_path. Omit for the default dashboard."},
-                "path": {
-                    "type": "array",
-                    "description": "Array of mapping keys (string) and list indexes (integer) addressing the value to change, e.g. [\"views\", 0, \"badges\", 4, \"entity\"]. Negative indexes are refused.",
-                    "items": {"type": ["string", "integer"]},
-                },
-                "op": {
-                    "type": "string",
-                    "enum": ["set", "append", "remove"],
-                    "description": "set (default) replaces the value at path; append adds to a list the path addresses; remove deletes it.",
-                },
-                # The type union is LOAD-BEARING, not documentation. A property with
-                # no declared type is not "any" to every client: live-found, a real
-                # MCP client serialized an object argument to a JSON STRING when the
-                # schema declared nothing, which would have written a string where a
-                # dict belongs and corrupted the layout silently. Naming every JSON
-                # type it can carry is what keeps an object arriving as an object.
-                "value": {
-                    "type": ["string", "number", "integer", "boolean", "object", "array", "null"],
-                    "description": "The new value; may be any JSON type, including an object or an array. Required for set and append; ignored for remove.",
-                },
+                "target": {"type": "object", "description": "Dashboard path to change.", "properties": {"url_path": {"type": "string", "description": "Dashboard URL path."}, "path": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "Key/index path."}}, "required": ["path"]},
+                "change": {"type": "object", "description": "Set, append, or remove operation.", "properties": {"kind": {"type": "string", "enum": ["set", "append", "remove"], "description": "Change kind."}, "value": {"type": ["string", "number", "integer", "boolean", "object", "array", "null"], "description": "New value for set or append."}}, "required": ["kind"]},
                 "expected_hash": {"type": "string", "description": "Optional. The content_hash from a prior read; the write is refused if the layout changed since then."},
             },
-            "required": ["path"],
+            "required": ["target", "change"],
         },
     },
 ]
@@ -3068,15 +2939,15 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "cancel_esphome_job": _annot(False, False, True),
     "get_esphome_device_logs": _annot(True, False, True),
     "decode_esphome_backtrace": _annot(True, False, True),
-    "check_config": _annot(True, False, True),
+    "check_ha_config": _annot(True, False, True),
     "get_relationships": _annot(True, False, True),
     "describe_entity": _annot(True, False, True),
     "whatif": _annot(True, False, True),
-    "compare_state": _annot(True, False, True),
+    "compare_states": _annot(True, False, True),
     "compare_entities": _annot(True, False, True),
     "recent_activity": _annot(True, False, True),
     "dry_run_service": _annot(True, False, True),
-    "validate_config": _annot(True, False, True),
+    "validate_automation_or_script": _annot(True, False, True),
     "list_scenes": _annot(True, False, True),
     "get_scene": _annot(True, False, True),
     "list_helpers": _annot(True, False, True),
@@ -3112,8 +2983,8 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     # Destructive: set and remove both replace or drop whatever the path held.
     "patch_dashboard": _annot(False, True, True),
     "patch_yaml_config": _annot(False, True, True),
-    "get_config_entry_options": _annot(True, False, True),
-    "set_config_entry_options": _annot(False, True, True),
+    "get_helper_settings": _annot(True, False, True),
+    "set_helper_settings": _annot(False, True, True),
     "set_entity": _annot(False, True, True),
     "set_device": _annot(False, True, True),
     "remove_device": _annot(False, True, True),

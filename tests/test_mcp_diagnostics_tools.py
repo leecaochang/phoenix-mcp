@@ -300,7 +300,7 @@ class TestTraceStorageShapes:
         assert "warnings" not in body
 
 
-# --- get_system_health / check_config ---
+# --- get_system_health / check_ha_config ---
 
 class TestDiagnostics:
     async def test_system_health_deny(self, hass):
@@ -349,24 +349,24 @@ class TestDiagnostics:
         assert "ok" in text                         # benign value preserved
         assert "4.8.0.1" in text                    # version string NOT a private IP, preserved
 
-    async def test_check_config_deny(self, hass):
-        _, outcome, _ = await _call("check_config", {}, _token(cap_diagnostics="deny"), hass)
+    async def test_check_ha_config_deny(self, hass):
+        _, outcome, _ = await _call("check_ha_config", {}, _token(cap_diagnostics="deny"), hass)
         assert outcome == "denied"
 
-    async def test_check_config_valid(self, hass):
+    async def test_check_ha_config_valid(self, hass):
         fake = MagicMock(errors=[], warnings=[])
         with patch("homeassistant.helpers.check_config.async_check_ha_config_file", AsyncMock(return_value=fake)):
-            content, outcome, _ = await _call("check_config", {}, _token(cap_diagnostics="allow"), hass)
+            content, outcome, _ = await _call("check_ha_config", {}, _token(cap_diagnostics="allow"), hass)
         assert outcome == "allowed"
         body = _json(content)
         assert body["valid"] is True
         assert body["errors"] == []
 
-    async def test_check_config_reports_errors(self, hass):
+    async def test_check_ha_config_reports_errors(self, hass):
         err = MagicMock(message="bad yaml", domain="light")
         fake = MagicMock(errors=[err], warnings=[])
         with patch("homeassistant.helpers.check_config.async_check_ha_config_file", AsyncMock(return_value=fake)):
-            content, _, _ = await _call("check_config", {}, _token(cap_diagnostics="allow"), hass)
+            content, _, _ = await _call("check_ha_config", {}, _token(cap_diagnostics="allow"), hass)
         body = _json(content)
         assert body["valid"] is False
         assert body["errors"][0]["message"] == "bad yaml"

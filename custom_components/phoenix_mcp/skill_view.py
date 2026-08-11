@@ -69,15 +69,15 @@ grain of the model gives the smoothest results and avoids dead ends.
 - `find_available_actions`: the services you may actually invoke on an entity or
   area, already filtered by your capabilities and MESA's control mode.
 - `get_relationships`: what still USES something, before you change or remove
-  it. Pass ONE selector: `entity_id`, or `device_id` / `integration` / `area` /
-  `label` to ask about everything that covers in a single call. Reach for the
+  it. Pass one `scope` object with `kind` (`entity`, `device`, `integration`,
+  `area`, or `label`) and its `id`. Reach for the
   broadest one that answers your question: "what references this integration"
   is one call, where asking per entity can be dozens. Results are grouped by
   consumer with the entities and roles each one touches, which is the edit list.
   Read `not_searched` before concluding nothing uses something: it names any
   consumer kind skipped because this token lacks the capability to see it.
 - `get_history` (`state_changes` by default), `get_statistics`,
-  `recent_activity`, `compare_state`: what changed and when. Use relative time
+  `recent_activity`, `compare_states`: what changed and when. Use relative time
   strings like `24h`, `7d`, `2w`, `1m`. History and statistics are bounded
   pages: continue only when `has_more` is true, using `next_cursor` as the next
   call's `cursor`. There is no total to infer. `significant_states` is a
@@ -238,7 +238,7 @@ config is good on the strength of validation alone if you can compile it.
   Use it before any bulk or risky call.
 - `whatif`: predicts which automations would fire if an entity became a given
   state, so you can reason about side effects first.
-- `validate_config`: structurally checks an automation or script config, and
+- `validate_automation_or_script`: structurally checks an automation or script config, and
   whether the entities it references exist and are accessible, before you save.
 
 ### 4. Act
@@ -358,7 +358,7 @@ General, for automations, scripts, and scenes:
   `input_number`, `timer`, `counter`; native triggers and conditions) over
   hand-written templates when a native option exists. Templates are powerful but
   harder to debug and easier to break across upgrades.
-- Validate first (`validate_config`), then write, then verify with a trace.
+- Validate first (`validate_automation_or_script`), then write, then verify with a trace.
 - Reference only entities you can actually access; a config that points at
   out-of-scope entities will not behave as written. In a dashboard read, an
   entity id returned as `<redacted>` is outside your scope; do not write it back.
@@ -558,18 +558,17 @@ mode: single
   `http:`, `frontend:` or `lovelace:`, is refused wherever it lives. If you are
   unsure which file holds a setting, read `configuration.yaml` and look at its
   `!include` lines.
-- To change ONE setting, use `patch_yaml_config`: pass the dotted `key`
-  (`recorder`, `recorder.include`) and the YAML for that key's new value as
-  `content`. Everything you do not address is left exactly as written, comments
-  included, and the human approving it sees that key rather than the whole file.
-  `get_yaml_config` with the same `key` returns the shape `content` takes, so
-  you can read a key, edit it, and send it straight back. `op: "remove"` deletes
-  the key.
-- An `!include` target is usually a top-level LIST, which a dotted `key` cannot
-  address. Use `path` instead of `key`: a list mixing mapping keys and 0-based
-  indexes, such as `[0, "binary_sensor", 0, "state"]` to change one template's
-  `state`. Pass `key` or `path`, never both. An index one past the last entry
-  appends a new one.
+- To change ONE setting, use `patch_yaml_config`. Its `address` selects a dotted
+  key (`{"kind":"key","value":"recorder.include"}`) or a mixed key/index path.
+  Its typed `change` uses `kind: "set"` with YAML `content` to replace a value,
+  `kind: "append"` with `content` to add one value to an existing list, or
+  `kind: "remove"` to delete the address. Everything else stays exactly as
+  written, comments included, and the human approving it sees that address
+  rather than the whole file.
+- An `!include` target is usually a top-level LIST. Use an address with
+  `kind: "path"` and a value mixing mapping keys and 0-based indexes, such as
+  `[0, "binary_sensor", 0, "state"]` to change one template's `state`. To add
+  an entry, address its existing list and use `change.kind: "append"`.
 - Address the NARROWEST key you are actually changing. Your `content` is written
   verbatim, but a value you read back arrives in standard YAML style rather than
   the file's own layout, and comments inside it are not part of what a read
@@ -589,7 +588,7 @@ mode: single
   patch returns the file's new `content_hash`, so several can be chained.
 - Neither tool can change the keys that define Home Assistant's own
   authentication, proxy trust, or dashboard code loading; copy them through
-  unchanged. After either, run `check_config`, then tell the user a restart is
+  unchanged. After either, run `check_ha_config`, then tell the user a restart is
   needed. These changes do NOT reload on their own.
 
 ### Climate

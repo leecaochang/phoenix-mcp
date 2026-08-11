@@ -480,7 +480,7 @@ async def _tool_get_config_entry_options(
     stored, and aborts it immediately: this must not leave a dialog open in the
     operator's UI just because something asked what the fields are.
     """
-    tool = "get_config_entry_options"
+    tool = "get_helper_settings"
     if effective_cap(token, "cap_helper_write") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", tool
     entry = await _helper_config_entry(hass, args.get("entry_id"))
@@ -668,7 +668,7 @@ async def _tool_set_config_entry_options(
     So the set to send is `editable_options` from get_config_entry_options, which
     is exactly the stored options intersected with what the flow offers.
     """
-    tool = "set_config_entry_options"
+    tool = "set_helper_settings"
     if effective_cap(token, "cap_helper_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
     entry = await _helper_config_entry(hass, args.get("entry_id"))
@@ -696,7 +696,7 @@ async def _tool_set_config_entry_options(
 async def _execute_set_config_entry_options(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
-    tool = "set_config_entry_options"
+    tool = "set_helper_settings"
     entry = await _helper_config_entry(hass, args.get("entry_id"))
     if entry is None:
         return _tool_error(_NOT_A_HELPER_ENTRY), "not_found", tool

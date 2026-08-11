@@ -61,6 +61,7 @@ from homeassistant.core import HomeAssistant
 
 from ..const import CAP_DENY, DOMAIN, FILESYSTEM_ALLOWED_DIRS, MAX_FILE_BYTES, REDACTION_SENTINEL, YAML_PROTECTED_SUBTREES
 from ..data import PhoenixData
+from ..tool_contracts import normalize_tool_args
 from ..helpers import content_hash, diff_summary_fields as _summary, effective_cap, redact_secrets_in_text as _redact_secrets_in_text, str_arg, str_list_arg, version_summary_fields as _version_summary
 from ..tool_common import _CAP_FORBIDDEN_MESSAGE, _cas_conflict, _gate, _read_text_capped, _record_version, _restore_ctx, _text_file_cas_conflict, _tool_error, _tool_success, _truncate, _usable_path_arg, _version_content_payload, _write_text_atomic, redaction_sentinel_path
 from ..token_store import TokenRecord
@@ -815,7 +816,7 @@ async def _execute_set_yaml_config(
         _tool_success(json.dumps({
             "path": rel,
             "bytes_written": len(content.encode("utf-8")),
-            "note": "Run check_config and restart Home Assistant to apply.",
+            "note": "Run check_ha_config and restart Home Assistant to apply.",
         })),
         "allowed", "set_yaml_config",
     )
@@ -882,7 +883,7 @@ def _prepare_yaml_patch(
     """
     op = _yaml_patch_op(args)
     try:
-        value = yaml_patch.parse_value(args.get("content")) if op == "set" else None
+        value = yaml_patch.parse_value(args.get("content")) if op in {"set", "append"} else None
     except yaml_patch.PatchError as err:
         return _tool_error(str(err)), "invalid_request", tool_name
     # Rule 32. A configuration.yaml read is not itself lossy, so the sentinel can
@@ -932,6 +933,9 @@ async def _tool_patch_yaml_config(
     so they cannot be lost on the way through either.
     """
     tool = "patch_yaml_config"
+    args, error = normalize_tool_args(tool, args)
+    if error:
+        return _tool_error(error), "invalid_request", tool
     if effective_cap(token, "cap_yaml_edit") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
     target = _yaml_write_target(hass, args)
@@ -1033,7 +1037,7 @@ async def _execute_patch_yaml_config(
             # replace, so the resulting hash is safe to hand back and further
             # patches can be chained without another read.
             "content_hash": content_hash(content),
-            "note": "Run check_config and restart Home Assistant to apply.",
+            "note": "Run check_ha_config and restart Home Assistant to apply.",
         })),
         "allowed", tool,
     )
@@ -1133,7 +1137,7 @@ async def _build_diff_patch_yaml_config(args: dict, token: TokenRecord, hass: Ho
         _prepare_yaml_patch, current, args, "patch_yaml_config",
     )
     before = prepared.before if isinstance(prepared, yaml_patch.PatchResult) else None
-    after = str_arg(args.get("content")) if op == "set" else None
+    after = str_arg(args.get("content")) if op in {"set", "append"} else None
     return {
         "kind": "yaml_diff",
         # `path`, not `key`: diff_summary_fields takes the template key as its

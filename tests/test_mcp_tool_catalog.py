@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 from homeassistant.util.dt import utcnow
 
-from custom_components.phoenix_mcp import const, mcp_view, mesa_tools
+from custom_components.phoenix_mcp import agentcli, const, mcp_view, mesa_tools
 from custom_components.phoenix_mcp.token_store import (
     PermissionNode,
     PermissionTree,
@@ -140,6 +140,20 @@ async def test_tools_list_exposes_annotations_and_still_strips_cap():
         assert "caps" not in tool, f"{tool['name']} leaked its gating caps to the client"
         assert "requires" not in tool, f"{tool['name']} leaked its availability key to the client"
         assert set(tool["annotations"]) == _HINT_KEYS
+
+
+def test_catalog_payload_metrics_cover_both_provider_wires():
+    """The zero-growth benchmark stays deterministic and exposes both wires."""
+    from tests.test_mcp_view import _make_data, _make_token
+
+    token, _ = _make_token()
+    token.announce_all_tools = True
+    metrics = agentcli.catalog_payload_metrics(token, _make_data(token))
+    assert metrics["tool_count"] == len(_static_defs()) == 141
+    assert mcp_view.tool_catalog_counts()["total"] == 147
+    assert metrics["canonical_bytes"] > 0
+    assert metrics["claude_bytes"] > 0
+    assert metrics["openai_bytes"] > 0
 
 
 def test_every_tool_capability_name_is_known():

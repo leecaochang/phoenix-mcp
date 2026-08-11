@@ -77,11 +77,17 @@ def _json(content: dict) -> dict:
 
 
 async def _call(args, token, hass, data=None):
+    args = dict(args)
+    address = {"kind": "key", "value": args.pop("key")}
+    change = {"kind": args.pop("op", "set")}
+    if "content" in args:
+        change["content"] = args.pop("content")
+    args.update({"address": address, "change": change})
     return await _call_tool("patch_yaml_config", args, token, hass, data or MagicMock())
 
 
 def _patch(text, key, op="set", content=None, path=None):
-    value = yaml_patch.parse_value(content) if op == "set" else None
+    value = yaml_patch.parse_value(content) if op in {"set", "append"} else None
     return yaml_patch.apply_patch(text, key, op, content, value, path)
 
 
@@ -122,6 +128,15 @@ class TestSpliceEngine:
         """'key: - a' is not valid YAML, so a one-line sequence goes to block form."""
         out = _patch(SAMPLE, "tts", content="- platform: piper").text
         assert "tts:\n  - platform: piper\n" in out
+
+    def test_append_adds_one_value_to_the_addressed_list(self):
+        out = _patch(SAMPLE, "tts", op="append", content="platform: piper").text
+        assert "tts:\n  - platform: google_translate\n  - platform: piper\n" in out
+        assert "recorder:\n" in out
+
+    def test_append_refuses_a_non_list_target(self):
+        with pytest.raises(yaml_patch.PatchError, match="is not a list"):
+            _patch(SAMPLE, "recorder", op="append", content="purge_keep_days: 5")
 
     def test_a_tagged_scalar_round_trips(self):
         out = _patch(SAMPLE, "automation", content="!include_dir_list automations/").text
@@ -238,6 +253,16 @@ class TestPatchTool:
         body = _json(content)
         assert body["key"] == "recorder.purge_keep_days" and body["op"] == "set"
         assert _read(hass) == SAMPLE.replace("purge_keep_days: 10", "purge_keep_days: 30")
+
+    async def test_append_uses_the_structured_change_contract(self, hass):
+        _write(hass)
+        content, outcome, _ = await _call(
+            {"key": "tts", "op": "append", "content": "platform: piper"},
+            _token(), hass,
+        )
+        assert outcome == "allowed"
+        assert _json(content)["op"] == "append"
+        assert "  - platform: piper\n" in _read(hass)
 
     async def test_the_returned_hash_chains_to_the_next_patch(self, hass):
         _write(hass)
@@ -394,6 +419,16 @@ class TestPatchDiff:
         assert diff["after"] is None
         assert diff["before"] == "- platform: google_translate"
         assert "Remove" in diff["summary"]
+
+    async def test_append_diff_names_the_list_and_new_value(self, hass):
+        _write(hass)
+        diff = await _build_diff_patch_yaml_config(
+            {"key": "tts", "op": "append", "content": "platform: piper"},
+            _token(), hass,
+        )
+        assert diff["before"] is None
+        assert diff["after"] == "platform: piper"
+        assert "Append" in diff["summary"]
 
     async def test_a_secret_in_the_new_value_is_masked_in_the_diff(self, hass):
         _write(hass, "recorder:\n  purge_keep_days: 1\n")

@@ -29,6 +29,7 @@ from homeassistant.core import HomeAssistant
 from ..card_catalog import CardEntry
 from ..const import CAP_DENY, MAX_DIFF_INLINE_BYTES, REDACTION_SENTINEL
 from ..data import PhoenixData
+from ..tool_contracts import normalize_tool_args
 from ..helpers import (
     content_hash,
     dict_arg,
@@ -882,6 +883,9 @@ async def _tool_patch_dashboard(
     time so a change during the approval window is caught.
     """
     tool = "patch_dashboard"
+    args, error = normalize_tool_args(tool, args)
+    if error:
+        return _tool_error(error), "invalid_request", tool
     if effective_cap(token, "cap_lovelace_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
     current = await _dashboard_card_current(args, hass, tool)

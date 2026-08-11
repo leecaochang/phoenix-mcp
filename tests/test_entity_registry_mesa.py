@@ -128,7 +128,10 @@ async def test_inherited_read_only_blocks_rename_and_delete_before_approval(
         for tool_name, args in (
             (
                 "set_entity",
-                {"entity_id": entity_id, "new_entity_id": "light.registry_light_renamed"},
+                {
+                    "entity_id": entity_id,
+                    "changes": {"new_entity_id": "light.registry_light_renamed"},
+                },
             ),
             ("delete_entity", {"entity_id": entity_id}),
         ):
@@ -153,7 +156,7 @@ async def test_read_only_always_blocks_but_advisory_prohibited_warns(
     data.mesa.store.set_domain_profile("light", _profile("light", "read_only"))
     _content, outcome, _ = await _call_tool(
         "set_entity",
-        {"entity_id": entity_id, "new_entity_id": "light.read_only_refused"},
+        {"entity_id": entity_id, "changes": {"new_entity_id": "light.read_only_refused"}},
         _token(),
         hass,
         data,
@@ -165,7 +168,7 @@ async def test_read_only_always_blocks_but_advisory_prohibited_warns(
     )
     content, outcome, _ = await _call_tool(
         "set_entity",
-        {"entity_id": entity_id, "new_entity_id": "light.advisory_rename"},
+        {"entity_id": entity_id, "changes": {"new_entity_id": "light.advisory_rename"}},
         _token(),
         hass,
         data,
@@ -182,7 +185,7 @@ async def test_enforced_prohibited_blocks_registry_identity_actions(
     data = await _data(hass, "enforced")
     data.mesa.store.set_domain_profile("light", _profile("light", "prohibited"))
     for tool_name, args in (
-        ("set_entity", {"entity_id": entity_id, "new_entity_id": "light.blocked"}),
+        ("set_entity", {"entity_id": entity_id, "changes": {"new_entity_id": "light.blocked"}}),
         ("delete_entity", {"entity_id": entity_id}),
     ):
         _content, outcome, _ = await _call_tool(
@@ -199,7 +202,7 @@ async def test_enforced_prohibited_blocks_registry_identity_actions(
             "set_entity",
             lambda entity_id: {
                 "entity_id": entity_id,
-                "new_entity_id": "light.confirmed_rename",
+                "changes": {"new_entity_id": "light.confirmed_rename"},
             },
         ),
         ("delete_entity", lambda entity_id: {"entity_id": entity_id}),
@@ -262,7 +265,7 @@ async def test_capability_confirmation_already_satisfies_mesa_confirmation(
     ):
         _content, outcome, _ = await _call_tool(
             "set_entity",
-            {"entity_id": entity_id, "new_entity_id": "light.one_approval"},
+            {"entity_id": entity_id, "changes": {"new_entity_id": "light.one_approval"}},
             _token(cap="confirm"),
             hass,
             data,
@@ -376,7 +379,7 @@ async def test_rename_blockers_cover_identity_keyed_phoenix_configuration(
     with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
         content, outcome, _ = await _call_tool(
             "set_entity",
-            {"entity_id": entity_id, "new_entity_id": "light.blocked_by_config"},
+            {"entity_id": entity_id, "changes": {"new_entity_id": "light.blocked_by_config"}},
             _token(cap="confirm"),
             hass,
             data,
@@ -408,7 +411,7 @@ async def test_invalid_or_occupied_rename_is_rejected_before_approval(
     with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
         content, outcome, _ = await _call_tool(
             "set_entity",
-            {"entity_id": entity_id, "new_entity_id": new_entity_id},
+            {"entity_id": entity_id, "changes": {"new_entity_id": new_entity_id}},
             _token(cap="confirm"),
             hass,
             data,

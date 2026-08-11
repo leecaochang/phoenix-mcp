@@ -274,6 +274,26 @@ async def test_storage_failure_disables_timers_without_blocking_initialization()
 
 
 @pytest.mark.asyncio
+async def test_empty_timed_override_store_is_silent(caplog):
+    manager = LoggerOverrideManager(MagicMock())
+    manager._store = AsyncMock()
+    manager._store.async_load.return_value = {"overrides": {}}
+    await manager.async_initialize()
+    assert "Discarding stale Phoenix" not in caplog.text
+    manager._store.async_save.assert_awaited_once_with({"overrides": {}})
+
+
+@pytest.mark.asyncio
+async def test_active_timed_override_store_warns_before_discarding(caplog):
+    manager = LoggerOverrideManager(MagicMock())
+    manager._store = AsyncMock()
+    manager._store.async_load.return_value = {"overrides": {"demo": {"level": "DEBUG"}}}
+    await manager.async_initialize()
+    assert "Discarding stale Phoenix" in caplog.text
+    manager._store.async_save.assert_awaited_once_with({"overrides": {}})
+
+
+@pytest.mark.asyncio
 async def test_approval_execution_rejects_logger_context_race():
     token = _make_token(cap_log_read="allow", cap_log_control="allow")[0]
     data = _make_data(token)

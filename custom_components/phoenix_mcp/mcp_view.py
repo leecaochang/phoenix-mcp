@@ -43,6 +43,7 @@ from homeassistant.util.ulid import ulid_to_bytes_or_none
 from .audit import generate_request_id
 from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_LOGBOOK_HOME_DAYS, MAX_LOGBOOK_NARROWED_DAYS, MAX_LOGBOOK_RESOURCE_IDS, MAX_SEARCH_QUERY_LEN, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
+from .tool_contracts import normalize_tool_args
 from .mesa import (
     RegistryMesaDecision,
     async_apply_mesa_to_call,
@@ -594,6 +595,9 @@ async def _tool_get_state(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
     """MCP tool: return the current state of a single entity."""
+    args, error = normalize_tool_args("get_state", args)
+    if error:
+        return _tool_error(error), "invalid_request", "get_state"
     entity_id = str_arg(args.get("entity_id"))
     if not entity_id:
         return _tool_error("Missing required argument: entity_id"), "denied", "get_state"
@@ -617,6 +621,9 @@ async def _tool_get_states(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
     """MCP tool: return all entities accessible to the token."""
+    args, error = normalize_tool_args("get_states", args)
+    if error:
+        return _tool_error(error), "invalid_request", "get_states"
     states = hass.states.async_all()
     filtered = filter_entities_for_token(states, token, hass)
     fields = args.get("fields")
@@ -854,9 +861,12 @@ async def _tool_get_calendar_events(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
     """MCP tool: list events from one accessible calendar entity (entity-scoped)."""
-    calendar_id = str(args.get("calendar_id") or args.get("entity_id") or "").strip()
+    args, error = normalize_tool_args("get_calendar_events", args)
+    if error:
+        return _tool_error(error), "invalid_request", "get_calendar_events"
+    calendar_id = str(args.get("entity_id") or "").strip()
     if not calendar_id:
-        return _tool_error("Missing required argument: calendar_id"), "invalid_request", "get_calendar_events"
+        return _tool_error("Missing required argument: entity_id"), "invalid_request", "get_calendar_events"
 
     perm = resolve(calendar_id, token, hass)
     if perm == Permission.NOT_FOUND:
@@ -910,6 +920,9 @@ async def _tool_call_service(
     client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
     """MCP tool: call a HA service with entity targets filtered to WRITE-permitted entities."""
+    args, error = normalize_tool_args("call_service", args)
+    if error:
+        return _tool_error(error), "invalid_request", "call_service"
     # Coerced before anything gates on them: service_key and the physical-gate
     # domain check are set-membership tests, so a list-valued domain raises
     # instead of being refused.
@@ -1459,6 +1472,9 @@ async def _tool_get_logbook(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
     """MCP tool: read the human-readable logbook (requires cap_log_read)."""
+    args, error = normalize_tool_args("get_logbook", args)
+    if error:
+        return _tool_error(error), "invalid_request", "get_logbook"
     if effective_cap(token, "cap_log_read") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "get_logbook"
 
@@ -2981,6 +2997,9 @@ async def _tool_set_device(
     client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
     """MCP tool: edit user-controlled device registry metadata."""
+    args, error = normalize_tool_args("set_device", args)
+    if error:
+        return _tool_error(error), "invalid_request", "set_device"
     if effective_cap(token, "cap_registry_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_device"
     pre = _set_device_precheck(args, token, hass)
@@ -3867,6 +3886,9 @@ async def _tool_set_entity(
     request_id: str = "", client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
     """MCP tool: edit an entity's registry metadata (Confirm-eligible)."""
+    args, error = normalize_tool_args("set_entity", args)
+    if error:
+        return _tool_error(error), "invalid_request", "set_entity"
     # Capability gate first: a denied token gets a uniform Forbidden with no entity
     # work, so the tool can never be a scope/existence oracle when the cap is off.
     if effective_cap(token, "cap_registry_write") == CAP_DENY:
@@ -4566,44 +4588,12 @@ async def _tool_wait_for_approval(
     caller waiting on each id in turn would serialise itself right back into the
     stall the staged model exists to remove.
     """
-    from .approvals import STATUS_PENDING, get_approval  # noqa: PLC0415
-
+    args, error = normalize_tool_args("wait_for_approval", args)
+    if error:
+        return _tool_error(error), "invalid_request", "wait_for_approval"
     if "approval_ids" in args:
         return await _wait_for_many_approvals(args, token, hass, data)
-    approval_id = args.get("approval_id")
-    if not isinstance(approval_id, str) or not approval_id:
-        return _tool_error("Missing approval_id."), "invalid_request", "wait_for_approval"
-    record = get_approval(data.store, approval_id)
-    if record is None or record.token_id != token.id:
-        return _tool_error("Approval not found."), "not_found", "wait_for_approval"
-
-    if record.status != STATUS_PENDING:
-        return _approval_status_result(record, resolved=True), "allowed", _approval_resource(record)
-
-    timeout = _clamp_timeout(args.get("timeout", MAX_SUBSCRIPTION_SECONDS))
-    future: asyncio.Future = hass.loop.create_future()
-
-    @callback
-    def _on_resolved(event: Any) -> None:
-        if event.data.get("approval_id") == approval_id and not future.done():
-            future.set_result(True)
-
-    unsub = hass.bus.async_listen(f"{DOMAIN}_approval_resolved", _on_resolved)
-    _set_progress_status(
-        f"Waiting for operator approval: {record.tool_name}", total=float(timeout))
-    try:
-        await asyncio.wait_for(future, timeout)
-    except TimeoutError:
-        # Re-read in case it resolved without an event (e.g. the expiry sweep).
-        latest = get_approval(data.store, approval_id) or record
-        resolved = latest.status != STATUS_PENDING
-        return _approval_status_result(latest, resolved=resolved), "allowed", _approval_resource(latest)
-    finally:
-        unsub()
-        _set_progress_status(None)
-
-    latest = get_approval(data.store, approval_id) or record
-    return _approval_status_result(latest, resolved=True), "allowed", _approval_resource(latest)
+    return _tool_error("approval_ids is required."), "invalid_request", "wait_for_approval"
 
 
 # Executor registry for the admin-approval gate. When an admin approves a pending
@@ -5740,6 +5730,9 @@ async def _tool_set_integration(
     request_id: str = "",
     client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
+    args, error = normalize_tool_args("set_integration", args)
+    if error:
+        return _tool_error(error), "invalid_request", "set_integration"
     if effective_cap(token, "cap_integration_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_integration"
     entry_id = str(args.get("entry_id") or "").strip()
@@ -7995,7 +7988,7 @@ _register_executor("edit_blueprint", _execute_edit_blueprint)
 _register_executor("delete_blueprint", _execute_delete_blueprint)
 _register_executor("set_yaml_config", _execute_set_yaml_config)
 _register_executor("patch_yaml_config", _execute_patch_yaml_config)
-_register_executor("set_config_entry_options", _execute_set_config_entry_options)
+_register_executor("set_helper_settings", _execute_set_config_entry_options)
 _register_executor("set_esphome_yaml", _execute_set_esphome_yaml)
 _register_executor("delete_esphome_yaml", _execute_delete_esphome_yaml)
 _register_executor("rename_esphome_device", _execute_rename_esphome_device)
@@ -8132,15 +8125,15 @@ _register_tool("wait_for_esphome_job", _tool_wait_for_esphome_job)
 _register_tool("cancel_esphome_job", _tool_cancel_esphome_job)
 _register_tool("get_esphome_device_logs", _tool_get_esphome_device_logs)
 _register_tool("decode_esphome_backtrace", _tool_decode_esphome_backtrace)
-_register_tool("check_config", _tool_check_config)
+_register_tool("check_ha_config", _tool_check_config)
 _register_tool("get_relationships", _tool_get_relationships)
 _register_tool("describe_entity", _tool_describe_entity)
 _register_tool("whatif", _tool_whatif)
-_register_tool("compare_state", _tool_compare_state)
+_register_tool("compare_states", _tool_compare_state)
 _register_tool("compare_entities", _tool_compare_entities)
 _register_tool("recent_activity", _tool_recent_activity)
 _register_tool("dry_run_service", _tool_dry_run_service)
-_register_tool("validate_config", _tool_validate_config)
+_register_tool("validate_automation_or_script", _tool_validate_config)
 _register_tool("list_scenes", _tool_list_scenes)
 _register_tool("get_scene", _tool_get_scene)
 _register_tool("create_scene", _tool_create_scene)
@@ -8160,8 +8153,8 @@ _register_tool("edit_energy_config", _tool_edit_energy_config)
 _register_tool("get_yaml_config", _tool_get_yaml_config)
 _register_tool("set_yaml_config", _tool_set_yaml_config)
 _register_tool("patch_yaml_config", _tool_patch_yaml_config)
-_register_tool("get_config_entry_options", _tool_get_config_entry_options)
-_register_tool("set_config_entry_options", _tool_set_config_entry_options)
+_register_tool("get_helper_settings", _tool_get_config_entry_options)
+_register_tool("set_helper_settings", _tool_set_config_entry_options)
 _register_tool("list_integrations", _tool_list_integrations)
 _register_tool("set_integration_enabled", _tool_set_integration_enabled)
 _register_tool("set_integration", _tool_set_integration)

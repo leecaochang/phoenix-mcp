@@ -101,6 +101,12 @@ class FakeBuilder:
 
 
 async def _run(tool, args, token, hass, builder, data=None):
+    args = dict(args)
+    if tool == "get_esphome_job":
+        if "job_id" in args:
+            args = {"lookup": {"kind": "job", "id": args["job_id"]}}
+        elif "file" in args:
+            args = {"lookup": {"kind": "file", "id": args["file"]}}
     with patch(_DASHBOARD_PATCH, return_value=_dash()), patch(_COMMAND_PATCH, builder):
         return await _call_tool(tool, args, token, hass, data or MagicMock())
 
@@ -134,6 +140,8 @@ class TestGating:
     @pytest.mark.parametrize("tool", list(TOOLS))
     async def test_builder_absent_refuses_before_touching_anything(self, hass, esphome_dir, tool):
         args, _cap = TOOLS[tool]
+        if tool == "get_esphome_job":
+            args = {"lookup": {"kind": "job", "id": args["job_id"]}}
         builder = FakeBuilder()
         with patch(_DASHBOARD_PATCH, return_value=None), patch(_COMMAND_PATCH, builder):
             content, outcome, _ = await _call_tool(tool, args, _flash_token(), hass, MagicMock())
@@ -715,7 +723,7 @@ class TestJobLookupByFile:
         content, outcome, _ = await _run(
             "get_esphome_job", {}, _yaml_token(), hass, builder)
         assert outcome == "invalid_request"
-        assert "job_id or file" in content["content"][0]["text"]
+        assert "lookup must contain kind job or file" in content["content"][0]["text"]
 
     async def test_an_explicit_job_id_still_wins(self, hass, esphome_dir):
         # Passing both must not silently prefer the newest job for the file.
@@ -904,7 +912,7 @@ class TestHeadlessWaitClamp:
         })
         with patch(_DASHBOARD_PATCH, return_value=_dash()), patch(_COMMAND_PATCH, builder):
             content, outcome, _ = await _call_tool(
-                "get_esphome_job", {"job_id": JOB}, _yaml_token(), hass,
+                "get_esphome_job", {"lookup": {"kind": "job", "id": JOB}}, _yaml_token(), hass,
                 MagicMock(), "", "voice")
 
         assert outcome == "allowed"
@@ -920,7 +928,7 @@ class TestHeadlessWaitClamp:
         })
         with patch(_DASHBOARD_PATCH, return_value=_dash()), patch(_COMMAND_PATCH, builder):
             content, _o, _r = await _call_tool(
-                "get_esphome_job", {"job_id": JOB}, _yaml_token(), hass,
+                "get_esphome_job", {"lookup": {"kind": "job", "id": JOB}}, _yaml_token(), hass,
                 MagicMock(), "", "voice")
 
         body = _json(content)
@@ -934,7 +942,7 @@ class TestHeadlessWaitClamp:
         })
         with patch(_DASHBOARD_PATCH, return_value=_dash()), patch(_COMMAND_PATCH, builder):
             content, _o, _r = await _call_tool(
-                "get_esphome_job", {"job_id": JOB}, _yaml_token(), hass,
+                "get_esphome_job", {"lookup": {"kind": "job", "id": JOB}}, _yaml_token(), hass,
                 MagicMock(), "", "192.168.1.50")
         assert "note" not in _json(content)
 

@@ -186,10 +186,12 @@ class LoggerOverrideManager:
         """Discard records from a prior HA process; runtime levels vanished too."""
         try:
             stale = await self._store.async_load()
-            if stale:
+            overrides = stale.get("overrides") if isinstance(stale, dict) else None
+            if isinstance(overrides, dict) and overrides:
                 _LOGGER.warning(
                     "Discarding stale Phoenix timed logger restoration records after Home Assistant restart"
                 )
+            if stale:
                 await self._store.async_save({"overrides": {}})
         except Exception:  # noqa: BLE001 - optional control must not block Phoenix setup
             self.storage_available = False

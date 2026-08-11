@@ -1,4 +1,4 @@
-"""Tests for get_config_entry_options / set_config_entry_options.
+"""Tests for get_helper_settings / set_helper_settings.
 
 The tool that finishes a migration: when the entity a helper was built on is
 removed, the helper keeps existing and quietly produces nothing, and nothing
@@ -69,6 +69,10 @@ def _json(content: dict) -> dict:
 
 
 async def _call(name, args, token, hass, data=None):
+    name = {
+        "get_config_entry_options": "get_helper_settings",
+        "set_config_entry_options": "set_helper_settings",
+    }.get(name, name)
     return await _call_tool(name, args, token, hass, data or MagicMock())
 
 
@@ -122,7 +126,7 @@ def _flow(hass, *, result=None):
 
 class TestRegistration:
     def test_executor_registered(self):
-        assert "set_config_entry_options" in _EXECUTOR_REGISTRY
+        assert "set_helper_settings" in _EXECUTOR_REGISTRY
 
 
 class TestRead:

@@ -1024,7 +1024,7 @@ class TestEntityAliases:
 
     async def _set(self, hass, entity_id, token=None, **args):
         return await _call(
-            "set_entity", {"entity_id": entity_id, **args},
+            "set_entity", {"entity_id": entity_id, "changes": args},
             token or _token(cap_registry_write="allow"), hass,
         )
 

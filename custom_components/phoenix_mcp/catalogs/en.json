@@ -1407,6 +1407,7 @@
       "patch_dashboard.remove": "Remove {path} from dashboard '{label}'",
       "patch_dashboard.set": "Set {path} on dashboard '{label}'",
       "patch_yaml_config.remove": "Remove {path} from {file}",
+      "patch_yaml_config.append": "Append to {path} in {file}",
       "patch_yaml_config.set": "Set {path} in {file}",
       "remove_device": "Remove {device_id} from config entry {config_entry_id}",
       "rename_esphome_device": "Rename ESPHome device {device} to {new_name}. This compiles and flashes the device.",

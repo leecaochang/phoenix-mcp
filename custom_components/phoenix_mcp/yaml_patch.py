@@ -49,7 +49,7 @@ import yaml
 
 from .yaml_includes import PhoenixLenientLoader, YamlParseError, load_tagged_lenient
 
-PATCH_OPS = ("set", "remove")
+PATCH_OPS = ("set", "append", "remove")
 
 # One step of an address: a mapping key or a list index.
 Segment = str | int
@@ -542,6 +542,31 @@ def apply_patch(
     op is 'remove'.
     """
     path = normalize_path(key, path_arg)
+    if op == "append":
+        try:
+            node = load_tagged_lenient(text)
+        except YamlParseError as err:
+            raise PatchError(
+                f"configuration.yaml is not valid YAML, so nothing can be appended: {err}"
+            ) from err
+        for part in path:
+            if isinstance(part, int):
+                if not isinstance(node, list) or not 0 <= part < len(node):
+                    raise PatchError(
+                        f"'{describe_path(path)}' does not identify an existing list."
+                    )
+                node = node[part]
+            else:
+                if not isinstance(node, dict) or part not in node:
+                    raise PatchError(
+                        f"'{describe_path(path)}' does not identify an existing list."
+                    )
+                node = node[part]
+        if not isinstance(node, list):
+            raise PatchError(
+                f"'{describe_path(path)}' is not a list, so a value cannot be appended to it."
+            )
+        path = [*path, len(node)]
     target = _locate(text, path)
     before = _source_value(text, target) if target.found else None
     if op == "remove":

@@ -48,6 +48,16 @@ def _json(content: dict) -> dict:
 
 
 async def _call(name, args, token, hass, data=None):
+    args = dict(args)
+    if name == "patch_yaml_config" and "address" not in args:
+        if "key" in args:
+            address = {"kind": "key", "value": args.pop("key")}
+        else:
+            address = {"kind": "path", "value": args.pop("path")}
+        change = {"kind": args.pop("op", "set")}
+        if "content" in args:
+            change["content"] = args.pop("content")
+        args.update({"address": address, "change": change})
     return await _call_tool(name, args, token, hass, data or MagicMock())
 
 

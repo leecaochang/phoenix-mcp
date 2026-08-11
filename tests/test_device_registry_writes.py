@@ -147,7 +147,7 @@ async def test_whole_device_write_requires_explicit_device_green(
     )
     data = await _data(hass)
     content, outcome, _ = await _call_tool(
-        "set_device", {"device_id": device_id, "add_labels": []}, inherited, hass, data
+        "set_device", {"device_id": device_id, "changes": {"add_labels": []}}, inherited, hass, data
     )
     assert outcome == "denied"
     assert "explicit WRITE" in content["content"][0]["text"]
@@ -165,9 +165,11 @@ async def test_nullable_fields_labels_and_version_restore(
         "set_device",
         {
             "device_id": device_id,
-            "name": "Disposable Ping",
-            "area_id": device_env["area_id"],
-            "add_labels": [label.label_id],
+            "changes": {
+                "name": "Disposable Ping",
+                "area_id": device_env["area_id"],
+                "add_labels": [label.label_id],
+            },
         },
         token,
         hass,
@@ -188,9 +190,11 @@ async def test_nullable_fields_labels_and_version_restore(
         "set_device",
         {
             "device_id": device_id,
-            "name": None,
-            "area_id": None,
-            "remove_labels": [label.label_id],
+            "changes": {
+                "name": None,
+                "area_id": None,
+                "remove_labels": [label.label_id],
+            },
         },
         token,
         hass,
@@ -222,7 +226,7 @@ async def test_unknown_label_is_rejected_before_approval(
     with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
         content, outcome, _ = await _call_tool(
             "set_device",
-            {"device_id": device_env["device_id"], "add_labels": ["missing"]},
+            {"device_id": device_env["device_id"], "changes": {"add_labels": ["missing"]}},
             _token(device_env["device_id"], cap="confirm"),
             hass,
             data,
@@ -259,7 +263,7 @@ async def test_only_user_disabled_state_can_be_toggled(
     data = await _data(hass)
     content, outcome, _ = await _call_tool(
         "set_device",
-        {"device_id": device_id, "enabled": True},
+        {"device_id": device_id, "changes": {"enabled": True}},
         _token(device_id),
         hass,
         data,
@@ -284,7 +288,7 @@ async def test_enable_refuses_disabled_owner(hass: HomeAssistant):
     data = await _data(hass)
     content, outcome, _ = await _call_tool(
         "set_device",
-        {"device_id": device.id, "enabled": True},
+        {"device_id": device.id, "changes": {"enabled": True}},
         _token(device.id),
         hass,
         data,
@@ -310,14 +314,14 @@ async def test_child_restriction_blocks_name_area_and_enabled_but_not_labels(
         {"enabled": False},
     ):
         content, outcome, _ = await _call_tool(
-            "set_device", {"device_id": device_id, **update}, token, hass, data
+            "set_device", {"device_id": device_id, "changes": update}, token, hass, data
         )
         assert outcome == "denied"
         assert blocked_entity in _body(content)["blocked_entities"]
 
     _content, outcome, _ = await _call_tool(
         "set_device",
-        {"device_id": device_id, "add_labels": [label.label_id]},
+        {"device_id": device_id, "changes": {"add_labels": [label.label_id]}},
         token,
         hass,
         data,
@@ -363,7 +367,7 @@ async def test_device_mesa_modes_apply_to_name_and_disable(
     for update in ({"name": "MESA name"}, {"enabled": False}):
         content, outcome, _ = await _call_tool(
             "set_device",
-            {"device_id": device_id, **update},
+            {"device_id": device_id, "changes": update},
             _token(device_id),
             hass,
             data,
@@ -374,7 +378,7 @@ async def test_device_mesa_modes_apply_to_name_and_disable(
             if update.get("enabled") is False:
                 await _call_tool(
                     "set_device",
-                    {"device_id": device_id, "enabled": True},
+                    {"device_id": device_id, "changes": {"enabled": True}},
                     _token(device_id),
                     hass,
                     data,
@@ -394,8 +398,10 @@ async def test_area_and_labels_have_no_mesa_gate(
         "set_device",
         {
             "device_id": device_id,
-            "area_id": device_env["area_id"],
-            "add_labels": [label.label_id],
+            "changes": {
+                "area_id": device_env["area_id"],
+                "add_labels": [label.label_id],
+            },
         },
         _token(device_id),
         hass,
@@ -417,7 +423,7 @@ async def test_restrictive_device_profile_cannot_be_loosened_by_entity_profile(
         data.mesa.store.set(entity_id, _profile(entity_id, "autonomous"))
     content, outcome, _ = await _call_tool(
         "set_device",
-        {"device_id": device_id, "name": "Still blocked"},
+        {"device_id": device_id, "changes": {"name": "Still blocked"}},
         _token(device_id),
         hass,
         data,
@@ -447,7 +453,7 @@ async def test_enforced_confirm_joins_normal_approval_and_covers_membership(
     ):
         _content, outcome, _ = await _call_tool(
             "set_device",
-            {"device_id": device_id, "name": "Confirmed device"},
+            {"device_id": device_id, "changes": {"name": "Confirmed device"}},
             _token(device_id, cap="confirm"),
             hass,
             data,
@@ -467,7 +473,7 @@ async def test_capability_approval_pins_membership_even_when_mesa_is_off(
     with patch("custom_components.phoenix_mcp.mcp_view._gate", gate):
         _content, outcome, _ = await _call_tool(
             "set_device",
-            {"device_id": device_id, "name": "Pinned membership"},
+            {"device_id": device_id, "changes": {"name": "Pinned membership"}},
             _token(device_id, cap="confirm"),
             hass,
             data,
@@ -508,7 +514,7 @@ async def test_membership_and_mesa_changes_are_rechecked_for_approved_execution(
     ):
         _content, outcome, _ = await _call_tool(
             "set_device",
-            {"device_id": device_id, "name": "Pending name"},
+            {"device_id": device_id, "changes": {"name": "Pending name"}},
             _token(device_id),
             hass,
             data,
@@ -571,7 +577,7 @@ async def test_entityless_device_fails_closed_only_for_mesa_actions(
     token = _token(device.id)
     for update in ({"name": "Blocked"}, {"enabled": False}):
         content, outcome, _ = await _call_tool(
-            "set_device", {"device_id": device.id, **update}, token, hass, data
+            "set_device", {"device_id": device.id, "changes": update}, token, hass, data
         )
         assert outcome == "denied"
         assert "unresolved_device_context" in content["content"][0]["text"]
@@ -579,7 +585,7 @@ async def test_entityless_device_fails_closed_only_for_mesa_actions(
     label = lr.async_get(hass).async_create("Entityless metadata")
     _content, outcome, _ = await _call_tool(
         "set_device",
-        {"device_id": device.id, "add_labels": [label.label_id]},
+        {"device_id": device.id, "changes": {"add_labels": [label.label_id]}},
         token,
         hass,
         data,

@@ -53,6 +53,7 @@ from homeassistant.core import HomeAssistant, valid_entity_id
 
 from ..const import CAP_DENY, REDACTION_SENTINEL
 from ..data import PhoenixData
+from ..tool_contracts import normalize_tool_args
 from ..helpers import (
     diff_summary_fields as _summary,
     effective_cap,
@@ -840,6 +841,9 @@ async def _tool_edit_energy_config(
     change during the approval window is caught.
     """
     tool = "edit_energy_config"
+    args, error = normalize_tool_args(tool, args)
+    if error:
+        return _tool_error(error), "invalid_request", tool
     if effective_cap(token, "cap_energy_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool
     refusal = _sentinel_refusal(args)

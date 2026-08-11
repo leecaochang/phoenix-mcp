@@ -49,6 +49,7 @@ from ..const import (
     VOICE_AGENT_CLIENT_IP,
 )
 from ..data import PhoenixData
+from ..tool_contracts import normalize_tool_args
 from ..mesa import entity_control_mode
 from ..helpers import diff_summary_fields as _summary, content_hash, effective_cap
 from ..policy_engine import Permission, esphome_entry_for_entity, esphome_entry_writable, resolve
@@ -2161,6 +2162,9 @@ async def _tool_get_esphome_job(
     args: dict, token: TokenRecord, hass: HomeAssistant, client_ip: str | None = None
 ) -> tuple[dict, str, str]:
     """MCP tool: report a firmware job's status and log."""
+    args, error = normalize_tool_args("get_esphome_job", args)
+    if error:
+        return _tool_error(error), "invalid_request", "get_esphome_job"
     if effective_cap(token, "cap_esphome_yaml") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "get_esphome_job"
 

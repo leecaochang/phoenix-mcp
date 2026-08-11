@@ -160,7 +160,7 @@ async def test_scoped_write_requires_every_entity_and_exact_device(
         ).value != "write"
         content, outcome, _ = await _call_tool(
             "set_integration",
-            {"entry_id": integration_env["entry_id"], "title": "Blocked"},
+            {"entry_id": integration_env["entry_id"], "changes": {"title": "Blocked"}},
             token,
             hass,
             data,
@@ -176,7 +176,7 @@ async def test_resource_less_scoped_entry_fails_closed(hass: HomeAssistant):
     env = {"device_id": "unused"}
     _content, outcome, _ = await _call_tool(
         "set_integration",
-        {"entry_id": entry.entry_id, "title": "No resources"},
+        {"entry_id": entry.entry_id, "changes": {"title": "No resources"}},
         _token(env),
         hass,
         data,
@@ -194,7 +194,7 @@ async def test_metadata_noop_skips_gate_and_version(
             "set_integration",
             {
                 "entry_id": integration_env["entry_id"],
-                "title": integration_env["entry"].title,
+                "changes": {"title": integration_env["entry"].title},
             },
             _token(integration_env, cap="confirm"),
             hass,
@@ -220,9 +220,11 @@ async def test_metadata_update_polling_reload_and_version_restore(
             "set_integration",
             {
                 "entry_id": entry.entry_id,
-                "title": "Updated integration",
-                "pref_disable_new_entities": True,
-                "pref_disable_polling": True,
+                "changes": {
+                    "title": "Updated integration",
+                    "pref_disable_new_entities": True,
+                    "pref_disable_polling": True,
+                },
             },
             token,
             hass,
@@ -293,7 +295,7 @@ async def test_title_only_does_not_reload(hass: HomeAssistant, integration_env):
     ) as reload_mock:
         content, outcome, _ = await _call_tool(
             "set_integration",
-            {"entry_id": integration_env["entry_id"], "title": "Title only"},
+            {"entry_id": integration_env["entry_id"], "changes": {"title": "Title only"}},
             _token(integration_env),
             hass,
             data,
@@ -374,7 +376,7 @@ async def test_integration_scope_mesa_controls_rename_and_reload(
     for tool_name, args in (
         (
             "set_integration",
-            {"entry_id": integration_env["entry_id"], "title": "MESA title"},
+            {"entry_id": integration_env["entry_id"], "changes": {"title": "MESA title"}},
         ),
         ("reload_integration", {"entry_id": integration_env["entry_id"]}),
     ):
@@ -448,7 +450,7 @@ async def test_entityless_entry_fails_closed_when_mesa_is_active(
     )
     content, outcome, _ = await _call_tool(
         "set_integration",
-        {"entry_id": entry.entry_id, "title": "Still blocked"},
+        {"entry_id": entry.entry_id, "changes": {"title": "Still blocked"}},
         token,
         hass,
         data,

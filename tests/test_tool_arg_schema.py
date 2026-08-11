@@ -84,6 +84,16 @@ UNPUBLISHED_ARGS = {
     ),
 }
 
+# Catalog v2 handlers normalize structured public inputs to the mature executor
+# shape after the public-schema boundary. These keys are deliberately internal.
+NORMALIZED_ARGS = {
+    "mcp_view.py": {"add_aliases", "add_labels", "area_id", "categories", "context_id", "detailed", "device_class", "domain", "fields", "hidden", "icon", "new_entity_id", "remove_aliases", "remove_labels", "service_data", "title"},
+    "discovery.py": {"area_id", "service_data"},
+    "energy.py": {"device_name", "name", "new_statistic", "op", "source_type", "statistic"},
+    "config_files.py": {"op"},
+    "lovelace.py": {"op", "path", "value"},
+}
+
 
 def _tool_defs() -> dict[str, dict]:
     return {d["name"]: d for d in (*_ENTITY_TOOL_DEFS, *_NATIVE_TOOL_DEFS, *_SYSTEM_TOOL_DEFS)}
@@ -92,7 +102,8 @@ def _tool_defs() -> dict[str, dict]:
 def test_set_entity_exposes_only_validated_registry_reference_fields():
     """A new registry reference needs pre-gate and apply-time validation."""
     schema = _tool_defs()["set_entity"]["inputSchema"]
-    properties = set(schema["properties"])
+    assert set(schema["properties"]) == {"entity_id", "changes"}
+    properties = set(schema["properties"]["changes"]["properties"])
     registry_references = {
         "area_id",
         "category_id",
@@ -113,7 +124,7 @@ def test_set_entity_exposes_only_validated_registry_reference_fields():
 
 
 def test_set_entity_publishes_reversible_registry_fields_and_null_clears():
-    properties = _tool_defs()["set_entity"]["inputSchema"]["properties"]
+    properties = _tool_defs()["set_entity"]["inputSchema"]["properties"]["changes"]["properties"]
     assert {
         "device_class",
         "enabled",
@@ -131,9 +142,10 @@ def test_set_entity_publishes_reversible_registry_fields_and_null_clears():
 
 
 def test_set_device_publishes_only_reversible_user_metadata():
-    properties = _tool_defs()["set_device"]["inputSchema"]["properties"]
+    schema = _tool_defs()["set_device"]["inputSchema"]
+    assert set(schema["properties"]) == {"device_id", "changes"}
+    properties = schema["properties"]["changes"]["properties"]
     assert set(properties) == {
-        "device_id",
         "name",
         "area_id",
         "enabled",
@@ -142,6 +154,27 @@ def test_set_device_publishes_only_reversible_user_metadata():
     }
     for field in ("name", "area_id"):
         assert properties[field]["type"] == ["string", "null"]
+
+
+def test_catalog_v2_removes_retired_flat_public_fields():
+    defs = _tool_defs()
+    retired = {
+        "get_state": {"detailed", "fields"},
+        "get_states": {"detailed", "fields"},
+        "get_calendar_events": {"calendar_id"},
+        "wait_for_approval": {"approval_id"},
+        "get_relationships": {"entity_id", "device_id", "integration", "area", "label"},
+        "get_logbook": {"entity_ids", "device_ids", "context_id"},
+        "get_esphome_job": {"job_id", "file"},
+        "edit_energy_config": {"op", "statistic", "device_name", "new_statistic", "source_type"},
+        "patch_yaml_config": {"key", "path", "content", "op"},
+        "patch_dashboard": {"url_path", "path", "value", "op"},
+        "set_entity": {"name", "icon", "area_id", "new_entity_id"},
+        "set_device": {"name", "area_id", "enabled"},
+        "set_integration": {"title", "pref_disable_new_entities", "pref_disable_polling"},
+    }
+    for tool, fields in retired.items():
+        assert not fields & set(defs[tool]["inputSchema"]["properties"])
 
 
 def test_remove_device_publishes_only_owner_selection():
@@ -235,7 +268,7 @@ def test_every_argument_read_is_published_by_some_tool(module):
     for tool in _tools_by_module()[module]:
         declared |= set(defs.get(tool, {}).get("inputSchema", {}).get("properties", {}))
     exempt = {arg for (name, arg) in UNPUBLISHED_ARGS if name == module.name}
-    undeclared = sorted(_args_read(module) - declared - exempt)
+    undeclared = sorted(_args_read(module) - declared - exempt - NORMALIZED_ARGS.get(module.name, set()))
     assert not undeclared, (
         f"{module.name} reads tool arguments that no tool in it publishes: "
         f"{undeclared}. A caller cannot send an argument its schema does not "

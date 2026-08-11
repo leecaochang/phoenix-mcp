@@ -43,6 +43,8 @@ def _json(content: dict) -> dict:
 
 
 async def _call(name, args, token, hass):
+    if name in {"call_service", "dry_run_service"} and isinstance(args.get("service"), str):
+        args = {"service": {"domain": args.pop("domain"), "name": args.pop("service"), "data": args.pop("service_data", {})}, **args}
     return await _call_tool(name, args, token, hass, MagicMock())
 
 

@@ -259,10 +259,12 @@ async def test_dry_run_predicts_against_the_sanitised_call(hass, token_store):
         return MagicMock(allowed=["light.kitchen"], confirm=[], blocked=[], warnings=[])
 
     args = {
-        "domain": "light",
-        "service": "turn_on",
-        "entity_id": "light.kitchen",
-        "service_data": {**_ALL_SELECTORS, "brightness_pct": 40},
+        "service": {
+            "domain": "light",
+            "name": "turn_on",
+            "data": {**_ALL_SELECTORS, "brightness_pct": 40},
+        },
+        "targets": [{"kind": "entity", "ids": ["light.kitchen"]}],
     }
     with (
         patch.object(discovery, "resolve_service_targets", return_value=(["light.kitchen"], 1)),

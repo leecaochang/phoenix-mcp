@@ -45,6 +45,25 @@ def _data(mesa=None) -> MagicMock:
 
 
 async def _call(name, args, token, hass, data=None):
+    args = dict(args)
+    name = {
+        "validate_config": "validate_automation_or_script",
+        "compare_state": "compare_states",
+    }.get(name, name)
+    if name == "compare_states" and "entity_id" in args:
+        entity_ids = args.pop("entity_id")
+        args["entity_ids"] = (
+            entity_ids if isinstance(entity_ids, list) else [entity_ids]
+        )
+    if name == "dry_run_service" and isinstance(args.get("service"), str):
+        service = {
+            "domain": args.pop("domain"),
+            "name": args.pop("service"),
+        }
+        entity_id = args.pop("entity_id", None)
+        if entity_id is not None:
+            args["targets"] = [{"kind": "entity", "ids": [entity_id]}]
+        args["service"] = service
     return await _call_tool(name, args, token, hass, data or _data())
 
 
@@ -170,7 +189,7 @@ class TestWaitForApproval:
         data = _data()
         data.store.get_pending_approvals.return_value = [_approval_dict("appr_x", str(uuid.uuid4()))]
         _, outcome, _ = await _call(
-            "wait_for_approval", {"approval_id": "appr_x"}, token, hass, data)
+            "wait_for_approval", {"approval_ids": ["appr_x"]}, token, hass, data)
         assert outcome == "not_found"
 
     async def test_already_resolved_returns_immediately(self, hass):
@@ -178,10 +197,10 @@ class TestWaitForApproval:
         data = _data()
         data.store.get_pending_approvals.return_value = [_approval_dict("appr_mine", token.id, "approved")]
         content, outcome, _ = await _call(
-            "wait_for_approval", {"approval_id": "appr_mine"}, token, hass, data)
+            "wait_for_approval", {"approval_ids": ["appr_mine"]}, token, hass, data)
         assert outcome == "allowed"
         body = _json(content)
-        assert body["status"] == "approved"
+        assert body["approvals"][0]["status"] == "approved"
         assert body["resolved"] is True
 
     async def test_wakes_on_resolved_event(self, hass):
@@ -191,7 +210,7 @@ class TestWaitForApproval:
         data.store.get_pending_approvals.return_value = [rec]
 
         task = asyncio.ensure_future(
-            _call("wait_for_approval", {"approval_id": "appr_mine", "timeout": 5}, token, hass, data))
+            _call("wait_for_approval", {"approval_ids": ["appr_mine"], "timeout": 5}, token, hass, data))
         # Deterministic readiness instead of sleep(0): poll the public listener
         # registry until the tool has actually subscribed to the resolved event,
         # then fire it. No fixed delay, no coupling to scheduler ordering.
@@ -208,18 +227,18 @@ class TestWaitForApproval:
         assert outcome == "allowed"
         body = _json(content)
         assert body["resolved"] is True
-        assert body["status"] == "approved"
+        assert body["approvals"][0]["status"] == "approved"
 
     async def test_timeout_returns_pending(self, hass):
         token = _token()
         data = _data()
         data.store.get_pending_approvals.return_value = [_approval_dict("appr_mine", token.id, "pending")]
         content, outcome, _ = await _call(
-            "wait_for_approval", {"approval_id": "appr_mine", "timeout": 1}, token, hass, data)
+            "wait_for_approval", {"approval_ids": ["appr_mine"], "timeout": 1}, token, hass, data)
         assert outcome == "allowed"
         body = _json(content)
         assert body["resolved"] is False
-        assert body["status"] == "pending"
+        assert body["approvals"][0]["status"] == "pending"
 
 
 # --- whatif ---

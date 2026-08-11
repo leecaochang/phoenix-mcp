@@ -60,6 +60,15 @@ def _text(content: dict) -> str:
 
 
 async def _call(args, token=None, hass=None, data=None):
+    args = dict(args)
+    target = {"path": args.pop("path")}
+    if "url_path" in args:
+        target["url_path"] = args.pop("url_path")
+    change = {"kind": args.pop("op", "set")}
+    if "value" in args:
+        change["value"] = args.pop("value")
+    args["target"] = target
+    args["change"] = change
     return await _call_tool(
         "patch_dashboard", args, token, hass, data if data is not None else MagicMock())
 

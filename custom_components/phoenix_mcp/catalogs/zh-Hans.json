@@ -778,6 +778,7 @@
       "edit_energy_config.rename_device": "能源：将“{old_label}”重命名为“{label}”",
       "edit_energy_config.remove_source": "能源：移除{source_type}来源（{old_statistic}）",
       "patch_yaml_config.set": "设置 {file} 中的 {path}",
+      "patch_yaml_config.append": "向 {file} 中的 {path} 追加内容",
       "patch_yaml_config.remove": "从 {file} 删除 {path}",
       "config_entry.options": "更改助手“{label}”的 {keys}",
       "set_yaml_config.removing_entry": "替换 {file}，移除 1 个条目",

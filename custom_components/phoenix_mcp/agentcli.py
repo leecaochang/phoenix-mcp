@@ -1624,6 +1624,20 @@ def build_mcp_tool_list(token: TokenRecord, data: PhoenixData) -> list[dict]:
     return out
 
 
+def catalog_payload_metrics(token: TokenRecord, data: PhoenixData) -> dict[str, int]:
+    """Return deterministic byte metrics for the token's announced catalog."""
+    tools = build_mcp_tool_list(token, data)
+    canonical = json.dumps(tools, sort_keys=True, separators=(",", ":")).encode()
+    claude = ClaudeProvider(ProviderConfig("claude", "metrics", "")).format_tools(tools)
+    openai = OpenAICompatProvider(ProviderConfig("chatgpt", "metrics", "")).format_tools(tools)
+    return {
+        "tool_count": len(tools),
+        "canonical_bytes": len(canonical),
+        "claude_bytes": len(json.dumps(claude, sort_keys=True, separators=(",", ":")).encode()),
+        "openai_bytes": len(json.dumps(openai, sort_keys=True, separators=(",", ":")).encode()),
+    }
+
+
 def _clip_display(text: str) -> str:
     """Cap tool-result text for the verbose panel view; the model still gets the
     full result via the message history."""

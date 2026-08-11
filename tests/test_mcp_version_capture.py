@@ -25,7 +25,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.phoenix_mcp.const import MAX_DIFF_INLINE_BYTES, MAX_REQUEST_BODY_BYTES
 from custom_components.phoenix_mcp.data import PhoenixData
-from custom_components.phoenix_mcp.mcp_view import _call_tool, async_restore_version
+from custom_components.phoenix_mcp.mcp_view import _call_tool as _mcp_call_tool, async_restore_version
 from custom_components.phoenix_mcp.tools.authoring import _read_automations_yaml
 from custom_components.phoenix_mcp.token_store import PermissionNode, PermissionTree, TokenRecord
 from custom_components.phoenix_mcp.version_store import VersionStore
@@ -67,6 +67,21 @@ def _token(tree: PermissionTree | None = None, **caps) -> TokenRecord:
 
 def _text(content: dict) -> dict:
     return json.loads(content["content"][0]["text"])
+
+
+async def _call_tool(name, args, *rest):
+    """Send legacy fixture intent through the public Catalog v2 envelope."""
+    args = dict(args)
+    if name == "set_entity" and "changes" not in args:
+        entity_id = args.pop("entity_id")
+        args = {"entity_id": entity_id, "changes": args}
+    elif name == "patch_yaml_config" and "address" not in args:
+        address = {"kind": "key", "value": args.pop("key")}
+        change = {"kind": args.pop("op", "set")}
+        if "content" in args:
+            change["content"] = args.pop("content")
+        args.update({"address": address, "change": change})
+    return await _mcp_call_tool(name, args, *rest)
 
 
 class TestAutomationCapture:

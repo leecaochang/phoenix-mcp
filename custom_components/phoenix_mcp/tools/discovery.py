@@ -51,6 +51,7 @@ from homeassistant.util.dt import as_utc, parse_datetime, utcnow
 
 from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_COMPARE_LIST_VALUES, MAX_COMPARE_VALUE_CHARS, MAX_DANGLING_PATHS, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
 from ..data import PhoenixData
+from ..tool_contracts import normalize_tool_args
 from ..mesa import async_semantic_moments, build_expand_target, entity_control_mode, evaluate_service_entities
 from ..mesa_core.trigger_validator import entities_by_role
 from ..mesa_tools import MESA_TOOLS_CAP, authored_restrictions
@@ -1328,19 +1329,19 @@ async def _tool_check_config(
 ) -> tuple[dict, str, str]:
     """MCP tool: validate HA config files and return errors/warnings."""
     if effective_cap(token, "cap_diagnostics") == CAP_DENY:
-        return _tool_error("Forbidden."), "denied", "check_config"
+        return _tool_error("Forbidden."), "denied", "check_ha_config"
 
     from homeassistant.helpers import check_config  # noqa: PLC0415
     try:
         result = await check_config.async_check_ha_config_file(hass)
     except Exception:  # noqa: BLE001 - surface as a tool error, never 500
         _LOGGER.warning("MCP check_config failed", exc_info=True)
-        return _tool_error("Config check failed."), "invalid_request", "check_config"
+        return _tool_error("Config check failed."), "invalid_request", "check_ha_config"
 
     errors = [{"message": e.message, "domain": e.domain} for e in result.errors]
     warnings = [{"message": e.message, "domain": e.domain} for e in result.warnings]
     body = {"valid": not errors, "errors": errors, "warnings": warnings}
-    return _tool_success(json.dumps(body, default=str)), "allowed", "check_config"
+    return _tool_success(json.dumps(body, default=str)), "allowed", "check_ha_config"
 
 
 _RELATIONSHIP_SELECTORS = ("entity_id", "device_id", "integration", "area", "label")
@@ -1543,6 +1544,9 @@ async def _tool_get_relationships(
     tool's whole job is answering "is anything still using these", and the one
     unacceptable reply is a wrong no.
     """
+    args, error = normalize_tool_args("get_relationships", args)
+    if error:
+        return _tool_error(error), "invalid_request", "get_relationships"
     if effective_cap(token, "cap_search") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "get_relationships"
 
@@ -1872,24 +1876,27 @@ async def _tool_compare_state(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
     """MCP tool: compare accessible entity states between two times."""
+    args, error = normalize_tool_args("compare_states", args)
+    if error:
+        return _tool_error(error), "invalid_request", "compare_states"
     if effective_cap(token, "cap_search") == CAP_DENY:
-        return _tool_error("Forbidden."), "denied", "compare_state"
+        return _tool_error("Forbidden."), "denied", "compare_states"
 
     ids = str_list_arg(args.get("entity_id"))
     if not ids:
-        return _tool_error("Missing required argument: entity_id"), "invalid_request", "compare_state"
+        return _tool_error("Missing required argument: entity_id"), "invalid_request", "compare_states"
     if len(ids) > 100:
-        return _tool_error("entity_id accepts at most 100 entities."), "invalid_request", "compare_state"
+        return _tool_error("entity_id accepts at most 100 entities."), "invalid_request", "compare_states"
     accessible = [e for e in ids if resolve(e, token, hass) in (Permission.READ, Permission.WRITE)]
     if not args.get("t1"):
-        return _tool_error("Missing required argument: t1"), "invalid_request", "compare_state"
+        return _tool_error("Missing required argument: t1"), "invalid_request", "compare_states"
     try:
         t1 = _parse_time_param(args["t1"])
         if t1.tzinfo is None or t1.utcoffset() is None:
             raise ValueError
         t1 = as_utc(t1)
     except ValueError:
-        return _tool_error("Invalid t1 format."), "invalid_request", "compare_state"
+        return _tool_error("Invalid t1 format."), "invalid_request", "compare_states"
     t2 = utcnow()
     if args.get("t2"):
         try:
@@ -1898,9 +1905,9 @@ async def _tool_compare_state(
                 raise ValueError
             t2 = as_utc(t2)
         except ValueError:
-            return _tool_error("Invalid t2 format."), "invalid_request", "compare_state"
+            return _tool_error("Invalid t2 format."), "invalid_request", "compare_states"
     if t1 >= t2:
-        return _tool_error("t1 must be earlier than t2."), "invalid_request", "compare_state"
+        return _tool_error("t1 must be earlier than t2."), "invalid_request", "compare_states"
 
     comparisons: list[dict] = []
     if accessible:
@@ -1911,7 +1918,7 @@ async def _tool_compare_state(
             )
         except Exception:  # noqa: BLE001
             _LOGGER.warning("compare_state history failed", exc_info=True)
-            return _tool_error("History call failed."), "invalid_request", "compare_state"
+            return _tool_error("History call failed."), "invalid_request", "compare_states"
         for eid in accessible:
             dicts1 = [s.as_dict() if hasattr(s, "as_dict") else s for s in at_t1.get(eid, [])]
             dicts2 = [s.as_dict() if hasattr(s, "as_dict") else s for s in at_t2.get(eid, [])]
@@ -1920,7 +1927,7 @@ async def _tool_compare_state(
             comparisons.append({"entity_id": eid, "state_at_t1": s1, "state_at_t2": s2, "changed": s1 != s2})
 
     body = {"t1": t1, "t2": t2, "comparisons": comparisons}
-    return _tool_success(json.dumps(body, default=str)), "allowed", "compare_state"
+    return _tool_success(json.dumps(body, default=str)), "allowed", "compare_states"
 
 
 _SCALAR_TYPES = (str, int, float, bool, type(None))
@@ -2156,6 +2163,9 @@ async def _tool_dry_run_service(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
     """MCP tool: preview a service call (resolved targets + MESA verdict) without executing."""
+    args, error = normalize_tool_args("dry_run_service", args)
+    if error:
+        return _tool_error(error), "invalid_request", "dry_run_service"
     if effective_cap(token, "cap_search") == CAP_DENY:
         return _tool_error("Forbidden."), "denied", "dry_run_service"
 
@@ -2271,12 +2281,12 @@ async def _tool_validate_config(
 ) -> tuple[dict, str, str]:
     """MCP tool: validate an automation or script config without saving it."""
     if effective_cap(token, "cap_diagnostics") == CAP_DENY:
-        return _tool_error("Forbidden."), "denied", "validate_config"
+        return _tool_error("Forbidden."), "denied", "validate_automation_or_script"
 
     cfg_type = args.get("type")
     config = args.get("config")
     if cfg_type not in ("automation", "script") or not isinstance(config, dict):
-        return _tool_error("Provide type ('automation' or 'script') and a config object."), "invalid_request", "validate_config"
+        return _tool_error("Provide type ('automation' or 'script') and a config object."), "invalid_request", "validate_automation_or_script"
 
     valid = True
     errors: list[str] = []
@@ -2309,4 +2319,4 @@ async def _tool_validate_config(
         accessible = resolve(eid, token, hass) in (Permission.READ, Permission.WRITE)
         refs.append({"entity_id": eid, "exists": accessible, "accessible": accessible})
     body = {"type": cfg_type, "valid": valid, "errors": errors, "referenced_entities": refs}
-    return _tool_success(json.dumps(body, default=str)), "allowed", "validate_config"
+    return _tool_success(json.dumps(body, default=str)), "allowed", "validate_automation_or_script"

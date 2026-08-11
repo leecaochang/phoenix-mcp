@@ -277,7 +277,17 @@ def _writer(prefs: dict):
 
 
 async def _edit(hass: HomeAssistant, token: TokenRecord, **args) -> tuple[dict, str, str]:
-    return await _call_tool("edit_energy_config", args, token, hass, _data(), "req-1", None)
+    op = args.pop("op")
+    if "source_type" in args:
+        target = {"kind": "source", "source_type": args.pop("source_type")}
+    elif "device_name" in args:
+        target = {"kind": "device_name", "name": args.pop("device_name")}
+    else:
+        target = {"kind": "statistic", "id": args.pop("statistic")}
+    return await _call_tool(
+        "edit_energy_config", {"operation": op, "target": target, "changes": args},
+        token, hass, _data(), "req-1", None,
+    )
 
 
 def _seed_states(hass: HomeAssistant, *entity_ids: str) -> None:
@@ -982,7 +992,7 @@ async def test_every_write_records_a_restorable_version(hass: HomeAssistant) -> 
     with patch(_WS, ws):
         _, outcome, _ = await _call_tool(
             "edit_energy_config",
-            {"op": "add_device", "statistic": "sensor.dryer_energy", "name": "Dryer"},
+                {"operation": "add_device", "target": {"kind": "statistic", "id": "sensor.dryer_energy"}, "changes": {"name": "Dryer"}},
             _token(cap_energy_write="allow"), hass, data, "req-1", None,
         )
     assert outcome == "allowed"
