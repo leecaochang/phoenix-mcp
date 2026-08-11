@@ -29,6 +29,7 @@ come from ..tool_common.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 import dataclasses
@@ -46,7 +47,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.core import HomeAssistant
-from homeassistant.util.dt import parse_datetime, utcnow
+from homeassistant.util.dt import as_utc, parse_datetime, utcnow
 
 from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_COMPARE_LIST_VALUES, MAX_COMPARE_VALUE_CHARS, MAX_DANGLING_PATHS, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
 from ..data import PhoenixData
@@ -1859,6 +1860,14 @@ async def _history_states(hass: HomeAssistant, start: Any, end: Any, entity_ids:
     return await get_instance(hass).async_add_executor_job(fn)
 
 
+async def _history_states_at(hass: HomeAssistant, at: Any, entity_ids: list[str]) -> dict:
+    """Return each entity's latest significant state at or before one time."""
+    query_start = at + timedelta.resolution
+    return await _history_states(
+        hass, query_start, query_start + timedelta.resolution, entity_ids
+    )
+
+
 async def _tool_compare_state(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
@@ -1869,31 +1878,45 @@ async def _tool_compare_state(
     ids = str_list_arg(args.get("entity_id"))
     if not ids:
         return _tool_error("Missing required argument: entity_id"), "invalid_request", "compare_state"
+    if len(ids) > 100:
+        return _tool_error("entity_id accepts at most 100 entities."), "invalid_request", "compare_state"
+    accessible = [e for e in ids if resolve(e, token, hass) in (Permission.READ, Permission.WRITE)]
     if not args.get("t1"):
         return _tool_error("Missing required argument: t1"), "invalid_request", "compare_state"
     try:
         t1 = _parse_time_param(args["t1"])
+        if t1.tzinfo is None or t1.utcoffset() is None:
+            raise ValueError
+        t1 = as_utc(t1)
     except ValueError:
         return _tool_error("Invalid t1 format."), "invalid_request", "compare_state"
     t2 = utcnow()
     if args.get("t2"):
         try:
             t2 = _parse_time_param(args["t2"])
+            if t2.tzinfo is None or t2.utcoffset() is None:
+                raise ValueError
+            t2 = as_utc(t2)
         except ValueError:
             return _tool_error("Invalid t2 format."), "invalid_request", "compare_state"
+    if t1 >= t2:
+        return _tool_error("t1 must be earlier than t2."), "invalid_request", "compare_state"
 
-    accessible = [e for e in ids if resolve(e, token, hass) in (Permission.READ, Permission.WRITE)]
     comparisons: list[dict] = []
     if accessible:
         try:
-            result = await _history_states(hass, t1, t2, accessible)
+            at_t1, at_t2 = await asyncio.gather(
+                _history_states_at(hass, t1, accessible),
+                _history_states_at(hass, t2, accessible),
+            )
         except Exception:  # noqa: BLE001
             _LOGGER.warning("compare_state history failed", exc_info=True)
             return _tool_error("History call failed."), "invalid_request", "compare_state"
         for eid in accessible:
-            dicts = [s.as_dict() if hasattr(s, "as_dict") else s for s in result.get(eid, [])]
-            s1 = dicts[0].get("state") if dicts else None
-            s2 = dicts[-1].get("state") if dicts else None
+            dicts1 = [s.as_dict() if hasattr(s, "as_dict") else s for s in at_t1.get(eid, [])]
+            dicts2 = [s.as_dict() if hasattr(s, "as_dict") else s for s in at_t2.get(eid, [])]
+            s1 = dicts1[-1].get("state") if dicts1 else None
+            s2 = dicts2[-1].get("state") if dicts2 else None
             comparisons.append({"entity_id": eid, "state_at_t1": s1, "state_at_t2": s2, "changed": s1 != s2})
 
     body = {"t1": t1, "t2": t2, "comparisons": comparisons}

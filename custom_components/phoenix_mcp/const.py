@@ -932,9 +932,6 @@ VACUUM_START_BIT = 8192
 VACUUM_RETURN_HOME_BIT = 16
 VACUUM_CLEAN_AREA_BIT = 16384
 
-# Maximum time range for history and statistics queries.
-MAX_HISTORY_RANGE_DAYS = 7
-
 # Maximum number of log entries returned by the logs endpoint/tool.
 MAX_LOG_ENTRIES = 100
 

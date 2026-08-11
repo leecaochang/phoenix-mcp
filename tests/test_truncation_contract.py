@@ -12,8 +12,9 @@ Two kinds of test here. The behavioural ones pin the actual field values for eac
 paginating read, on both the MCP and REST surfaces, because a caller must not
 have to know which surface it used to learn whether it saw everything. The AST
 guard covers the tools nobody has written yet: it finds every limit-slice in the
-package and requires the enclosing function to report either `truncated` or a
-pre-slice `total`, so a new paginating read cannot ship silent.
+package and requires the enclosing function to report either `truncated`, a
+pre-slice `total`, or the cursor pair `has_more` plus `next_cursor`, so a new
+paginating read cannot ship silent.
 """
 
 from __future__ import annotations
@@ -37,7 +38,8 @@ _SKIP_DIRS = {"mesa_core"}
 # Either satisfies the contract: a boolean the caller reports directly, or a
 # pre-slice count a caller can compare against what it returned. collect_log_entries
 # is the second kind, which is why "truncated" alone would be the wrong test.
-_SIGNALS = ("truncated", "total")
+_DIRECT_SIGNALS = {"truncated", "total"}
+_CURSOR_SIGNALS = {"has_more", "next_cursor"}
 
 # Functions whose limit-slice bounds the LENGTH OF ONE VALUE rather than the size
 # of a result set. Nothing is withheld that a caller could have asked for, so
@@ -212,26 +214,35 @@ class TestLimitSlicesReportTruncation:
                 # A signal can be a response-body key ("truncated": ...) or the
                 # keyword of a returned pair (LogEntryPage(total=...)); both tell
                 # the caller the same thing, so both count.
-                reported = any(
-                    (
+                signal_names = {
+                    node.value
+                    for node in ast.walk(func)
+                    if (
                         isinstance(node, ast.Constant)
                         and isinstance(node.value, str)
-                        and node.value in _SIGNALS
-                    ) or (
-                        isinstance(node, ast.keyword) and node.arg in _SIGNALS
+                        and node.value in _DIRECT_SIGNALS | _CURSOR_SIGNALS
                     )
+                }
+                signal_names.update(
+                    node.arg
                     for node in ast.walk(func)
+                    if (
+                        isinstance(node, ast.keyword)
+                        and node.arg in _DIRECT_SIGNALS | _CURSOR_SIGNALS
+                    )
                 )
+                reported = bool(signal_names & _DIRECT_SIGNALS) or _CURSOR_SIGNALS <= signal_names
                 if not reported:
                     findings.append(
                         f"{path.relative_to(PACKAGE)}:{slices[0].lineno} ({func.name})"
                     )
         return findings
 
-    def test_every_limit_slice_reports_truncation_or_a_total(self):
+    def test_every_limit_slice_reports_completion(self):
         assert not self._findings(), (
             "These functions clip a result set by a limit without reporting "
-            '"truncated" or a pre-slice "total", so a caller cannot tell a '
+            '"truncated", a pre-slice "total", or both "has_more" and '
+            '"next_cursor", so a caller cannot tell a '
             "complete answer from a clipped one: " + ", ".join(self._findings())
         )
 

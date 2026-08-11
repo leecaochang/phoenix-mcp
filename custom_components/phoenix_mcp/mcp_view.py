@@ -9,8 +9,8 @@ import hashlib
 import json
 import logging
 import time
-from datetime import timedelta
-from typing import Any, cast
+from datetime import datetime, timedelta
+from typing import Any, Literal, cast
 
 import voluptuous as vol
 from aiohttp import web
@@ -37,7 +37,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_HISTORY_RANGE_DAYS, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import (
     RegistryMesaDecision,
@@ -48,6 +48,18 @@ from .mesa import (
 from .ws_dispatch import WsDispatchError, async_ws_command
 from .mesa_tools import MESA_TOOL_NAMES, async_call_mesa_tool, mesa_tool_defs
 from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, redact_diagnostics, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
+from .recorder_queries import (
+    MAX_SIGNIFICANT_STATES_RANGE,
+    STATISTIC_PERIOD_LIMITS,
+    recorder_envelope,
+    retention_metadata,
+    retention_warnings,
+    iso_utc,
+    state_timestamp,
+    statistic_page,
+    statistic_timestamp,
+    parse_recorder_window,
+)
 # Shared tool primitives live in tool_common (extracted so per-domain tool
 # modules can use them without importing this transport module).
 # Per-domain tools live under tools/; this module keeps the transport, the
@@ -597,7 +609,7 @@ async def _tool_get_states(
 async def _tool_get_history(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
-    """MCP tool: fetch state history for a single permitted entity."""
+    """MCP tool: fetch one bounded page of state history."""
     entity_id = str_arg(args.get("entity_id"))
     if not entity_id:
         return _tool_error("Missing required argument: entity_id"), "denied", "get_history"
@@ -608,78 +620,109 @@ async def _tool_get_history(
     if perm in (Permission.NO_ACCESS, Permission.DENY):
         return _tool_error("Entity not found."), "denied", entity_id
 
-    mode = str(args.get("mode") or "transitions").strip().lower()
-    if mode not in ("transitions", "raw"):
-        mode = "transitions"
-
-    start_time_raw = args.get("start_time", "")
-    if not start_time_raw:
-        return _tool_error("Missing required argument: start_time"), "denied", entity_id
-
+    mode = str(args.get("mode") or "state_changes").strip().lower()
+    if mode not in ("state_changes", "significant_states"):
+        return _tool_error(
+            "Invalid mode. Must be one of: state_changes, significant_states."
+        ), "invalid_request", entity_id
     try:
-        start_time = _parse_time_param(start_time_raw)
-    except ValueError:
-        return _tool_error("Invalid start_time format."), "denied", entity_id
-
-    end_time = None
-    end_time_raw = args.get("end_time")
-    if end_time_raw:
-        try:
-            end_time = _parse_time_param(end_time_raw)
-        except ValueError:
-            return _tool_error("Invalid end_time format."), "denied", entity_id
-
-    effective_end = end_time or utcnow()
-    max_start = effective_end - timedelta(days=MAX_HISTORY_RANGE_DAYS)
-    if start_time < max_start:
-        start_time = max_start
+        window = parse_recorder_window(args, default_range=timedelta(hours=24))
+    except ValueError as err:
+        return _tool_error(str(err)), "invalid_request", entity_id
+    if mode == "significant_states" and window.end - window.start > MAX_SIGNIFICANT_STATES_RANGE:
+        return _tool_error(
+            "significant_states supports at most 7 days per request because Home Assistant cannot bound this query in the database. Use state_changes for longer ranges."
+        ), "invalid_request", entity_id
 
     try:
         from homeassistant.components.recorder import get_instance
         from homeassistant.components.recorder import history as rec_history
 
-        fn = functools.partial(
-            rec_history.get_significant_states,
-            hass,
-            start_time,
-            end_time,
-            [entity_id],
-            None,
-            False,
-            True,
-            False,
-            False,
-        )
-        result = await get_instance(hass).async_add_executor_job(fn)
+        instance = get_instance(hass)
+        keep_days = instance.keep_days
+        fn: functools.partial[Any]
+        if mode == "state_changes":
+            fn = functools.partial(
+                rec_history.state_changes_during_period,
+                hass,
+                window.page_start,
+                window.end,
+                entity_id,
+                True,
+                False,
+                window.limit + 1,
+                False,
+            )
+        else:
+            fn = functools.partial(
+                rec_history.get_significant_states,
+                hass,
+                window.page_start,
+                window.end,
+                [entity_id],
+                None,
+                False,
+                True,
+                False,
+                False,
+            )
+        result = cast(dict[str, list[Any]], await instance.async_add_executor_job(fn))
     except Exception:
         _LOGGER.warning("MCP history call failed for entity %s", entity_id, exc_info=True)
         return _tool_error("History call failed."), "denied", entity_id
 
     states_list = result.get(entity_id, [])
-    dicts = [s.as_dict() if hasattr(s, "as_dict") else s for s in states_list]
-
-    if mode == "raw":
-        history = [_scrub_state_dict(d) for d in dicts]
+    dicts: list[dict[str, Any]] = [
+        dict(s.as_dict()) if hasattr(s, "as_dict") else dict(s) for s in states_list
+    ]
+    has_more = len(dicts) > window.limit
+    page_dicts = dicts[:window.limit]
+    if mode == "significant_states":
+        history = [_scrub_state_dict(d) for d in page_dicts]
+        for row in history:
+            for key in ("last_changed", "last_updated"):
+                if isinstance(row.get(key), datetime):
+                    row[key] = iso_utc(row[key])
     else:
-        # Transitions: one entry per state-value change, dropping attribute noise
-        # and consecutive duplicates. Far more compact than the raw per-sample dump.
-        history = []
-        last_state = None
-        for d in dicts:
-            state_val = d.get("state")
-            if state_val == last_state:
-                continue
-            history.append({"state": state_val, "when": d.get("last_changed") or d.get("last_updated")})
-            last_state = state_val
-
-    body = {"entity_id": entity_id, "mode": mode, "count": len(history), "history": history}
+        history = [
+            {
+                "state": d.get("state"),
+                "when": iso_utc(stamp) if (stamp := state_timestamp(d)) is not None else None,
+            }
+            for d in page_dicts
+        ]
+    last_timestamp = state_timestamp(page_dicts[-1]) if page_dicts else None
+    if has_more and last_timestamp is None:
+        _LOGGER.warning("MCP history row for entity %s has no usable timestamp", entity_id)
+        return _tool_error("History call returned an invalid timestamp."), "invalid_request", entity_id
+    covered_end = last_timestamp if has_more and last_timestamp is not None else window.end
+    warnings = retention_warnings("short_term", window.start, keep_days, utcnow())
+    body = recorder_envelope(
+        entity_id=entity_id,
+        window=window,
+        covered_start=window.page_start,
+        covered_end=covered_end,
+        rows=history,
+        timestamp_getter=(
+            (lambda row: state_timestamp({"last_changed": row.get("when")}))
+            if mode == "state_changes"
+            else state_timestamp
+        ),
+        effective_limit=window.limit,
+        has_more=has_more,
+        next_cursor=last_timestamp if has_more else None,
+        retention=retention_metadata("short_term", keep_days),
+        warnings=warnings,
+        result_key="history",
+    )
+    body["mode"] = mode
     return _tool_success(json.dumps(body, default=str)), "allowed", entity_id
 
 
 async def _tool_get_statistics(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
-    """MCP tool: fetch long-term statistics for a single permitted entity."""
+    """MCP tool: fetch one aligned and bounded page of Recorder statistics."""
     entity_id = str_arg(args.get("entity_id"))
     if not entity_id:
         return _tool_error("Missing required argument: entity_id"), "denied", "get_statistics"
@@ -690,59 +733,102 @@ async def _tool_get_statistics(
     if perm in (Permission.NO_ACCESS, Permission.DENY):
         return _tool_error("Entity not found."), "denied", entity_id
 
-    start_time_raw = args.get("start_time", "")
-    if not start_time_raw:
-        return _tool_error("Missing required argument: start_time"), "denied", entity_id
-
     try:
-        start_time = _parse_time_param(start_time_raw)
-    except ValueError:
-        return _tool_error("Invalid start_time format."), "denied", entity_id
-
-    end_time = None
-    end_time_raw = args.get("end_time")
-    if end_time_raw:
-        try:
-            end_time = _parse_time_param(end_time_raw)
-        except ValueError:
-            return _tool_error("Invalid end_time format."), "denied", entity_id
-
-    effective_end = end_time or utcnow()
-    max_start = effective_end - timedelta(days=MAX_HISTORY_RANGE_DAYS)
-    if start_time < max_start:
-        start_time = max_start
+        window = parse_recorder_window(args, default_range=timedelta(days=30))
+    except ValueError as err:
+        return _tool_error(str(err)), "invalid_request", entity_id
 
     period = args.get("period", "hour")
-    if period not in ("5minute", "hour", "day", "week", "month"):
-        return _tool_error("Invalid period. Must be one of: 5minute, hour, day, week, month."), "denied", entity_id
+    if period not in STATISTIC_PERIOD_LIMITS:
+        return _tool_error(
+            "Invalid period. Must be one of: 5minute, hour, day, week, month, year."
+        ), "invalid_request", entity_id
+    if period == "year":
+        from awesomeversion import AwesomeVersion
+        from homeassistant.const import __version__ as ha_version
 
-    valid_types = {"mean", "min", "max", "sum", "state", "change"}
+        if AwesomeVersion(ha_version) < AwesomeVersion("2026.3.0"):
+            return _tool_error(
+                "The year statistics period requires Home Assistant 2026.3 or newer."
+            ), "invalid_request", entity_id
+
+    valid_types = {"mean", "min", "max", "sum", "state", "change", "last_reset"}
     raw_types = args.get("statistic_types")
-    type_set: set | None = None
-    if raw_types:
-        type_set = {t for t in raw_types if t in valid_types} or None
+    if raw_types is not None and (
+        not isinstance(raw_types, list)
+        or not raw_types
+        or any(not isinstance(item, str) or item not in valid_types for item in raw_types)
+    ):
+        return _tool_error(
+            "statistic_types must be a non-empty array containing only: mean, min, max, sum, state, change, last_reset."
+        ), "invalid_request", entity_id
+    type_set = cast(
+        set[Literal["mean", "min", "max", "sum", "state", "change", "last_reset"]],
+        set(raw_types) if raw_types else valid_types,
+    )
+    page_start, page_end, effective_limit, has_more = statistic_page(window, period)
 
     try:
         from homeassistant.components.recorder import get_instance
         from homeassistant.components.recorder import statistics as recorder_stats
 
+        instance = get_instance(hass)
+        keep_days = instance.keep_days
+        query_end = page_end
+        if period in ("day", "week", "month", "year"):
+            query_end -= timedelta.resolution
         fn = functools.partial(
             recorder_stats.statistics_during_period,
             hass,
-            start_time,
-            end_time,
+            page_start,
+            query_end,
             {entity_id},
             period,
             None,
-            # types became non-optional in HA 2026.4; default to all types when not specified.
-            type_set or {"mean", "min", "max", "sum", "state", "change"},
+            type_set,
         )
-        result = await get_instance(hass).async_add_executor_job(fn)
+        result = await instance.async_add_executor_job(fn)
     except Exception:
         _LOGGER.warning("MCP statistics call failed for entity %s", entity_id, exc_info=True)
         return _tool_error("Statistics call failed."), "denied", entity_id
 
-    return _tool_success(json.dumps(result, default=str)), "allowed", entity_id
+    statistics: list[dict[str, Any]] = []
+    for raw_row in result.get(entity_id, []):
+        stamp = statistic_timestamp(raw_row)
+        if stamp is None or not page_start <= stamp < page_end:
+            continue
+        row = dict(raw_row)
+        row["start"] = iso_utc(stamp)
+        last_reset = row.get("last_reset")
+        if isinstance(last_reset, datetime):
+            row["last_reset"] = iso_utc(last_reset)
+        statistics.append(row)
+        if len(statistics) == effective_limit:
+            break
+    retention_kind: Literal["short_term", "long_term"] = (
+        "short_term" if period == "5minute" else "long_term"
+    )
+    warnings = retention_warnings(retention_kind, window.start, keep_days, utcnow())
+    if not statistics:
+        warnings.append(
+            "No statistics were returned. The entity may not expose a state_class, may not produce Recorder statistics, or may have no data in this period."
+        )
+    body = recorder_envelope(
+        entity_id=entity_id,
+        window=window,
+        covered_start=page_start,
+        covered_end=page_end,
+        rows=statistics,
+        timestamp_getter=statistic_timestamp,
+        effective_limit=effective_limit,
+        has_more=has_more,
+        next_cursor=page_end if has_more else None,
+        retention=retention_metadata(retention_kind, keep_days),
+        warnings=warnings,
+        result_key="statistics",
+    )
+    body["period"] = period
+    return _tool_success(json.dumps(body, default=str)), "allowed", entity_id
 
 
 async def _tool_get_calendar_events(

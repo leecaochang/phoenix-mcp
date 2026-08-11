@@ -86,9 +86,11 @@ _ENTITY_TOOL_DEFS: list[dict] = [
     {
         "name": "get_history",
         "description": (
-            "Get the state history for a Home Assistant entity. "
-            "Defaults to 'transitions' mode (one compact entry per state change); "
-            "use mode 'raw' for full per-sample state dicts with attributes."
+            "Get a bounded, chronological page of Recorder history for one accessible entity. "
+            "Defaults to state_changes, which returns compact attribute-free state transitions and "
+            "supports arbitrary time ranges. significant_states returns scrubbed full state records "
+            "that Home Assistant considers significant, not every sample, and is limited to 7 days. "
+            "Follow has_more with next_cursor; there is intentionally no estimated total."
         ),
         "inputSchema": {
             "type": "object",
@@ -96,7 +98,7 @@ _ENTITY_TOOL_DEFS: list[dict] = [
                 "entity_id": {"type": "string"},
                 "start_time": {
                     "type": "string",
-                    "description": "ISO timestamp or relative string (24h, 7d, 2w, 1m).",
+                    "description": "ISO timestamp or relative string (24h, 7d, 2w, 1m). Defaults to 24h before end_time.",
                 },
                 "end_time": {
                     "type": "string",
@@ -104,39 +106,63 @@ _ENTITY_TOOL_DEFS: list[dict] = [
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["transitions", "raw"],
-                    "default": "transitions",
-                    "description": "transitions: compact state-change list (default). raw: full state dicts.",
+                    "enum": ["state_changes", "significant_states"],
+                    "default": "state_changes",
+                    "description": "state_changes: compact state transitions. significant_states: scrubbed significant state records.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100,
+                    "description": "Maximum rows in this page.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "The ISO UTC next_cursor from the previous page.",
                 },
             },
-            "required": ["entity_id", "start_time"],
+            "required": ["entity_id"],
         },
     },
     {
         "name": "get_statistics",
         "description": (
-            "Get long-term statistics (hourly and daily aggregates such as mean, min, max, sum) for a "
-            "Home Assistant entity, for trends over days or months. For recent individual state changes "
-            "use get_history instead."
+            "Get a bounded page of Recorder statistics for one accessible entity. Five-minute data uses "
+            "short-term retention; hour, day, week, month, and year use long-term statistics. Calendar "
+            "periods align in Home Assistant's local timezone. Follow has_more with next_cursor; there is "
+            "intentionally no estimated total. For individual state changes use get_history."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "entity_id": {"type": "string"},
-                "start_time": {"type": "string"},
-                "end_time": {"type": "string"},
+                "start_time": {"type": "string", "description": "ISO or relative time. Defaults to 30 days before end_time."},
+                "end_time": {"type": "string", "description": "ISO or relative time. Defaults to now."},
                 "period": {
                     "type": "string",
-                    "enum": ["5minute", "hour", "day", "week", "month"],
+                    "enum": ["5minute", "hour", "day", "week", "month", "year"],
                     "default": "hour",
                 },
                 "statistic_types": {
                     "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Subset of: mean, min, max, sum, state, change.",
+                    "minItems": 1,
+                    "items": {"type": "string", "enum": ["mean", "min", "max", "sum", "state", "change", "last_reset"]},
+                    "description": "Subset of the statistics fields to return.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100,
+                    "description": "Requested page size. Safe per-period caps can lower effective_limit.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "The ISO UTC next_cursor from the previous page.",
                 },
             },
-            "required": ["entity_id", "start_time"],
+            "required": ["entity_id"],
         },
     },
     {
@@ -1653,7 +1679,10 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {
                 "entity_id": {
-                    "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}, "maxItems": 100},
+                    ],
                     "description": "One entity id or a list.",
                 },
                 "t1": {"type": "string", "description": "Earlier time (ISO or relative: 24h, 7d, 2w, 1m)."},

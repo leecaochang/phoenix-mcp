@@ -1,4 +1,4 @@
-"""Tests for the diagnostics/traces MCP tools and get_history transitions mode."""
+"""Tests for the diagnostics/traces MCP tools and paginated Recorder history."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ async def _call(name, args, token, hass):
     return await _call_tool(name, args, token, hass, MagicMock())
 
 
-# --- get_history transitions mode ---
+# --- get_history ---
 
 class _FakeState:
     def __init__(self, state, when):
@@ -49,38 +49,78 @@ class _FakeState:
 class TestGetHistoryTransitions:
     def _patched(self, states):
         inst = MagicMock()
+        inst.keep_days = 10
         inst.async_add_executor_job = AsyncMock(return_value={"light.kitchen": states})
+        self.executor = inst.async_add_executor_job
         return patch("homeassistant.components.recorder.get_instance", return_value=inst)
 
-    async def test_transitions_collapse_duplicates(self, hass):
+    async def test_state_changes_are_bounded_and_cursor_paginated(self, hass):
         hass.states.async_set("light.kitchen", "on", {})
         now = utcnow()
         states = [
             _FakeState("on", now - timedelta(hours=3)),
-            _FakeState("on", now - timedelta(hours=2)),
             _FakeState("off", now - timedelta(hours=1)),
             _FakeState("on", now),
         ]
         with self._patched(states):
             content, outcome, _ = await _call(
-                "get_history", {"entity_id": "light.kitchen", "start_time": "24h"}, _token(), hass)
+                "get_history",
+                {"entity_id": "light.kitchen", "start_time": "24h", "limit": 2},
+                _token(), hass,
+            )
         assert outcome == "allowed"
         body = _json(content)
-        assert body["mode"] == "transitions"
-        assert [h["state"] for h in body["history"]] == ["on", "off", "on"]
-        assert body["count"] == 3
+        assert body["mode"] == "state_changes"
+        assert [h["state"] for h in body["history"]] == ["on", "off"]
+        assert body["count"] == 2
+        assert body["has_more"] is True
+        assert body["next_cursor"] == (now - timedelta(hours=1)).isoformat()
+        assert body["effective_limit"] == 2
+        assert body["retention"] == {"kind": "short_term", "configured_days": 10}
+        assert body["data_range"] == {
+            "start": (now - timedelta(hours=3)).isoformat(),
+            "end": (now - timedelta(hours=1)).isoformat(),
+        }
+        job = self.executor.await_args.args[0]
+        assert job.func.__name__ == "state_changes_during_period"
+        assert job.args[4] is True
+        assert job.args[6] == 3
+        assert job.args[7] is False
 
-    async def test_raw_mode_returns_full_dicts(self, hass):
+    async def test_significant_states_returns_scrubbed_full_dicts(self, hass):
         hass.states.async_set("light.kitchen", "on", {})
         now = utcnow()
         states = [_FakeState("on", now), _FakeState("off", now)]
         with self._patched(states):
             content, _, _ = await _call(
-                "get_history", {"entity_id": "light.kitchen", "start_time": "24h", "mode": "raw"}, _token(), hass)
+                "get_history",
+                {"entity_id": "light.kitchen", "start_time": "24h", "mode": "significant_states"},
+                _token(), hass,
+            )
         body = _json(content)
-        assert body["mode"] == "raw"
+        assert body["mode"] == "significant_states"
         assert len(body["history"]) == 2
         assert "attributes" in body["history"][0]
+
+    async def test_significant_states_refuses_more_than_seven_days_before_query(self, hass):
+        hass.states.async_set("light.kitchen", "on", {})
+        with patch("homeassistant.components.recorder.get_instance") as get_instance:
+            content, outcome, _ = await _call(
+                "get_history",
+                {"entity_id": "light.kitchen", "start_time": "8d", "mode": "significant_states"},
+                _token(), hass,
+            )
+        assert outcome == "invalid_request"
+        assert "at most 7 days" in content["content"][0]["text"]
+        get_instance.assert_not_called()
+
+    async def test_legacy_modes_are_breaking_errors(self, hass):
+        hass.states.async_set("light.kitchen", "on", {})
+        content, outcome, _ = await _call(
+            "get_history", {"entity_id": "light.kitchen", "mode": "raw"}, _token(), hass,
+        )
+        assert outcome == "invalid_request"
+        assert "Invalid mode" in content["content"][0]["text"]
 
     async def test_inaccessible_entity_not_found(self, hass):
         content, outcome, _ = await _call(

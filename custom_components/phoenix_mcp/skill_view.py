@@ -76,9 +76,12 @@ grain of the model gives the smoothest results and avoids dead ends.
   consumer with the entities and roles each one touches, which is the edit list.
   Read `not_searched` before concluding nothing uses something: it names any
   consumer kind skipped because this token lacks the capability to see it.
-- `get_history` (transitions by default), `get_statistics`, `recent_activity`,
-  `compare_state`: what changed and when. Use relative time strings like `24h`,
-  `7d`, `2w`, `1m`.
+- `get_history` (`state_changes` by default), `get_statistics`,
+  `recent_activity`, `compare_state`: what changed and when. Use relative time
+  strings like `24h`, `7d`, `2w`, `1m`. History and statistics are bounded
+  pages: continue only when `has_more` is true, using `next_cursor` as the next
+  call's `cursor`. There is no total to infer. `significant_states` is a
+  scrubbed significant-state view, not every sample, and accepts at most 7 days.
 - `compare_entities`: whether one entity can stand in for another, BEFORE you
   repoint automations, scripts or dashboard cards from one to the other. It
   names attributes the replacement lacks, attributes whose value differs, and

@@ -441,9 +441,12 @@ class _FakeState:
         return {"entity_id": self._eid, "state": self._s, "last_changed": self._w, "last_updated": self._w}
 
 
-def _patch_history(mapping):
+def _patch_history(mapping, second_mapping=None):
     inst = MagicMock()
-    inst.async_add_executor_job = AsyncMock(return_value=mapping)
+    if second_mapping is None:
+        inst.async_add_executor_job = AsyncMock(return_value=mapping)
+    else:
+        inst.async_add_executor_job = AsyncMock(side_effect=[mapping, second_mapping])
     return patch("homeassistant.components.recorder.get_instance", return_value=inst)
 
 
@@ -455,9 +458,9 @@ class TestCompareState:
     async def test_changed_flag(self, hass):
         hass.states.async_set("light.kitchen", "on", {})
         now = utcnow()
-        mapping = {"light.kitchen": [_FakeState("light.kitchen", "off", now - timedelta(hours=20)),
-                                      _FakeState("light.kitchen", "on", now)]}
-        with _patch_history(mapping):
+        at_t1 = {"light.kitchen": [_FakeState("light.kitchen", "off", now - timedelta(hours=20))]}
+        at_t2 = {"light.kitchen": [_FakeState("light.kitchen", "on", now)]}
+        with _patch_history(at_t1, at_t2):
             content, outcome, _ = await _call("compare_state", {"entity_id": "light.kitchen", "t1": "24h"}, _token(), hass)
         assert outcome == "allowed"
         comp = _json(content)["comparisons"][0]
@@ -468,6 +471,22 @@ class TestCompareState:
     async def test_invalid_t1(self, hass):
         hass.states.async_set("light.kitchen", "on", {})
         _, outcome, _ = await _call("compare_state", {"entity_id": "light.kitchen", "t1": "notatime"}, _token(), hass)
+        assert outcome == "invalid_request"
+
+    async def test_reversed_times_are_rejected_before_history(self, hass):
+        hass.states.async_set("light.kitchen", "on", {})
+        with patch("homeassistant.components.recorder.get_instance") as get_instance:
+            _, outcome, _ = await _call(
+                "compare_state",
+                {"entity_id": "light.kitchen", "t1": "2026-01-02T00:00:00+00:00", "t2": "2026-01-01T00:00:00+00:00"},
+                _token(), hass,
+            )
+        assert outcome == "invalid_request"
+        get_instance.assert_not_called()
+
+    async def test_more_than_100_entities_is_rejected(self, hass):
+        ids = [f"light.item_{index}" for index in range(101)]
+        _, outcome, _ = await _call("compare_state", {"entity_id": ids, "t1": "24h"}, _token(), hass)
         assert outcome == "invalid_request"
 
 

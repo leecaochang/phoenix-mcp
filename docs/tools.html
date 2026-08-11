@@ -138,7 +138,7 @@
 
           <article class="tool" data-cap="read" data-search="get_logbook human readable event history logbook">
             <div class="tool-head"><span class="tool-name">get_logbook</span><span class="badge badge-cap">Log read</span></div>
-            <p class="tool-desc">The human-readable logbook (state changes, automations and scripts triggered). Scoped to entities the token can access; entries for out-of-scope entities are dropped. This is the narrative event history, distinct from <code>get_logs</code> (error log) and <code>get_history</code> (raw samples).</p>
+            <p class="tool-desc">The human-readable logbook (state changes, automations and scripts triggered). Scoped to entities the token can access; entries for out-of-scope entities are dropped. This is the narrative event history, distinct from <code>get_logs</code> (error log) and <code>get_history</code> (Recorder states).</p>
             <dl><dt>params</dt><dd><code>start_time</code> (default 24h), <code>end_time</code>, <code>entity_id</code> (optional, focus on one entity), <code>limit</code> (default 100, max 1000)</dd></dl>
           </article>
 
@@ -170,8 +170,8 @@
 
           <article class="tool" data-cap="discovery" data-search="compare_state two times recorder">
             <div class="tool-head"><span class="tool-name">compare_state</span><span class="badge badge-cap">Search &amp; discovery</span></div>
-            <p class="tool-desc">Compare accessible entities' states between two times, backed by the recorder (the tool fails when the Recorder integration is disabled).</p>
-            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>t1</code> (required; ISO or relative like <code>24h</code>), <code>t2</code> (default now)</dd></dl>
+            <p class="tool-desc">Compare up to 100 accessible entities' states between two ordered times, backed by two point-in-time Recorder reads rather than an interval scan (the tool fails when the Recorder integration is disabled).</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required; one ID or up to 100 IDs), <code>t1</code> (required; ISO or relative like <code>24h</code>), <code>t2</code> (later than <code>t1</code>; default now)</dd></dl>
           </article>
 
           <article class="tool" data-cap="discovery" data-search="describe_area floor entities grouped">
@@ -508,8 +508,8 @@
 
           <article class="tool" data-cap="read" data-search="get_history state history time">
             <div class="tool-head"><span class="tool-name">get_history</span><span class="badge badge-neutral">tree-scoped</span></div>
-            <p class="tool-desc">Historical state changes for an entity, read from the Recorder integration (enabled by default in Home Assistant; this tool fails when it is disabled). Accepts relative times (<code>24h</code>, <code>7d</code>, <code>2w</code>, <code>1m</code>). Ranges over 7 days are clamped. Returns <code>entity_id</code>, <code>mode</code>, <code>count</code>, and <code>history</code> (each entry's <code>state</code> and <code>when</code>).</p>
-            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>mode</code> (<code>transitions</code>, the default, returns one entry per state change; <code>raw</code> returns every recorded sample)</dd></dl>
+            <p class="tool-desc">Bounded chronological Recorder history for one entity. <code>state_changes</code> is the default and supports arbitrary ranges using Home Assistant's database-limited transition query without attributes. <code>significant_states</code> returns scrubbed full state records that Home Assistant considers significant, not every sample, and refuses ranges over 7 days because its upstream query has no database limit. The default range is 24 hours.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (default 24 hours before the end), <code>end_time</code> (default now), <code>mode</code> (<code>state_changes</code> or <code>significant_states</code>), <code>limit</code> (default 100, max 1000), <code>cursor</code> (the previous <code>next_cursor</code>)</dd><dt>returns</dt><dd>requested, covered, and data ranges; count and effective limit; retention and warnings; and <code>has_more</code>/<code>next_cursor</code> pagination with no estimated total</dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_state single entity">
@@ -525,8 +525,8 @@
 
           <article class="tool" data-cap="read" data-search="get_statistics long term numeric">
             <div class="tool-head"><span class="tool-name">get_statistics</span><span class="badge badge-neutral">tree-scoped</span></div>
-            <p class="tool-desc">Long-term statistics for numeric entities, aggregated by 5-minute, hour, day, week, or month. Statistics come from the Recorder integration, and only entities that produce Recorder statistics have any; a merely numeric state is not enough.</p>
-            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (required; ISO or relative), <code>end_time</code>, <code>period</code> (<code>5minute</code>, <code>hour</code> the default, <code>day</code>, <code>week</code>, <code>month</code>), <code>statistic_types</code> (subset of the return fields)</dd><dt>returns</dt><dd><code>min</code>, <code>max</code>, <code>mean</code>, <code>sum</code>, <code>state</code> per period</dd></dl>
+            <p class="tool-desc">Bounded Recorder statistics for numeric entities, aligned to Home Assistant's local calendar. <code>5minute</code> uses short-term retention; <code>hour</code>, <code>day</code>, <code>week</code>, <code>month</code>, and <code>year</code> use long-term statistics. Only entities that produce Recorder statistics have data; a merely numeric state is not enough. The default range is 30 days. The <code>year</code> period requires Home Assistant 2026.3 or newer.</p>
+            <dl><dt>params</dt><dd><code>entity_id</code> (required), <code>start_time</code> (default 30 days before the end), <code>end_time</code> (default now), <code>period</code> (<code>5minute</code>, <code>hour</code> the default, <code>day</code>, <code>week</code>, <code>month</code>, <code>year</code>), <code>statistic_types</code> (subset of <code>mean</code>, <code>min</code>, <code>max</code>, <code>sum</code>, <code>state</code>, <code>change</code>, <code>last_reset</code>), <code>limit</code> (default 100, max 1000), <code>cursor</code> (the previous <code>next_cursor</code>)</dd><dt>returns</dt><dd>the common range, retention, warning, and cursor envelope plus a <code>statistics</code> page; safe period caps are reported as <code>effective_limit</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_calendar_events calendar appointments">

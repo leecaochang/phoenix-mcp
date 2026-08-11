@@ -104,7 +104,7 @@
         <h2>Request limits</h2>
         <dl class="kv">
           <div class="kv-row"><dt>Request body</dt><dd>Bodies over 1&nbsp;MB are rejected with 413 before any processing.</dd></div>
-          <div class="kv-row"><dt>Recorder range</dt><dd>The MCP history and statistics tools are capped at 7 days. Longer requests are clamped to the most recent 7 days.</dd></div>
+          <div class="kv-row"><dt>Recorder reads</dt><dd>Recorder responses are cursor-paginated with a default limit of 100 and a maximum request limit of 1000. State changes use Home Assistant's database limit and can span arbitrary ranges. Full significant-state reads refuse ranges over 7 days. Statistics use local-calendar page windows with stricter safe caps for expensive aggregate periods.</dd></div>
           <div class="kv-row"><dt>Request ID</dt><dd>Every token-facing API response includes an <code>X-Phoenix-Request-ID</code> that matches the request's audit log entry. Admin responses carry the same header for support correlation, but admin actions are recorded in Home Assistant's own log rather than the Phoenix audit store.</dd></div>
         </dl>
 
