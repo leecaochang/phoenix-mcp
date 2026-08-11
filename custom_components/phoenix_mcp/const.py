@@ -932,10 +932,10 @@ VACUUM_START_BIT = 8192
 VACUUM_RETURN_HOME_BIT = 16
 VACUUM_CLEAN_AREA_BIT = 16384
 
-# Maximum number of log entries returned by the logs endpoint/tool.
+# Maximum number of log buckets returned by the MCP diagnostics tools.
 MAX_LOG_ENTRIES = 100
 
-# Levels get_logs and GET /logs accept as the `level` argument. INFO is absent
+# Levels get_logs and get_phoenix_diagnostics accept as `level`. INFO is absent
 # and must stay absent: Home Assistant attaches its system_log handler with
 # setLevel(logging.WARNING) (components/system_log/__init__.py), so an INFO
 # record never enters the store this reads and there is no config option to

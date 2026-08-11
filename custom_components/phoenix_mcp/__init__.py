@@ -293,7 +293,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if _syslog_incompat is not None:
         _LOGGER.warning(
             "Phoenix MCP: system_log integration has changed shape on this HA version "
-            "(%s); the get_logs tool will return empty results.",
+            "(%s); log diagnostic tools will report degraded source status.",
             _syslog_incompat,
         )
 

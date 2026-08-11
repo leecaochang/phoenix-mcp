@@ -76,6 +76,11 @@ X-RateLimit-Reset: 1712345678</code></pre>
           </table>
         </div>
 
+        <h2 id="system-log-diagnostics">System-log diagnostics</h2>
+        <p><code>get_logs</code> and <code>get_phoenix_diagnostics</code> read Home Assistant's in-memory <code>system_log</code> ring through MCP. This is a bounded diagnostic sample, not the Phoenix audit log above and not the raw <code>home-assistant.log</code> file. Home Assistant deduplicates repeated records into buckets and retains only warning-and-above records in this source.</p>
+        <p>Use the response's <code>source</code> envelope before interpreting an empty result. It distinguishes an available empty ring from an unavailable integration or a degraded upstream shape, and reports capacity, retained buckets, malformed buckets skipped, earliest and latest retained times, and the read timestamp. Continue a clipped query with <code>next_cursor</code> and exactly the same filters. Cursors are snapshot- and filter-bound, but continuation is best-effort because a live bucket can be updated and move while pages are being read.</p>
+        <p><code>get_logs</code> requires Log read and excludes Phoenix records. <code>get_phoenix_diagnostics</code> requires both Log read and Diagnostics, includes only Phoenix records, and applies stronger topology, path, identifier, and entity-scope redaction. After a deployment, verify these tools only through the connected Phoenix MCP client after Home Assistant has restarted.</p>
+
         <h2 id="advanced-token-options">Advanced token options</h2>
         <p>Three per-token options sit outside the capability matrix, in the panel's <strong>Tool Announcement</strong> card on the token detail page (and settable through <a href="admin-api.html#tokens">PATCH</a>).</p>
         <dl class="kv">

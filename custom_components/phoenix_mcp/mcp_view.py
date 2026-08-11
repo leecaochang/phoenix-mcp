@@ -8,8 +8,9 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 
 import voluptuous as vol
@@ -37,7 +38,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.dt import utcnow
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_SEARCH_QUERY_LEN, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
 from .mesa import (
     RegistryMesaDecision,
@@ -47,7 +48,7 @@ from .mesa import (
 )
 from .ws_dispatch import WsDispatchError, async_ws_command
 from .mesa_tools import MESA_TOOL_NAMES, async_call_mesa_tool, mesa_tool_defs
-from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, redact_diagnostics, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
+from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, redact_diagnostics, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogDegradedError, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
 from .recorder_queries import (
     MAX_SIGNIFICANT_STATES_RANGE,
     STATISTIC_PERIOD_LIMITS,
@@ -274,6 +275,15 @@ _WRITE_GATED_TOOLS = frozenset({
 })
 
 
+def _tool_caps(tool_def: dict) -> tuple[str, ...]:
+    """Return every capability a tool requires, including dual-cap reads."""
+    caps = tool_def.get("caps")
+    if isinstance(caps, (list, tuple)):
+        return tuple(cap for cap in caps if isinstance(cap, str))
+    cap = tool_def.get("cap")
+    return (cap,) if isinstance(cap, str) else ()
+
+
 def _tool_is_announced(
     tool_def: dict, token: TokenRecord, has_write: bool, hass: HomeAssistant
 ) -> bool:
@@ -289,10 +299,10 @@ def _tool_is_announced(
     agentcli.build_mcp_tool_list (Agent Chat, Assist, voice, AI Task) each decide
     announcement independently. Changing the rules here means changing all three.
     """
-    cap = tool_def.get("cap")
-    if cap is not None and effective_cap(token, cap) == CAP_DENY:
+    caps = _tool_caps(tool_def)
+    if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
         return False
-    if cap is None and tool_def["name"] in _WRITE_GATED_TOOLS and not has_write:
+    if not caps and tool_def["name"] in _WRITE_GATED_TOOLS and not has_write:
         return False
     return _requires_satisfied(tool_def, hass)
 
@@ -346,15 +356,15 @@ def _tool_gate_map(
     reasons: dict[str, str] = {}
     for tool_def in list(_ENTITY_TOOL_DEFS) + list(_NATIVE_TOOL_DEFS) + list(_SYSTEM_TOOL_DEFS) + mesa_defs:
         name = tool_def["name"]
-        cap = tool_def.get("cap")
+        caps = _tool_caps(tool_def)
         if not _requires_satisfied(tool_def, hass):
             unavailable.append(name)
             reasons[name] = _requires_unavailable_reason(tool_def)
-        elif cap is not None:
-            mode = effective_cap(token, cap)
-            if mode == CAP_DENY:
+        elif caps:
+            modes = [effective_cap(token, cap) for cap in caps]
+            if CAP_DENY in modes:
                 unavailable.append(name)
-            elif mode == CAP_CONFIRM and name in _EXECUTOR_REGISTRY:
+            elif CAP_CONFIRM in modes and name in _EXECUTOR_REGISTRY:
                 needs_approval.append(name)
             else:
                 usable.append(name)
@@ -1223,12 +1233,23 @@ async def _tool_get_config(
 
 
 
-async def _tool_get_logs(
-    args: dict, token: TokenRecord, hass: HomeAssistant
+_LOG_INTEGRATION_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_LOG_LOGGER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+async def _tool_log_query(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    tool_name: str,
+    phoenix_only: bool,
 ) -> tuple[dict, str, str]:
-    """MCP tool: read system_log entries (requires cap_log_read)."""
-    if effective_cap(token, "cap_log_read") == CAP_DENY:
-        return _tool_error("Forbidden."), "denied", "get_logs"
+    """Run one bounded, source-truthful query over HA's system-log ring."""
+    if effective_cap(token, "cap_log_read") == CAP_DENY or (
+        phoenix_only and effective_cap(token, "cap_diagnostics") == CAP_DENY
+    ):
+        return _tool_error("Forbidden."), "denied", tool_name
 
     # A wrong-SHAPED level degrades to absent (str_arg), but a wrong VALUE is
     # refused rather than coerced: silently answering a WARNING query for a
@@ -1237,9 +1258,48 @@ async def _tool_get_logs(
     # denied token never reaches a message about its own argument (rule 29(a)).
     raw_level = str_arg(args.get("level"), "WARNING").strip().upper() or "WARNING"
     if raw_level not in LOG_LEVELS:
-        return _tool_error(LOG_LEVEL_ERROR_MESSAGE), "invalid_request", "get_logs"
+        return _tool_error(LOG_LEVEL_ERROR_MESSAGE), "invalid_request", tool_name
 
     integration = str_arg(args.get("integration")).strip() or None
+    logger = str_arg(args.get("logger")).strip() or None
+    search = str_arg(args.get("search")).strip() or None
+    cursor = str_arg(args.get("cursor")).strip() or None
+    if phoenix_only:
+        integration = None
+    if integration and (
+        len(integration) > MAX_SEARCH_QUERY_LEN
+        or _LOG_INTEGRATION_RE.fullmatch(integration) is None
+    ):
+        return _tool_error("Invalid integration domain."), "invalid_request", tool_name
+    if logger and (
+        len(logger) > MAX_SEARCH_QUERY_LEN
+        or _LOG_LOGGER_RE.fullmatch(logger) is None
+    ):
+        return _tool_error("Invalid logger prefix."), "invalid_request", tool_name
+    if search and len(search) > MAX_SEARCH_QUERY_LEN:
+        return _tool_error(
+            f"search must be at most {MAX_SEARCH_QUERY_LEN} characters."
+        ), "invalid_request", tool_name
+    if cursor and len(cursor) > 4096:
+        return _tool_error("Invalid cursor for these log filters."), "invalid_request", tool_name
+
+    since = None
+    until = None
+    raw_since = str_arg(args.get("since")).strip()
+    raw_until = str_arg(args.get("until")).strip()
+    try:
+        if raw_since:
+            since = _parse_time_param(raw_since)
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+        if raw_until:
+            until = _parse_time_param(raw_until)
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return _tool_error("Invalid since or until time format."), "invalid_request", tool_name
+    if since is not None and until is not None and since >= until:
+        return _tool_error("since must be earlier than until."), "invalid_request", tool_name
 
     # Default is the same as Home Assistant's stock system-log ring size.
     limit = 50
@@ -1253,21 +1313,82 @@ async def _tool_get_logs(
             limit = 50
 
     try:
-        page = _collect_log_entries(hass, raw_level, integration, limit)
-    except SystemLogUnavailableError:
-        return _tool_error(
-            "The system_log integration is not loaded; logs are unavailable."
-        ), "invalid_request", "get_logs"
-    # total and truncated, not just count: this is the tool an agent uses to decide
-    # whether the instance is healthy, and a clipped page read as the whole log
-    # answers that question wrongly in the direction that matters.
+        page = _collect_log_entries(
+            hass,
+            raw_level,
+            integration,
+            logger,
+            search,
+            since,
+            until,
+            raw_since or None,
+            raw_until or None,
+            limit,
+            cursor,
+            phoenix_only=phoenix_only,
+            token=token if phoenix_only else None,
+        )
+    except (SystemLogUnavailableError, SystemLogDegradedError) as exc:
+        body = {
+            "source": {
+                "status": exc.status,
+                "kind": "home_assistant_system_log",
+                "semantics": "deduplicated_buckets",
+                "pagination": "best_effort_live_ring",
+                "reason": str(exc),
+            },
+            "filters": {
+                "level": raw_level,
+                "integration": integration,
+                "logger": logger,
+                "search": search,
+                "since": since.isoformat() if since else None,
+                "until": until.isoformat() if until else None,
+                "time_basis": "latest_occurrence",
+            },
+            "count": 0,
+            "matched_buckets": 0,
+            "has_more": False,
+            "next_cursor": None,
+            "entries": [],
+        }
+        return _tool_error(json.dumps(body)), "invalid_request", tool_name
+    except ValueError as exc:
+        return _tool_error(str(exc)), "invalid_request", tool_name
     body = {
+        "source": page.source,
+        "filters": page.filters,
         "count": len(page.entries),
-        "total": page.total,
-        "truncated": page.total > len(page.entries),
+        "matched_buckets": page.matched_buckets,
+        "has_more": page.has_more,
+        "next_cursor": page.next_cursor,
         "entries": page.entries,
     }
-    return _tool_success(json.dumps(body, default=str)), "allowed", "get_logs"
+    if page.warnings:
+        body["warnings"] = page.warnings
+    return _tool_success(json.dumps(body, default=str)), "allowed", tool_name
+
+
+async def _tool_get_logs(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> tuple[dict, str, str]:
+    """MCP tool: read non-Phoenix system_log entries."""
+    return await _tool_log_query(
+        args, token, hass, tool_name="get_logs", phoenix_only=False
+    )
+
+
+async def _tool_get_phoenix_diagnostics(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> tuple[dict, str, str]:
+    """MCP tool: read aggressively scrubbed Phoenix warning/error diagnostics."""
+    return await _tool_log_query(
+        args,
+        token,
+        hass,
+        tool_name="get_phoenix_diagnostics",
+        phoenix_only=True,
+    )
 
 
 def _logbook_entry_visible(entry: dict, token: TokenRecord, hass: HomeAssistant) -> bool:
@@ -6485,7 +6606,7 @@ async def _dispatch_mcp(
         tools = []
         for tool_def in list(_ENTITY_TOOL_DEFS) + list(_NATIVE_TOOL_DEFS) + list(_SYSTEM_TOOL_DEFS) + mesa_defs:
             if announce_all or _tool_is_announced(tool_def, token, has_write, hass):
-                tools.append({k: v for k, v in tool_def.items() if k not in ("cap", "requires")})
+                tools.append({k: v for k, v in tool_def.items() if k not in ("cap", "caps", "requires")})
         resp = _jsonrpc_result(msg_id, {"tools": tools})
         # The client's tool list is now current: echo the settings version (in
         # memory; persisted by the periodic flush, like last_used_at) and clear
@@ -7500,6 +7621,7 @@ _register_tool("HassVacuumReturnToBase", _tool_hass_vacuum_return_to_base)
 _register_tool("HassVacuumCleanArea", _tool_hass_vacuum_clean_area)
 _register_tool("HassBroadcast", _tool_hass_broadcast)
 _register_tool("get_logs", _tool_get_logs)
+_register_tool("get_phoenix_diagnostics", _tool_get_phoenix_diagnostics)
 _register_tool("get_logbook", _tool_get_logbook)
 _register_tool("list_blueprints", _tool_list_blueprints)
 _register_tool("get_blueprint", _tool_get_blueprint)

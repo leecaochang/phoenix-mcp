@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 121 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 122 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 121 of its own, 144 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 122 of its own, 145 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 144 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 145 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -130,10 +130,17 @@
 
           <article class="tool" data-cap="read" data-search="get_logs system log entries">
             <div class="tool-head"><span class="tool-name">get_logs</span><span class="badge badge-cap">Log read</span></div>
-            <p class="tool-desc">Recent HA system log entries. Phoenix MCP's own entries are excluded and token values, JWTs, and URL credentials are scrubbed from messages and tracebacks. The scrubber is pattern-based and cannot guarantee removal of arbitrary third-party secrets or PII an integration writes into a log line, so treat Log read as an elevated-trust grant.</p>
-            <p class="tool-desc">The response reports <code>total</code> (entries matching the level and integration filters) next to <code>count</code> (entries in this page) and a <code>truncated</code> flag.</p>
-            <p class="tool-desc">Home Assistant's system log holds <code>WARNING</code> and above, so <code>INFO</code> and <code>DEBUG</code> entries never enter it. Asking for one is an error rather than a <code>WARNING</code> result, so a quiet answer is never mistaken for a quiet instance. Those lines go to <code>home-assistant.log</code> on the server instead: <code>INFO</code> is there by default, <code>DEBUG</code> needs a <code>logger:</code> setting first.</p>
-            <dl><dt>params</dt><dd><code>limit</code> (default 50, max 100), <code>level</code> (<code>WARNING</code> / <code>ERROR</code>), <code>integration</code> (only entries logged by one integration, e.g. <code>zha</code>)</dd></dl>
+            <p class="tool-desc">Read Home Assistant's bounded, deduplicated <code>system_log</code> ring, newest first. Phoenix MCP's own entries are excluded. Each bucket includes its first and latest occurrence, occurrence count, every message variant Home Assistant retained, a scrubbed exception, and safe relative source and root-cause locations. Absolute or unrecognized paths are replaced.</p>
+            <p class="tool-desc">The response reports whether the source is available or degraded, its configured capacity, retained and skipped bucket counts, earliest and latest retained times, the read timestamp, and the effective filters. <code>matched_buckets</code>, <code>has_more</code>, and an opaque <code>next_cursor</code> support stateless continuation. Pagination is best-effort over a live ring because an updated deduplication bucket can move between calls.</p>
+            <p class="tool-desc">Home Assistant retains only <code>WARNING</code> and above in this source. Phoenix does not read or parse the raw <code>home-assistant.log</code> file. Search is case-insensitive and literal, and runs only after token and credential scrubbing. The scrubber cannot recognize every arbitrary third-party secret or piece of personal data, so Log read remains an elevated-trust grant.</p>
+            <dl><dt>params</dt><dd><code>level</code> (<code>WARNING</code> / <code>ERROR</code>), <code>integration</code>, <code>logger</code> (complete logger namespace prefix), <code>search</code>, <code>since</code>, <code>until</code>, <code>limit</code> (default 50, max 100), <code>cursor</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read discovery" data-search="get_phoenix_diagnostics phoenix logs self diagnostics">
+            <div class="tool-head"><span class="tool-name">get_phoenix_diagnostics</span><span class="badge badge-cap">Diagnostics + Log read</span></div>
+            <p class="tool-desc">Read only Phoenix MCP's own retained <code>WARNING</code>-and-above buckets. This separate tool requires both <code>cap_diagnostics</code> and <code>cap_log_read</code>. It uses the same source-coverage, time, search, and cursor contract as <code>get_logs</code>, with an optional Phoenix logger-prefix filter.</p>
+            <p class="tool-desc">A stronger scrub removes credentials, network topology, URLs, filesystem paths, UUIDs, ULIDs, long opaque identifiers, and inaccessible or unknown entity IDs before search. Accessible entity IDs remain useful for diagnosis.</p>
+            <dl><dt>params</dt><dd><code>level</code> (<code>WARNING</code> / <code>ERROR</code>), <code>logger</code>, <code>search</code>, <code>since</code>, <code>until</code>, <code>limit</code> (default 50, max 100), <code>cursor</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_logbook human readable event history logbook">

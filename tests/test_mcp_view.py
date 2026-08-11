@@ -27,6 +27,7 @@ from custom_components.phoenix_mcp.mcp_view import (
 )
 from custom_components.phoenix_mcp.rate_limiter import RateLimiter, RateLimitResult
 from custom_components.phoenix_mcp.token_store import PermissionNode, PermissionTree, TokenRecord, TokenStore
+from tests.log_fixtures import attach_log_store, make_log_entry, make_log_store
 
 
 def _raw_token() -> str:
@@ -1755,17 +1756,7 @@ async def test_get_logs_returns_entries_when_system_log_present():
     token, _ = _make_token(cap_log_read="allow")
     data = _make_data(token)
     hass = _make_hass(data)
-    record = MagicMock()
-    record.level = "ERROR"
-    record.name = "homeassistant.components.light"
-    record.message = ["it broke"]
-    record.source = ("light/__init__.py", 1)
-    record.timestamp = 0
-    record.exception = ""
-    record.count = 1
-    syslog = MagicMock()
-    syslog.records = {"k": record}
-    hass.data = {DOMAIN: data, "system_log": syslog}
+    attach_log_store(hass, make_log_store([make_log_entry()]))
     res, _m, _r, outcome = await _dispatch_mcp(
         "tools/call", 3, {"name": "get_logs", "arguments": {}},
         token, hass, data, "127.0.0.1", base_url="http://h",

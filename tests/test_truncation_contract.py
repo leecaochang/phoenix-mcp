@@ -20,13 +20,11 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
-from unittest.mock import MagicMock
-
 import pytest
 
-from custom_components.phoenix_mcp.const import DOMAIN
 from custom_components.phoenix_mcp.helpers import collect_log_entries
 from custom_components.phoenix_mcp.mcp_view import _dispatch_mcp
+from tests.log_fixtures import attach_log_store, make_log_entry, make_log_store
 from tests.test_mcp_view import _make_data, _make_hass, _make_token
 
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "phoenix_mcp"
@@ -50,23 +48,16 @@ _NOT_PAGINATION = {
 }
 
 
-def _log_record(name: str = "homeassistant.components.light") -> MagicMock:
-    record = MagicMock()
-    record.level = "ERROR"
-    record.name = name
-    record.message = ["it broke"]
-    record.source = ("light/__init__.py", 1)
-    record.timestamp = 0
-    record.exception = ""
-    record.count = 1
-    return record
-
-
 def _hass_with_logs(data, count: int):
     hass = _make_hass(data)
-    syslog = MagicMock()
-    syslog.records = {f"k{i}": _log_record() for i in range(count)}
-    hass.data = {DOMAIN: data, "system_log": syslog}
+    entries = [
+        make_log_entry(
+            created=1_700_000_000 + i,
+            pathname=f"/config/custom_components/light/file_{i}.py",
+        )
+        for i in range(count)
+    ]
+    attach_log_store(hass, make_log_store(entries))
     return hass
 
 
@@ -87,8 +78,9 @@ class TestGetLogsReportsTruncation:
         hass = _hass_with_logs(data, 10)
         body = await _call_get_logs(hass, token, data, {"limit": 3})
         assert body["count"] == 3
-        assert body["total"] == 10
-        assert body["truncated"] is True
+        assert body["matched_buckets"] == 10
+        assert body["has_more"] is True
+        assert body["next_cursor"]
 
     @pytest.mark.asyncio
     async def test_complete_page_is_not_flagged(self):
@@ -97,8 +89,9 @@ class TestGetLogsReportsTruncation:
         hass = _hass_with_logs(data, 3)
         body = await _call_get_logs(hass, token, data, {"limit": 10})
         assert body["count"] == 3
-        assert body["total"] == 3
-        assert body["truncated"] is False
+        assert body["matched_buckets"] == 3
+        assert body["has_more"] is False
+        assert body["next_cursor"] is None
 
     @pytest.mark.asyncio
     async def test_total_counts_after_filtering_not_before(self):
@@ -108,28 +101,41 @@ class TestGetLogsReportsTruncation:
         token, _ = _make_token(cap_log_read="allow")
         data = _make_data(token)
         hass = _make_hass(data)
-        syslog = MagicMock()
-        syslog.records = {
-            "a": _log_record("homeassistant.components.light"),
-            "b": _log_record("homeassistant.components.light"),
-            "c": _log_record("homeassistant.components.climate"),
-        }
-        hass.data = {DOMAIN: data, "system_log": syslog}
+        entries = [
+            make_log_entry(
+                name="homeassistant.components.light",
+                pathname=f"/config/custom_components/light/file_{i}.py",
+            )
+            for i in range(2)
+        ]
+        entries.append(make_log_entry(name="homeassistant.components.climate"))
+        attach_log_store(hass, make_log_store(entries))
         body = await _call_get_logs(hass, token, data, {"integration": "light"})
-        assert body["total"] == 2
-        assert body["truncated"] is False
+        assert body["matched_buckets"] == 2
+        assert body["has_more"] is False
 
     def test_helper_reports_the_pre_slice_total(self):
         """The pair exists so a caller cannot report a clipped page as the whole
         log by accident; unpacking is forced at every call site."""
-        data = MagicMock()
-        hass = MagicMock()
-        syslog = MagicMock()
-        syslog.records = {f"k{i}": _log_record() for i in range(7)}
-        hass.data = {DOMAIN: data, "system_log": syslog}
-        page = collect_log_entries(hass, "WARNING", None, 2)
+        data = _make_data()
+        hass = _hass_with_logs(data, 7)
+        page = collect_log_entries(
+            hass,
+            "WARNING",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            2,
+            None,
+        )
         assert len(page.entries) == 2
-        assert page.total == 7
+        assert page.matched_buckets == 7
+        assert page.has_more is True
+        assert page.next_cursor
 
 
 class TestLimitSlicesReportTruncation:

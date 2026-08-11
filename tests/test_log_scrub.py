@@ -1,4 +1,4 @@
-"""Tests for log-text redaction used by the cap_log_read tools/endpoint.
+"""Tests for log-text redaction used by the cap_log_read MCP tools.
 
 collect_log_entries routes every message and exception through _scrub_log_text,
 which removes Phoenix MCP tokens, JWTs/LLATs, and URL-embedded credentials so a token

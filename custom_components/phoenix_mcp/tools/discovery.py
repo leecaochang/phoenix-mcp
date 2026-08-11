@@ -282,9 +282,9 @@ def _dangling_report(value: str, holders: list[dict]) -> dict:
     dashboard's identity. Grouping answers the operator's actual question, which
     is WHICH THING to open, and the paths say where to look once inside.
 
-    Paths are capped at const.MAX_DANGLING_PATHS with the true total alongside,
-    the same report-total-and-truncated contract get_logs and list_backups use: a
-    clipped list must never read as a complete one.
+    Paths are capped at const.MAX_DANGLING_PATHS with the true total alongside.
+    This follows the same explicit-completion principle as the get_logs cursor
+    and list_backups total: a clipped list must never read as a complete one.
     """
     grouped: dict[tuple[str, str], dict] = {}
     for holder in holders:

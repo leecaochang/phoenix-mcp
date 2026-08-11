@@ -137,8 +137,19 @@ async def test_tools_list_exposes_annotations_and_still_strips_cap():
     assert tools, "expected a non-empty catalog"
     for tool in tools:
         assert "cap" not in tool, f"{tool['name']} leaked its gating cap to the client"
+        assert "caps" not in tool, f"{tool['name']} leaked its gating caps to the client"
         assert "requires" not in tool, f"{tool['name']} leaked its availability key to the client"
         assert set(tool["annotations"]) == _HINT_KEYS
+
+
+def test_every_tool_capability_name_is_known():
+    """A typo in either the single-cap or dual-cap form must fail closed in CI."""
+    used = {
+        cap
+        for definition in _all_defs()
+        for cap in mcp_view._tool_caps(definition)
+    }
+    assert used <= set(const.CAPABILITY_NAMES)
 
 
 def test_requires_key_values_are_known():
@@ -384,7 +395,7 @@ def test_executor_registry_is_an_exact_proxy_for_gating():
     MESA sentinel executor that _call_tool can never dispatch; none of the three
     is cap-tied, so none reaches the branch this protects.
     """
-    capped = {d["name"] for d in _all_defs() if d.get("cap")}
+    capped = {d["name"] for d in _all_defs() if mcp_view._tool_caps(d)}
     executors = set(mcp_view._EXECUTOR_REGISTRY)
     gating = {
         name for name, (fn, _pos, _kw) in mcp_view._TOOL_HANDLERS.items()

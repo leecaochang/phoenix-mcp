@@ -629,14 +629,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "get_logs",
         "description": (
-            "Read recent Home Assistant system log entries. "
-            "Useful for diagnosing errors, failed automations, or integration problems. "
-            "Returns entries at or above the specified level, newest first. "
-            "Phoenix MCP's own log entries are excluded. "
-            "The response reports total (how many entries matched the level and integration "
-            "filters) alongside count (how many are in this page) and truncated. When truncated "
-            "is true you are seeing the newest slice, not the whole picture: raise limit or "
-            "narrow by level or integration before concluding anything about the instance."
+            "Read Home Assistant's bounded, deduplicated WARNING-and-above system-log ring, newest "
+            "first. Phoenix MCP's own records are excluded. The response reports source status and "
+            "coverage, effective filters, every retained message variant, and stateless cursor "
+            "pagination. This is not a continuous raw log: repeated records share one bucket and "
+            "live bucket updates can move records between pages."
         ),
         "cap": "cap_log_read",
         "inputSchema": {
@@ -650,7 +647,26 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 },
                 "integration": {
                     "type": "string",
+                    "maxLength": 512,
                     "description": "Optional integration name to filter by (e.g. 'hue', 'mqtt'). Matches homeassistant.components.<name> and custom_components.<name>.",
+                },
+                "logger": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Optional exact logger-name prefix, e.g. homeassistant.components.zha.",
+                },
+                "search": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Case-insensitive literal search across already-scrubbed messages and exceptions.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Optional ISO timestamp or relative time. Filters by each bucket's latest occurrence.",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "Optional ISO timestamp or relative time. Filters by each bucket's latest occurrence.",
                 },
                 "limit": {
                     "type": "integer",
@@ -658,6 +674,59 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                     "maximum": 100,
                     "default": 50,
                     "description": "Maximum number of entries to return (1-100, default 50).",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Opaque next_cursor from the previous page. Reuse the same filters.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_phoenix_diagnostics",
+        "description": (
+            "Read Phoenix MCP's own retained WARNING-and-above diagnostic buckets with stronger "
+            "redaction for credentials, topology, paths, opaque identifiers, and inaccessible "
+            "entities. Uses the same bounded source-status, coverage, filter, and cursor contract "
+            "as get_logs. Requires both Diagnostics and Log read capabilities."
+        ),
+        "caps": ["cap_diagnostics", "cap_log_read"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "enum": ["WARNING", "ERROR"],
+                    "default": "WARNING",
+                    "description": "Minimum retained level. WARNING returns WARNING+ERROR; ERROR returns ERROR only.",
+                },
+                "logger": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Optional Phoenix logger namespace prefix, e.g. custom_components.phoenix_mcp.mcp_view.",
+                },
+                "search": {
+                    "type": "string",
+                    "maxLength": 512,
+                    "description": "Case-insensitive literal search applied only after the stronger Phoenix diagnostic scrub.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Optional ISO timestamp or relative time. Filters by latest occurrence.",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "Optional ISO timestamp or relative time. Filters by latest occurrence.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 50,
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Opaque next_cursor from the previous page. Reuse the same filters.",
                 },
             },
         },
@@ -2894,6 +2963,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "list_scripts": _annot(True, False, True),
     "get_script": _annot(True, False, True),
     "get_logs": _annot(True, False, True),
+    "get_phoenix_diagnostics": _annot(True, False, True),
     "get_logbook": _annot(True, False, True),
     "list_blueprints": _annot(True, False, True, open_world=True),
     "get_blueprint": _annot(True, False, True, open_world=True),

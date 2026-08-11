@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
+import math
 import re
 import string
 from collections.abc import Awaitable, Callable, Iterator
 from functools import lru_cache
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -869,17 +872,23 @@ def build_safe_config(hass: HomeAssistant) -> dict:
 
 
 class SystemLogUnavailableError(Exception):
-    """Raised when hass.data["system_log"] is absent, so no log can be read."""
+    """Raised when the system-log source is absent."""
+
+    status = "unavailable"
+
+
+class SystemLogDegradedError(Exception):
+    """Raised when the system-log source exists but cannot be read safely."""
+
+    status = "degraded"
 
 
 def check_system_log_compat(hass: HomeAssistant) -> str | None:
     """Best-effort probe that hass.data["system_log"] still has the shape get_logs reads.
 
-    collect_log_entries degrades to an empty list on drift, which is
-    indistinguishable from "no log entries"; this surfaces the breakage once at
-    startup instead. Returns None when compatible OR when system_log is absent
-    entirely (not loaded / not enabled / loads after Phoenix MCP - none of which are
-    drift), and a short reason string when the object exists but has changed shape.
+    Runtime reads validate the same shape and fail loudly. This startup probe is
+    retained as an early operator warning. Returns None when compatible OR when
+    system_log is absent entirely, and a short reason string on shape drift.
     """
     try:
         syslog = hass.data.get("system_log")
@@ -897,73 +906,390 @@ def check_system_log_compat(hass: HomeAssistant) -> str | None:
 
 @dataclass(frozen=True)
 class LogEntryPage:
-    """One page of log entries plus how many matched before the limit was applied.
-
-    A pair rather than a bare list so a caller cannot report a clipped page as
-    the whole log by accident: unpacking is forced at both call sites. `total`
-    counts everything that passed the level and integration filters, so
-    `total > len(entries)` is exactly the truncation condition.
-    """
+    """One stateless page over Home Assistant's live deduplicated log ring."""
 
     entries: list[dict]
-    total: int
+    matched_buckets: int
+    has_more: bool
+    next_cursor: str | None
+    source: dict[str, Any]
+    filters: dict[str, Any]
+    warnings: list[str]
+
+
+_LOG_CURSOR_VERSION = 1
+_LOG_REDACTED_PATH = "<redacted-path>"
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_ULID_RE = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{26}\b", re.IGNORECASE)
+_LONG_HEX_RE = re.compile(r"\b[0-9a-f]{32,}\b", re.IGNORECASE)
+_ENTITY_ID_TEXT_RE = re.compile(r"(?<![\w.])([a-z0-9_]+\.[a-z0-9_]+)(?![\w.])")
+
+
+def _logger_prefix_matches(logger_name: str, prefix: str) -> bool:
+    """Match one complete logger namespace, never an adjacent lookalike."""
+    return logger_name == prefix or logger_name.startswith(prefix + ".")
+
+
+def _log_iso(timestamp: float) -> str:
+    """Return a stable UTC ISO timestamp for one system-log epoch value."""
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
+def _log_timestamp(value: Any) -> float | None:
+    """Coerce one system-log timestamp without accepting booleans or infinities."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        value = value.timestamp()
+    if not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) and result >= 0 else None
+
+
+def _safe_log_path(path: Any, hass: HomeAssistant) -> str:
+    """Return only a normalized HA package or custom-component relative path."""
+    if not isinstance(path, str) or not path or "\x00" in path:
+        return _LOG_REDACTED_PATH
+    normalized = path.replace("\\", "/")
+    config_dir = str(getattr(hass.config, "config_dir", "") or "").replace("\\", "/").rstrip("/")
+    if config_dir and normalized.startswith(config_dir + "/"):
+        normalized = normalized[len(config_dir) + 1 :]
+    elif "/custom_components/" in normalized:
+        normalized = "custom_components/" + normalized.split("/custom_components/", 1)[1]
+    elif "/homeassistant/" in normalized:
+        normalized = "homeassistant/" + normalized.split("/homeassistant/", 1)[1]
+
+    pure = PurePosixPath(normalized)
+    if pure.is_absolute() or any(part in ("", ".", "..") for part in pure.parts):
+        return _LOG_REDACTED_PATH
+    safe_roots = ("homeassistant", "components", "custom_components")
+    if not pure.parts or pure.parts[0] not in safe_roots:
+        return _LOG_REDACTED_PATH
+    return pure.as_posix()
+
+
+def _safe_log_location(value: Any, hass: HomeAssistant, *, root_cause: bool) -> dict | None:
+    """Normalize a system-log source or root-cause tuple without host paths."""
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        return None
+    line = value[1]
+    if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        line = None
+    result: dict[str, Any] = {"file": _safe_log_path(value[0], hass), "line": line}
+    if root_cause and len(value) >= 3:
+        function = value[2]
+        result["function"] = function if isinstance(function, str) and function.isidentifier() else None
+    return result
+
+
+def _strict_phoenix_log_text(text: str, token: TokenRecord, hass: HomeAssistant) -> str:
+    """Apply the stronger Phoenix self-diagnostics text boundary."""
+    scrubbed = _scrub_diagnostic_str(_scrub_log_text(text))
+    scrubbed = _UUID_RE.sub("<redacted-id>", scrubbed)
+    scrubbed = _ULID_RE.sub("<redacted-id>", scrubbed)
+    scrubbed = _LONG_HEX_RE.sub("<redacted-id>", scrubbed)
+
+    def _entity_replacement(match: re.Match[str]) -> str:
+        entity_id = match.group(1)
+        try:
+            permission = resolve(entity_id, token, hass)
+        except Exception:
+            return "<redacted-entity>"
+        if permission in (Permission.READ, Permission.WRITE):
+            return entity_id
+        return "<redacted-entity>"
+
+    return _ENTITY_ID_TEXT_RE.sub(_entity_replacement, scrubbed)
+
+
+def _log_filter_fingerprint(filters: dict[str, Any], phoenix_only: bool) -> str:
+    """Hash the effective filters so a cursor cannot silently change queries."""
+    payload = {**filters, "phoenix_only": phoenix_only}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _encode_log_cursor(
+    *,
+    snapshot_at: float,
+    timestamp: float,
+    bucket_id: str,
+    filter_hash: str,
+    since: float | None,
+    until: float | None,
+) -> str:
+    payload = {
+        "v": _LOG_CURSOR_VERSION,
+        "snapshot": snapshot_at,
+        "timestamp": timestamp,
+        "bucket": bucket_id,
+        "filters": filter_hash,
+        "since": since,
+        "until": until,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_log_cursor(
+    cursor: str, filter_hash: str
+) -> tuple[float, tuple[float, str], float | None, float | None]:
+    """Decode and bind one opaque log cursor to the current effective filters."""
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+        if not isinstance(payload, dict) or payload.get("v") != _LOG_CURSOR_VERSION:
+            raise ValueError
+        snapshot = _log_timestamp(payload.get("snapshot"))
+        timestamp = _log_timestamp(payload.get("timestamp"))
+        since = _log_timestamp(payload.get("since")) if payload.get("since") is not None else None
+        until = _log_timestamp(payload.get("until")) if payload.get("until") is not None else None
+        bucket = payload.get("bucket")
+        if (
+            snapshot is None
+            or timestamp is None
+            or not isinstance(bucket, str)
+            or len(bucket) != 64
+            or any(character not in "0123456789abcdef" for character in bucket)
+            or payload.get("filters") != filter_hash
+        ):
+            raise ValueError
+    except Exception as err:
+        raise ValueError("Invalid cursor for these log filters.") from err
+    return snapshot, (timestamp, bucket), since, until
+
+
+def _log_bucket_id(record: Any) -> str:
+    """Return a non-reversible deterministic tie-breaker for one deduplicated bucket."""
+    identity = getattr(record, "key", None)
+    if identity is None:
+        identity = (
+            getattr(record, "name", None),
+            getattr(record, "source", None),
+            getattr(record, "root_cause", None),
+        )
+    return hashlib.sha256(repr(identity).encode(errors="replace")).hexdigest()
+
+
+def _log_messages(value: Any) -> list[str] | None:
+    """Copy Home Assistant's retained message variants without accepting mappings."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return None
+    try:
+        messages = list(value)
+    except Exception:
+        return None
+    if not messages or not all(isinstance(item, str) for item in messages):
+        return None
+    return messages
+
+
+def _log_exception(value: Any) -> str | None:
+    """Normalize Home Assistant's current string and older iterable exception shapes."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+        return "".join(value) or None
+    return None
 
 
 def collect_log_entries(
-    hass: HomeAssistant, level: str, integration: str | None, limit: int
+    hass: HomeAssistant,
+    level: str,
+    integration: str | None,
+    logger: str | None,
+    search: str | None,
+    since: datetime | None,
+    until: datetime | None,
+    since_query: str | None,
+    until_query: str | None,
+    limit: int,
+    cursor: str | None,
+    *,
+    phoenix_only: bool = False,
+    token: TokenRecord | None = None,
 ) -> LogEntryPage:
-    """Read system_log records, filter, scrub, and return newest-first.
-
-    Accesses hass.data["system_log"].records directly - this is an undocumented
-    HA internal API with no public alternative. Falls back to an empty list if
-    the structure changes across HA versions; check_system_log_compat surfaces
-    that drift once at startup.
-
-    Raises SystemLogUnavailableError when the integration is not loaded at all.
-    An empty list has to mean "nothing logged at your level", which an agent reads
-    as a healthy instance; returning it for an unreadable log said the opposite of
-    the truth. Shape drift keeps degrading to empty (the startup probe covers it).
-
-    Reports the pre-slice `total` because this is the tool an agent reaches for to
-    answer "is anything wrong with this instance". A silently clipped page answers
-    that question wrongly in the one direction that matters: fifty errors out of
-    fifty reads as a bounded problem, fifty out of five hundred does not, and the
-    caller had no way to tell them apart.
-    """
+    """Read, validate, scrub, filter, and paginate the live system-log ring."""
     min_rank = _LOG_LEVEL_RANK.get(level.upper(), _LOG_LEVEL_RANK["WARNING"])
     syslog = hass.data.get("system_log")
     if syslog is None:
         raise SystemLogUnavailableError("the system_log integration is not loaded")
-    records = getattr(syslog, "records", {})
-    entries: list[dict] = []
-    for record in records.values():
+    records = getattr(syslog, "records", None)
+    values = getattr(records, "values", None)
+    if records is None or not callable(values):
+        raise SystemLogDegradedError("system_log records is no longer a mapping")
+
+    capacity = getattr(records, "maxlen", None)
+    capacity_valid = isinstance(capacity, int) and not isinstance(capacity, bool) and capacity > 0
+    warnings: list[str] = []
+    if not capacity_valid:
+        capacity = None
+        warnings.append("The system-log ring capacity is unavailable on this Home Assistant version.")
+
+    cursor_filters = {
+        "level": level,
+        "integration": integration,
+        "logger": logger,
+        "search": search,
+        "since": since_query,
+        "until": until_query,
+        "time_basis": "latest_occurrence",
+    }
+    filter_hash = _log_filter_fingerprint(cursor_filters, phoenix_only)
+    if cursor:
+        snapshot_at, cursor_key, cursor_since, cursor_until = _decode_log_cursor(cursor, filter_hash)
+        since_ts = cursor_since
+        until_ts = cursor_until
+    else:
+        snapshot_at, cursor_key = utcnow().timestamp(), None
+        since_ts = since.timestamp() if since else None
+        until_ts = until.timestamp() if until else None
+    effective_filters = {
+        **cursor_filters,
+        "since": _log_iso(since_ts) if since_ts is not None else None,
+        "until": _log_iso(until_ts) if until_ts is not None else None,
+    }
+    entries_with_keys: list[tuple[tuple[float, str], dict]] = []
+    retained_first: list[float] = []
+    retained_latest: list[float] = []
+    skipped = 0
+    try:
+        raw_records = list(values())
+    except Exception as err:
+        raise SystemLogDegradedError(
+            "system_log records could not be read"
+        ) from err
+    for record in raw_records:
         record_level = getattr(record, "level", "")
-        if _LOG_LEVEL_RANK.get(record_level, -1) < min_rank:
-            continue
         logger_name = getattr(record, "name", "")
-        if any(logger_name.startswith(pfx) for pfx in _PHOENIX_LOGGER_PREFIXES):
+        latest = _log_timestamp(getattr(record, "timestamp", None))
+        first = _log_timestamp(getattr(record, "first_occurred", None))
+        messages = _log_messages(getattr(record, "message", None))
+        count = getattr(record, "count", 1)
+        if (
+            not isinstance(record_level, str)
+            or record_level not in _LOG_LEVEL_RANK
+            or not isinstance(logger_name, str)
+            or not logger_name
+            or latest is None
+            or first is None
+            or messages is None
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 1
+        ):
+            skipped += 1
+            continue
+        retained_first.append(first)
+        retained_latest.append(latest)
+        is_phoenix = any(
+            _logger_prefix_matches(logger_name, prefix)
+            for prefix in _PHOENIX_LOGGER_PREFIXES
+        )
+        if phoenix_only != is_phoenix:
+            continue
+        if _LOG_LEVEL_RANK[record_level] < min_rank:
             continue
         if integration:
             if not (
-                logger_name.startswith(f"homeassistant.components.{integration}")
-                or logger_name.startswith(f"custom_components.{integration}")
+                _logger_prefix_matches(
+                    logger_name, f"homeassistant.components.{integration}"
+                )
+                or _logger_prefix_matches(
+                    logger_name, f"custom_components.{integration}"
+                )
             ):
                 continue
-        messages = getattr(record, "message", [])
-        msg = list(messages)[-1] if messages else ""
-        exc_parts = getattr(record, "exception", [])
-        exc_str: str | None = "".join(exc_parts) if exc_parts else None
-        entries.append({
-            "timestamp": getattr(record, "timestamp", 0),
-            "first_occurred": getattr(record, "first_occurred", 0),
+        if logger and not _logger_prefix_matches(logger_name, logger):
+            continue
+        if since_ts is not None and latest < since_ts:
+            continue
+        if until_ts is not None and latest > until_ts:
+            continue
+        if latest > snapshot_at:
+            continue
+
+        scrub: Callable[[str], str] = _scrub_log_text
+        if phoenix_only:
+            if token is None:
+                raise SystemLogDegradedError("Phoenix diagnostics token context is unavailable")
+            scrub = lambda value: _strict_phoenix_log_text(value, token, hass)
+        safe_messages = [scrub(message) for message in messages]
+        exception = _log_exception(getattr(record, "exception", None))
+        safe_exception = scrub(exception) if exception else None
+        if search:
+            needle = search.casefold()
+            searchable = [*safe_messages, safe_exception or ""]
+            if not any(needle in value.casefold() for value in searchable):
+                continue
+
+        bucket_id = _log_bucket_id(record)
+        sort_key = (latest, bucket_id)
+        entries_with_keys.append((sort_key, {
+            "first_occurred": _log_iso(first),
+            "latest_occurred": _log_iso(latest),
             "level": record_level,
             "logger": logger_name,
-            "message": _scrub_log_text(msg),
-            "exception": _scrub_log_text(exc_str) if exc_str else None,
-            "occurrences": getattr(record, "count", 1),
-        })
-    entries.sort(key=lambda e: e["timestamp"], reverse=True)
-    return LogEntryPage(entries=entries[:limit], total=len(entries))
+            "messages": safe_messages,
+            "exception": safe_exception,
+            "occurrences": count,
+            "source": _safe_log_location(getattr(record, "source", None), hass, root_cause=False),
+            "root_cause": _safe_log_location(getattr(record, "root_cause", None), hass, root_cause=True),
+        }))
+
+    entries_with_keys.sort(key=lambda item: item[0], reverse=True)
+    matched_buckets = len(entries_with_keys)
+    if cursor_key is not None:
+        entries_with_keys = [item for item in entries_with_keys if item[0] < cursor_key]
+    page_items = entries_with_keys[:limit]
+    has_more = len(entries_with_keys) > limit
+    next_cursor = None
+    if has_more and page_items:
+        last_key = page_items[-1][0]
+        next_cursor = _encode_log_cursor(
+            snapshot_at=snapshot_at,
+            timestamp=last_key[0],
+            bucket_id=last_key[1],
+            filter_hash=filter_hash,
+            since=since_ts,
+            until=until_ts,
+        )
+    if skipped:
+        warnings.append(f"Skipped {skipped} malformed system-log bucket(s).")
+    if cursor:
+        warnings.append(
+            "Pagination is best-effort over a live deduplicated ring; buckets updated after the first page may move."
+        )
+    source = {
+        "status": "degraded" if skipped or not capacity_valid else "available",
+        "kind": "home_assistant_system_log",
+        "semantics": "deduplicated_buckets",
+        "pagination": "best_effort_live_ring",
+        "capacity": capacity,
+        "retained_buckets": len(raw_records),
+        "skipped_buckets": skipped,
+        "earliest_first_occurred": _log_iso(min(retained_first)) if retained_first else None,
+        "latest_occurred": _log_iso(max(retained_latest)) if retained_latest else None,
+        "read_at": _log_iso(snapshot_at),
+        "recorded_levels": ["WARNING", "ERROR", "CRITICAL"],
+    }
+    return LogEntryPage(
+        entries=[entry for _, entry in page_items],
+        matched_buckets=matched_buckets,
+        has_more=has_more,
+        next_cursor=next_cursor,
+        source=source,
+        filters=effective_filters,
+        warnings=warnings,
+    )
 
 
 @callback

@@ -256,7 +256,7 @@ async def test_denied_token_survives_hostile_input(tool_def: dict, hass: HomeAss
 # "'x' is not of type 'integer'" is a statement about the caller's own input,
 # not about the instance; the same reasoning already lets ServiceValidationError
 # text through so an agent can self-correct.
-CAP_GATED_DEFS = [d for d in ALL_DEFS if d.get("cap")]
+CAP_GATED_DEFS = [d for d in ALL_DEFS if mcp_view._tool_caps(d)]
 
 
 @pytest.mark.parametrize("tool_def", CAP_GATED_DEFS, ids=lambda d: d["name"])
@@ -273,7 +273,7 @@ async def test_cap_denied_tool_never_echoes_the_payload(tool_def: dict, hass: Ho
         result, _outcome, _resource = await _call_tool(name, args, token, hass, data, "req", "1.2.3.4")
         text = "\n".join(i["text"] for i in result["content"])
         assert MARKER not in text, (
-            f"{name}/{label}: a token denied {tool_def['cap']} got its own payload "
+            f"{name}/{label}: a token denied {mcp_view._tool_caps(tool_def)} got its own payload "
             f"echoed back, so the error text is a validity oracle: {text[:300]}"
         )
 
