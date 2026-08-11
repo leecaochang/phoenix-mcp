@@ -257,6 +257,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # is always at most one entry. Keying by entry ID would add complexity for no benefit.
     hass.data[DOMAIN] = data
 
+    from .logger_control import async_get_logger_override_manager
+    data.logger_control = await async_get_logger_override_manager(hass)
+
     # Build the MESA runtime unconditionally (even under the kill switch): the
     # admin profile API must work regardless, and the enforcement gate is simply
     # never reached when no client routes are registered. A failure here must

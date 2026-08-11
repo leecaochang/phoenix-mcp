@@ -19,6 +19,7 @@ from aiohttp import web
 
 from .view_base import PhoenixView
 from homeassistant import loader
+from homeassistant.loader import IntegrationNotFound
 from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceNotFound,
@@ -191,6 +192,12 @@ from .policy_engine import (EntityCreationNotPermitted, Permission, assist_expos
 from .rate_limiter import RateLimitResult
 from .token_store import TokenRecord
 from . import yaml_includes
+from .logger_control import (
+    IntegrationOverride,
+    LoggerControlUnavailable,
+    VALID_LEVELS as LOGGER_CONTROL_LEVELS,
+    VALID_PERSISTENCE as LOGGER_CONTROL_PERSISTENCE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1610,6 +1617,304 @@ async def _tool_get_logbook(
         "entries": scoped,
     }
     return _tool_success(json.dumps(body, default=str)), "allowed", "get_logbook"
+
+
+_LOGGER_CONTROL_FINGERPRINT = "_phoenix_logger_control_fingerprint"
+_INTEGRATION_DOMAIN_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _visible_logger_domains(token: TokenRecord, hass: HomeAssistant) -> set[str]:
+    """Integration domains visible through one config entry or registry entity."""
+    domains = {
+        entry.domain
+        for entry in hass.config_entries.async_entries()
+        if entry.domain != DOMAIN
+        and resolve_config_entry_registry_access(entry.entry_id, token, hass)
+        in (Permission.READ, Permission.WRITE)
+    }
+    registry = er.async_get(hass)
+    for entry in registry.entities.values():
+        platform = getattr(entry, "platform", None)
+        if (
+            isinstance(platform, str)
+            and platform != DOMAIN
+            and resolve_registry_access(entry.entity_id, token, hass)
+            in (Permission.READ, Permission.WRITE)
+        ):
+            domains.add(platform)
+    return domains
+
+
+def _override_dict(value: IntegrationOverride | None) -> dict[str, str] | None:
+    return value.to_dict() if value is not None else None
+
+
+def _logger_context_fingerprint(
+    domain: str,
+    loggers: set[str],
+    override: IntegrationOverride | None,
+    visible: bool,
+) -> str:
+    payload = json.dumps(
+        {
+            "integration": domain,
+            "loggers": sorted(loggers),
+            "override": _override_dict(override),
+            "visible": visible,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _aggregate_log_level(levels: dict[str, str]) -> str:
+    unique = set(levels.values())
+    return next(iter(unique)) if len(unique) == 1 else "MIXED"
+
+
+async def _tool_list_integration_log_levels(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    """List scoped integration-aware logger levels."""
+    if effective_cap(token, "cap_log_read") == CAP_DENY:
+        return _tool_error("Forbidden."), "denied", "list_integration_log_levels"
+    manager = data.logger_control
+    if manager is None:
+        return _tool_success(json.dumps({
+            "source": {"status": "unavailable", "warning": "Logger state is unavailable."},
+            "count": 0,
+            "integrations": [],
+            "read_at": utcnow().isoformat(),
+        })), "allowed", "list_integration_log_levels"
+    source = manager.adapter.source_status()
+    source["timed_restoration"] = (
+        "available" if manager.storage_available else "unavailable"
+    )
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for domain in sorted(_visible_logger_domains(token, hass)):
+        try:
+            loggers = await manager.adapter.declared_loggers(domain)
+            levels = manager.adapter.effective_levels(loggers)
+            try:
+                override = manager.adapter.get_override(domain)
+                override_status = "available"
+            except LoggerControlUnavailable as exc:
+                override = None
+                override_status = "unavailable"
+                warnings.append(f"{domain}: {exc}")
+            timed = manager.active(domain)
+            rows.append({
+                "integration": domain,
+                "effective_level": _aggregate_log_level(levels),
+                "logger_levels": levels,
+                "override": {
+                    "status": override_status,
+                    "setting": _override_dict(override),
+                },
+                "timed_override": (
+                    {
+                        "level": timed.applied.level,
+                        "expires_at": timed.expires_at.isoformat(),
+                    }
+                    if timed is not None else None
+                ),
+            })
+        except LoggerControlUnavailable as exc:
+            warnings.append(f"{domain}: {exc}")
+    if warnings and source.get("status") == "available":
+        source = {"status": "degraded", "warnings": warnings}
+    elif warnings:
+        source = {**source, "warnings": warnings}
+    return _tool_success(json.dumps({
+        "source": source,
+        "count": len(rows),
+        "integrations": rows,
+        "read_at": utcnow().isoformat(),
+    }, default=str)), "allowed", "list_integration_log_levels"
+
+
+def _log_control_args(
+    args: dict[str, Any],
+) -> tuple[str, str, str, int | None] | str:
+    domain = args.get("integration")
+    level = args.get("level")
+    persistence = args.get("persistence")
+    duration = args.get("duration_minutes")
+    if not isinstance(domain, str) or not _INTEGRATION_DOMAIN_RE.fullmatch(domain):
+        return "integration must be a valid integration domain."
+    if not isinstance(level, str) or level not in LOGGER_CONTROL_LEVELS:
+        return "level must be NOTSET, DEBUG, INFO, WARNING, ERROR, or CRITICAL."
+    if not isinstance(persistence, str) or persistence not in LOGGER_CONTROL_PERSISTENCE:
+        return "persistence must be none, once, or permanent."
+    if duration is not None and (
+        isinstance(duration, bool) or not isinstance(duration, int) or not 5 <= duration <= 120
+    ):
+        return "duration_minutes must be an integer from 5 through 120."
+    if duration is not None and (persistence != "none" or level == "NOTSET"):
+        return "duration_minutes requires persistence=none and a level other than NOTSET."
+    if level == "NOTSET" and persistence != "none":
+        return "NOTSET requires persistence=none."
+    return domain, level, persistence, duration
+
+
+def _log_control_warnings(level: str) -> list[str]:
+    if level not in ("DEBUG", "INFO"):
+        return []
+    return [
+        "Verbose logging can increase disk use.",
+        "Third-party integration logs may contain sensitive output outside Phoenix's control.",
+    ]
+
+
+def _build_diff_set_integration_log_level(
+    domain: str,
+    before: IntegrationOverride | None,
+    after: IntegrationOverride | None,
+    loggers: set[str],
+    duration: int | None,
+) -> dict[str, Any]:
+    warnings = _log_control_warnings(after.level if after else "NOTSET")
+    return {
+        "kind": "system_action",
+        **_summary("integration.log_level", label=domain),
+        "target": {"type": "integration", "id": domain, "label": domain},
+        "preview": {
+            "before": _override_dict(before),
+            "after": _override_dict(after),
+            "affected_loggers": sorted(loggers),
+            "duration_minutes": duration,
+            "persistence": (
+                "runtime-only" if after and after.persistence == "none"
+                else "one-restart" if after and after.persistence == "once"
+                else "permanent" if after else "cleared"
+            ),
+            "warnings": warnings,
+        },
+    }
+
+
+async def _validated_log_control_context(
+    args: dict[str, Any], token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[str, str, str, int | None, set[str], IntegrationOverride | None, str] | tuple[dict, str, str]:
+    parsed = _log_control_args(args)
+    if isinstance(parsed, str):
+        return _tool_error(parsed), "invalid_request", "set_integration_log_level"
+    domain, level, persistence, duration = parsed
+    visible = domain in _visible_logger_domains(token, hass)
+    if not visible or domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", domain
+    try:
+        await loader.async_get_integration(hass, domain)
+    except IntegrationNotFound:
+        return _tool_error("Integration not found."), "not_found", domain
+    manager = data.logger_control
+    if manager is None:
+        return _tool_error("Logger state is unavailable."), "invalid_request", domain
+    try:
+        loggers = await manager.adapter.declared_loggers(domain)
+        before = manager.adapter.get_override(domain)
+    except LoggerControlUnavailable:
+        return _tool_error("Home Assistant logger state is unavailable or incompatible."), "invalid_request", domain
+    fingerprint = _logger_context_fingerprint(domain, loggers, before, visible)
+    return domain, level, persistence, duration, loggers, before, fingerprint
+
+
+async def _tool_set_integration_log_level(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Gate a scoped process-wide integration logger change without MESA."""
+    # Capability ordering is intentional: argument errors must not become an
+    # oracle for tokens lacking either explicit capability.
+    if effective_cap(token, "cap_log_read") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_integration_log_level"
+    if effective_cap(token, "cap_log_control") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_integration_log_level"
+    context = await _validated_log_control_context(args, token, hass, data)
+    if len(context) == 3 and isinstance(context[0], dict):
+        return context
+    domain, level, persistence, duration, loggers, before, fingerprint = context
+    after = None if level == "NOTSET" else IntegrationOverride(level, persistence)
+    manager = data.logger_control
+    assert manager is not None
+    if duration is None and before == after and manager.active(domain) is None:
+        return _tool_success(json.dumps({
+            "integration": domain, "changed": False, "setting": _override_dict(before)
+        })), "allowed", f"integration:{domain}"
+    execute_args = dict(args)
+    execute_args[_LOGGER_CONTROL_FINGERPRINT] = fingerprint
+    blocked = await _gate(
+        "cap_log_control", token, hass, data,
+        tool_name="set_integration_log_level",
+        args=execute_args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda: _build_diff_set_integration_log_level(
+            domain, before, after, loggers, duration
+        ),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_set_integration_log_level(execute_args, token, hass, data)
+
+
+async def _execute_set_integration_log_level(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    if effective_cap(token, "cap_log_read") == CAP_DENY or effective_cap(
+        token, "cap_log_control"
+    ) == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_integration_log_level"
+    context = await _validated_log_control_context(args, token, hass, data)
+    if len(context) == 3 and isinstance(context[0], dict):
+        return context
+    domain, level, persistence, duration, loggers, before, fingerprint = context
+    if args.get(_LOGGER_CONTROL_FINGERPRINT) != fingerprint:
+        return _tool_error(
+            "The integration logger set, override, or visibility changed after approval. Review it again."
+        ), "denied", f"integration:{domain}"
+    after = None if level == "NOTSET" else IntegrationOverride(level, persistence)
+    manager = data.logger_control
+    assert manager is not None
+    if duration is None and before == after and manager.active(domain) is None:
+        return _tool_success(json.dumps({
+            "integration": domain, "changed": False, "setting": _override_dict(before)
+        })), "allowed", f"integration:{domain}"
+    try:
+        await manager.async_set(
+            domain=domain,
+            desired=after,
+            prior=before,
+            loggers=loggers,
+            owner_token_id=token.id,
+            duration_minutes=duration,
+        )
+        effective = manager.adapter.effective_levels(loggers)
+        current = manager.adapter.get_override(domain)
+    except (LoggerControlUnavailable, OSError):
+        _LOGGER.exception("set_integration_log_level failed for %s", domain)
+        return _tool_error("Failed to update integration log level."), "invalid_request", f"integration:{domain}"
+    timed = manager.active(domain)
+    return _tool_success(json.dumps({
+        "integration": domain,
+        "changed": True,
+        "before": _override_dict(before),
+        "after": _override_dict(current),
+        "affected_loggers": sorted(loggers),
+        "effective_level": _aggregate_log_level(effective),
+        "logger_levels": effective,
+        "persistence_semantics": (
+            "runtime-only" if current and current.persistence == "none"
+            else "one-restart" if current and current.persistence == "once"
+            else "permanent" if current else "cleared"
+        ),
+        "timed_override": (
+            {"expires_at": timed.expires_at.isoformat()} if timed else None
+        ),
+        "warnings": _log_control_warnings(level),
+    }, default=str)), "allowed", f"integration:{domain}"
 
 
 def _entity_meta_snapshot(entry: Any) -> dict:
@@ -7697,6 +8002,7 @@ _register_executor("rename_esphome_device", _execute_rename_esphome_device)
 _register_executor("install_esphome_firmware", _execute_install_esphome_firmware)
 _register_executor("set_integration_enabled", _execute_set_integration_enabled)
 _register_executor("set_integration", _execute_set_integration)
+_register_executor("set_integration_log_level", _execute_set_integration_log_level)
 _register_executor("reload_integration", _execute_reload_integration)
 _register_executor("remove_integration", _execute_remove_integration)
 _register_executor("create_backup", _execute_create_backup)
@@ -7779,6 +8085,8 @@ _register_tool("HassBroadcast", _tool_hass_broadcast)
 _register_tool("get_logs", _tool_get_logs)
 _register_tool("get_phoenix_diagnostics", _tool_get_phoenix_diagnostics)
 _register_tool("get_logbook", _tool_get_logbook)
+_register_tool("list_integration_log_levels", _tool_list_integration_log_levels)
+_register_tool("set_integration_log_level", _tool_set_integration_log_level)
 _register_tool("list_blueprints", _tool_list_blueprints)
 _register_tool("get_blueprint", _tool_get_blueprint)
 _register_tool("create_blueprint", _tool_create_blueprint)

@@ -38,6 +38,7 @@ const TOKEN_RECORD_KEYS = {
   cap_config_read: true,
   cap_template_render: true,
   cap_log_read: true,
+  cap_log_control: true,
   cap_search: true,
   cap_registry_read: true,
   cap_traces: true,

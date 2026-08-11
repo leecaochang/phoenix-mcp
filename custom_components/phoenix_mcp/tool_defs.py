@@ -787,6 +787,49 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "list_integration_log_levels",
+        "description": (
+            "Inspect effective logger levels and integration-aware overrides for integration domains "
+            "visible within this token's resource scope. Phoenix MCP and inaccessible integrations "
+            "are hidden. The response distinguishes runtime-only, once, and permanent persistence and "
+            "reports any active Phoenix timed restoration."
+        ),
+        "cap": "cap_log_read",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "set_integration_log_level",
+        "description": (
+            "Set or clear the integration-aware logger level for one visible integration domain. "
+            "This changes process-wide diagnostics, not an entity, and never accepts arbitrary Python "
+            "logger names. INFO and DEBUG may consume disk and expose sensitive third-party output."
+        ),
+        "caps": ["cap_log_read", "cap_log_control"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "integration": {"type": "string", "description": "Visible Home Assistant integration domain."},
+                "level": {
+                    "type": "string",
+                    "enum": ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                    "description": "NOTSET clears the integration-aware override and requires persistence=none.",
+                },
+                "persistence": {
+                    "type": "string",
+                    "enum": ["none", "once", "permanent"],
+                    "description": "none is runtime-only; once survives one restart; permanent persists until cleared.",
+                },
+                "duration_minutes": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 120,
+                    "description": "Optional timed restoration, valid only for a non-NOTSET level with persistence=none.",
+                },
+            },
+            "required": ["integration", "level", "persistence"],
+        },
+    },
+    {
         "name": "list_blueprints",
         "description": (
             "List the installed automation and script blueprints with their inputs, so you can author "
@@ -2985,6 +3028,8 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "get_logs": _annot(True, False, True),
     "get_phoenix_diagnostics": _annot(True, False, True),
     "get_logbook": _annot(True, False, True),
+    "list_integration_log_levels": _annot(True, False, True),
+    "set_integration_log_level": _annot(False, True, True),
     "list_blueprints": _annot(True, False, True, open_world=True),
     "get_blueprint": _annot(True, False, True, open_world=True),
     "get_radio_network": _annot(True, False, True),

@@ -28,6 +28,7 @@ export interface CapabilityFlagsMap {
   cap_config_read: CapMode;
   cap_template_render: CapMode;
   cap_log_read: CapMode;
+  cap_log_control: CapMode;
   cap_search: CapMode;
   cap_registry_read: CapMode;
   cap_traces: CapMode;
@@ -480,6 +481,7 @@ export interface PatchTokenBody {
   cap_script_write?: CapMode;
   cap_blueprint_write?: CapMode;
   cap_log_read?: CapMode;
+  cap_log_control?: CapMode;
   cap_config_read?: CapMode;
   cap_template_render?: CapMode;
   cap_restart?: CapMode;

@@ -135,6 +135,10 @@
         "label": "System log read",
         "description": "Read Home Assistant system log entries."
       },
+      "cap_log_control": {
+        "label": "Integration log levels",
+        "description": "Inspect and change process-wide log levels for accessible integrations. Verbose logging may use disk space and expose sensitive third-party output."
+      },
       "cap_search": {
         "label": "Search & discovery",
         "description": "Find and describe entities, areas, and relationships within this token's scope."
@@ -1397,6 +1401,7 @@
       "integration.reload": "Reload integration {label}",
       "integration.remove": "Remove integration {label}",
       "integration.update": "Update integration {label}",
+      "integration.log_level": "Change integration log level for {label}",
       "mesa_service": "MESA confirmation for {domain}.{service}",
       "patch_dashboard.append": "Append to {path} on dashboard '{label}'",
       "patch_dashboard.remove": "Remove {path} from dashboard '{label}'",

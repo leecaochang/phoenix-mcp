@@ -89,6 +89,10 @@
         "label": "读取系统日志",
         "description": "读取 Home Assistant 系统日志条目。"
       },
+      "cap_log_control": {
+        "label": "集成日志级别",
+        "description": "检查并更改可访问集成的进程级日志级别。详细日志可能占用磁盘并包含第三方敏感输出。"
+      },
       "cap_lovelace_write": {
         "label": "管理仪表盘",
         "description": "创建、编辑和删除 Lovelace 仪表盘。"
@@ -742,6 +746,7 @@
       "integration.remove": "移除集成 {label}",
       "integration.reload": "重新加载集成 {label}",
       "integration.update": "更新集成 {label}",
+      "integration.log_level": "更改集成 {label} 的日志级别",
       "mesa_service": "{domain}.{service} 的 MESA 确认",
       "rename_esphome_device": "将 ESPHome 设备 {device} 重命名为 {new_name}。此操作会编译并刷写该设备。",
       "rename_esphome_device.services": "将 ESPHome 设备 {device} 重命名为 {new_name}，同时重命名 {count} 个动作服务。此操作会编译并刷写该设备。",

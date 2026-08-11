@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from .mesa import MesaRuntime
+    from .logger_control import LoggerOverrideManager
 
 
 @dataclass
@@ -42,6 +43,9 @@ class PhoenixData:
     # MESA semantic-safety runtime (store, resolver, enforcer, validator).
     # None only if MESA setup failed; views guard accordingly.
     mesa: MesaRuntime | None = None
+    # Process-global manager is also kept under its own hass.data key, so a
+    # Phoenix config-entry reload cannot strand a timed logger restoration.
+    logger_control: LoggerOverrideManager | None = None
     # Tracks the monotonic time of the last rate-limit notification per token
     # to enforce the one-per-minute throttle on phoenix_mcp_rate_limited bus events.
     rate_limit_notified: dict[str, float] = field(default_factory=dict)

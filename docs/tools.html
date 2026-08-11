@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 122 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 124 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 122 of its own, 145 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 124 of its own, 147 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 145 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 147 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -149,6 +149,13 @@
             <p class="tool-desc">Home-wide reads are limited to 7 days; entity-, device-, or context-narrowed reads to 31 days. Search is a bounded, case-insensitive literal match over the safe <code>name</code>, <code>message</code>, and <code>state</code> fields after permission filtering and service-response redaction. It does not qualify as database narrowing. The response reports the matching <code>total</code> before the most-recent limit, plus <code>count</code>, <code>truncated</code>, and effective filters. Narrow the time window when truncated; there is no response-only cursor over Home Assistant's unpaginated query.</p>
             <p class="tool-desc">This is the narrative event history, distinct from <code>get_logs</code> (error log) and <code>get_history</code> (Recorder states).</p>
             <dl><dt>params</dt><dd><code>start_time</code> (default 24h), <code>end_time</code> (default now), <code>entity_ids</code> (unique, max 100), <code>device_ids</code> (unique, max 100), <code>context_id</code>, <code>search</code>, <code>limit</code> (default 100, max 1000)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="read system" data-search="list_integration_log_levels set_integration_log_level logger persistence debug info timed">
+            <div class="tool-head"><span class="tool-name">list_integration_log_levels</span><span class="tool-name">set_integration_log_level</span><span class="badge badge-cap">Log read + Integration log levels</span></div>
+            <p class="tool-desc">Inspect effective per-logger levels and the current Home Assistant integration-aware override for integration domains visible through this token's accessible config entries or registry entities. Phoenix MCP and inaccessible domains stay hidden. Stored overrides identify <code>none</code>, <code>once</code>, or <code>permanent</code> persistence, and the response reports unavailable or degraded upstream state instead of guessing after Home Assistant changes shape.</p>
+            <p class="tool-desc">The write targets a whole integration domain, never an arbitrary Python logger. <code>NOTSET</code> clears the override. An optional 5–120 minute duration is available only for a non-<code>NOTSET</code>, runtime-only setting. Confirmation fingerprints visibility, the declared logger set, and the exact prior override. A timed restore runs only if that applied setting and logger set are still current; an operator's newer change is never overwritten. INFO and DEBUG may consume disk and expose sensitive third-party output.</p>
+            <dl><dt>params</dt><dd><code>integration</code>, <code>level</code> (<code>NOTSET</code>/<code>DEBUG</code>/<code>INFO</code>/<code>WARNING</code>/<code>ERROR</code>/<code>CRITICAL</code>), <code>persistence</code> (<code>none</code>/<code>once</code>/<code>permanent</code>), optional <code>duration_minutes</code> (5–120)</dd></dl>
           </article>
 
           <article class="tool" data-cap="read" data-search="render_template jinja2">

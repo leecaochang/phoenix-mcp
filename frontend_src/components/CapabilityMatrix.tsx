@@ -147,6 +147,13 @@ const CAPS: CapDef[] = [
     confirmAvailable: true,
   },
   {
+    key: "cap_log_control",
+    labelKey: "caps.cap_log_control.label",
+    descriptionKey: "caps.cap_log_control.description",
+    tier: "system",
+    confirmAvailable: true,
+  },
+  {
     key: "cap_integration_write",
     labelKey: "caps.cap_integration_write.label",
     descriptionKey: "caps.cap_integration_write.description",

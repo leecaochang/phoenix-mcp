@@ -59,6 +59,11 @@ ALLOWED_WS_COMMANDS: frozenset[str] = frozenset(
         "lovelace/dashboards/list", "lovelace/dashboards/create",
         "lovelace/dashboards/update", "lovelace/dashboards/delete",
         "logbook/get_events",
+        # Integration-aware logger control. Unlike logger/set_level, this resolves
+        # the integration's declared logger set and preserves HA's none/once/
+        # permanent semantics. Phoenix adds capability, scope, approval, and
+        # timed-restoration gates before reaching this command.
+        "logger/integration_log_level",
         "zha/device", "zha/network/settings",
         # Blueprint authoring. HA's own handlers do the whole job: blueprint/save
         # parses the YAML, builds a Blueprint against the domain schema, refuses an

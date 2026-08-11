@@ -103,6 +103,13 @@ async def test_zha_reads_are_allowlisted():
     assert "zha/network/settings" in ALLOWED_WS_COMMANDS
 
 
+async def test_only_integration_aware_logger_control_is_allowlisted():
+    from custom_components.phoenix_mcp.ws_dispatch import ALLOWED_WS_COMMANDS
+
+    assert "logger/integration_log_level" in ALLOWED_WS_COMMANDS
+    assert "logger/set_level" not in ALLOWED_WS_COMMANDS
+
+
 async def test_zha_leaky_write_commands_are_not_allowlisted():
     # zha/devices/permit enables process-wide ZHA debug logging and parks its
     # cleanup in connection.subscriptions; zha/devices/reconfigure parks a

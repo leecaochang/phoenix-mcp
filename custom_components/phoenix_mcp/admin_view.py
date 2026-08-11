@@ -2221,6 +2221,12 @@ class PhoenixAdminWipeView(PhoenixView):
             from .voice_agent import async_remove_assist_pipeline  # noqa: PLC0415
             await async_remove_assist_pipeline(hass, data)
 
+            # Logger restoration records live outside hass.data[DOMAIN] so a
+            # Phoenix reload cannot strand them. Restore matching runtime-only
+            # changes before the core wipe removes their ownership context.
+            if data.logger_control is not None:
+                await data.logger_control.async_restore_all()
+
             async with data.store.async_lock:
                 data.rate_limiter.destroy_all()
                 data.rate_limit_notified.clear()
