@@ -30,6 +30,7 @@ from .const import (
 PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     PERSONA_NEW_USER: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_DENY,
         "cap_log_control": CAP_DENY,
@@ -59,6 +60,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_READ_ONLY: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,
@@ -88,6 +90,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_VOICE_ASSISTANT: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,
@@ -117,6 +120,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_AUTOMATION_BUILDER: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,
@@ -146,6 +150,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_POWER_USER: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,
@@ -175,6 +180,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_HOME_ADMIN: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,
@@ -208,6 +214,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_DASHBOARD_DESIGNER: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_DENY,
         "cap_log_control": CAP_DENY,
@@ -237,6 +244,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_MAINTENANCE: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_ALLOW,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,
@@ -266,6 +274,7 @@ PERSONA_DEFINITIONS: dict[str, dict[str, str]] = {
     },
     PERSONA_ESPHOME: {
         "cap_config_read": CAP_ALLOW,
+        "cap_camera_read": CAP_DENY,
         "cap_template_render": CAP_DENY,
         "cap_log_read": CAP_ALLOW,
         "cap_log_control": CAP_DENY,

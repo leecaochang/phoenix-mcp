@@ -179,6 +179,7 @@ from .tools.lovelace import (
     _tool_list_dashboards,
     _tool_set_dashboard_config,
 )
+from .tools.camera import _tool_get_camera_image
 from .tools.esphome import _ESPHOME_DOMAIN, _execute_delete_esphome_yaml, _execute_install_esphome_firmware, _execute_rename_esphome_device, _execute_set_esphome_yaml, _tool_cancel_esphome_job, _tool_clean_esphome_build, _tool_compile_esphome_firmware, _tool_decode_esphome_backtrace, _tool_delete_esphome_yaml, _tool_get_esphome_automations, _tool_get_esphome_board, _tool_get_esphome_component, _tool_get_esphome_device_logs, _tool_get_esphome_job, _tool_get_esphome_overview, _tool_get_esphome_yaml, _tool_install_esphome_firmware, _tool_rename_esphome_device, _tool_set_esphome_yaml, _tool_validate_esphome_yaml, _tool_wait_for_esphome_job
 # The published tool catalog (schemas + MCP annotations) is declarative data
 # and lives in tool_defs.py; this module reads it to answer tools/list, build
@@ -8420,6 +8421,7 @@ _register_executor(MESA_APPROVED_EXECUTOR, _execute_call_service_mesa_approved)
 
 _register_tool("get_state", _tool_get_state)
 _register_tool("get_states", _tool_get_states)
+_register_tool("get_camera_image", _tool_get_camera_image)
 _register_tool("get_history", _tool_get_history)
 _register_tool("get_statistics", _tool_get_statistics)
 _register_tool("get_calendar_events", _tool_get_calendar_events)

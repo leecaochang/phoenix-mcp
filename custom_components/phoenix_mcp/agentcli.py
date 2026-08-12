@@ -16,6 +16,8 @@ persisted into a transcript, or echoed in an error payload.
 
 
 import asyncio
+import base64
+import binascii
 import dataclasses
 from datetime import timedelta
 import ipaddress
@@ -152,6 +154,9 @@ class ProviderConfig:
     model: str
     base_url: str
     api_key: str | None = None
+    # Tri-state: True is explicit provider/model evidence, False is explicit
+    # refusal, and None means unknown. Unknown must remain text-only.
+    vision: bool | None = None
 
 
 # Provider-kind metadata. Adding a kind here (plus a branch in build_provider if
@@ -378,7 +383,12 @@ class AgentCliStore:
         if not base_url:
             return None
         model = model_override or cfg.get("model") or _default_model(kind)
-        return ProviderConfig(kind=kind, model=model, base_url=base_url, api_key=cfg.get("api_key"))
+        model_caps = _with_learned(cfg).get(model) or {}
+        vision = model_caps.get("vision") if isinstance(model_caps.get("vision"), bool) else None
+        return ProviderConfig(
+            kind=kind, model=model, base_url=base_url, api_key=cfg.get("api_key"),
+            vision=vision,
+        )
 
 
 async def _get_secret_store(hass: HomeAssistant) -> AgentCliStore:
@@ -624,10 +634,22 @@ class ClaudeProvider:
         # All tool_result blocks for a turn go in ONE user message.
         content = []
         for r in results:
+            result_text = _model_result_text(r, self.cfg.vision is True)
+            result_content: list[dict] = [{"type": "text", "text": result_text}]
+            if self.cfg.vision is True:
+                for image in r.get("images", []):
+                    result_content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image["mime_type"],
+                            "data": image["data"],
+                        },
+                    })
             block: dict = {
                 "type": "tool_result",
                 "tool_use_id": r["tool_use_id"],
-                "content": [{"type": "text", "text": r["result_text"]}],
+                "content": result_content,
             }
             if r.get("is_error"):
                 block["is_error"] = True
@@ -1027,13 +1049,25 @@ def _openrouter_capabilities(data: list[dict]) -> dict[str, dict]:
     for m in data:
         model_id = m.get("id")
         params = m.get("supported_parameters")
-        if not model_id or not isinstance(params, list):
+        architecture = m.get("architecture")
+        modalities = architecture.get("input_modalities") if isinstance(architecture, dict) else None
+        if not isinstance(modalities, list):
+            modalities = m.get("input_modalities")
+        if not model_id or (not isinstance(params, list) and not isinstance(modalities, list)):
             continue
-        out[model_id] = {
-            "tools": "tools" in params,
-            "thinking": "reasoning" in params,
-            "temperature": "temperature" in params,
-        }
+        row: dict[str, bool] = {}
+        if isinstance(params, list):
+            row.update({
+                "tools": "tools" in params,
+                "thinking": "reasoning" in params,
+                "temperature": "temperature" in params,
+            })
+        if isinstance(modalities, list):
+            row["vision"] = any(
+                isinstance(item, str) and item.lower() in {"image", "image_url"}
+                for item in modalities
+            )
+        out[model_id] = row
     return out
 
 
@@ -1069,7 +1103,11 @@ async def _ollama_capabilities(
         caps = body.get("capabilities") if isinstance(body, dict) else None
         if not isinstance(caps, list):
             return None
-        return name, {"tools": "tools" in caps, "thinking": "thinking" in caps}
+        return name, {
+            "tools": "tools" in caps,
+            "thinking": "thinking" in caps,
+            "vision": "vision" in caps,
+        }
 
     pairs = await asyncio.gather(*(_one(m) for m in models))
     return dict(p for p in pairs if p is not None)
@@ -1157,8 +1195,20 @@ class OpenAICompatProvider:
                 "role": "tool",
                 "tool_call_id": r["tool_use_id"],
                 "name": r.get("tool_name", ""),
-                "content": r["result_text"],
+                "content": _model_result_text(r, self.cfg.vision is True),
             })
+            if self.cfg.vision is True and r.get("images"):
+                parts: list[dict] = [{
+                    "type": "text",
+                    "text": "The tool returned the following image for visual inspection.",
+                }]
+                parts.extend({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image['mime_type']};base64,{image['data']}",
+                    },
+                } for image in r["images"])
+                messages.append({"role": "user", "content": parts})
 
     async def validate(self, session: ClientSession) -> tuple[bool, str]:
         async def _probe() -> tuple[bool, str]:
@@ -1646,6 +1696,39 @@ def _clip_display(text: str) -> str:
     return text[:AGENTCLI_TOOL_RESULT_MAX_CHARS] + f"\n… (truncated, {len(text)} chars total)"
 
 
+_MODEL_IMAGE_FALLBACK = (
+    "The image is displayed to the operator, but this provider/model is not known "
+    "to support visual input. Do not infer or describe image contents."
+)
+
+
+def _model_result_text(result: dict, vision: bool) -> str:
+    text = str(result.get("result_text") or "")
+    if result.get("images") and not vision:
+        return f"{text}\n{_MODEL_IMAGE_FALLBACK}".strip()
+    return text
+
+
+def _extract_image_blocks(content: Any) -> list[dict[str, str]]:
+    """Validate and normalize MCP image blocks for internal consumers."""
+    images: list[dict[str, str]] = []
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict) or item.get("type") != "image":
+            continue
+        data = item.get("data")
+        mime_type = str(item.get("mimeType") or "").lower().split(";", 1)[0].strip()
+        if not isinstance(data, str) or mime_type not in {"image/jpeg", "image/png", "image/gif"}:
+            continue
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error):
+            continue
+        if not decoded or len(decoded) > 4 * 1024 * 1024:
+            continue
+        images.append({"data": data, "mime_type": mime_type})
+    return images
+
+
 def _flatten_text(content: list[dict]) -> str:
     return "\n".join(
         c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"
@@ -2098,11 +2181,22 @@ async def _run_tool_batch(
             if status in (STATUS_APPROVED, STATUS_REJECTED, "execution_failed"):
                 human_resolved = True
         is_error = bool(result.get("isError"))
-        text = _flatten_text(result.get("content", []))
+        content = result.get("content", [])
+        text = _flatten_text(content)
+        images = _extract_image_blocks(content)
+        for index, image in enumerate(images):
+            await emit("tool_image", {
+                "id": tc.get("id"),
+                "name": name,
+                "index": index,
+                "mime_type": image["mime_type"],
+                "data": image["data"],
+                "alt": f"Image returned by {name}",
+            })
         await emit("tool_result", {"id": tc.get("id"), "name": name,
                                    "is_error": is_error, "summary": _clip_display(text)})
         results.append({"tool_use_id": tc.get("id"), "tool_name": name,
-                        "result_text": text, "is_error": is_error})
+                        "result_text": text, "images": images, "is_error": is_error})
 
     return _ToolBatchResult(
         results=results, human_resolved=human_resolved,
@@ -2448,9 +2542,11 @@ async def _run_headless_turn(
                     "is_error": False,
                 })
                 continue
+            content = result.get("content", [])
             results.append({
                 "tool_use_id": tc.get("id"), "tool_name": name,
-                "result_text": _flatten_text(result.get("content", [])),
+                "result_text": _flatten_text(content),
+                "images": _extract_image_blocks(content),
                 "is_error": bool(result.get("isError")),
             })
         provider.append_tool_results(messages, results)

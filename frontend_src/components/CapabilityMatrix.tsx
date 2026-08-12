@@ -42,6 +42,13 @@ const CAPS: CapDef[] = [
     confirmAvailable: false,
   },
   {
+    key: "cap_camera_read",
+    labelKey: "caps.cap_camera_read.label",
+    descriptionKey: "caps.cap_camera_read.description",
+    tier: "read",
+    confirmAvailable: false,
+  },
+  {
     key: "cap_template_render",
     labelKey: "caps.cap_template_render.label",
     descriptionKey: "caps.cap_template_render.description",

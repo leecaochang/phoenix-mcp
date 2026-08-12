@@ -313,6 +313,9 @@ class TokenRecord:
     # No legacy allow_* equivalent: migrated and newly created tokens fail closed.
     cap_log_control: str = CAP_DENY
     cap_search: str = CAP_DENY
+    # Camera images are privacy-sensitive and require an explicit grant even
+    # for pass-through tokens. Migrated records default to deny via CAPABILITY_NAMES.
+    cap_camera_read: str = CAP_DENY
     cap_registry_read: str = CAP_DENY
     cap_traces: str = CAP_DENY
     cap_diagnostics: str = CAP_DENY

@@ -36,6 +36,7 @@ const TOKEN_RECORD_KEYS = {
   presets: true,
   active_preset_id: true,
   cap_config_read: true,
+  cap_camera_read: true,
   cap_template_render: true,
   cap_log_read: true,
   cap_log_control: true,

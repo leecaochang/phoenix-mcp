@@ -137,6 +137,36 @@ interface Conversation {
   usage: SessionUsage;
 }
 
+function sanitizeForPersistence(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeForPersistence);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+
+  // Camera image bytes are intentionally session-only. Keep a placeholder
+  // entry for the transcript, but never put the data URL or provider base64
+  // into localStorage.
+  if (record.kind === "tool_image") {
+    return {
+      kind: "tool_image",
+      id: record.id,
+      name: record.name,
+      mimeType: record.mimeType,
+      alt: record.alt,
+      unavailable: true,
+    };
+  }
+  if (record.type === "image") {
+    return { type: "text", text: "[camera image unavailable after reload]" };
+  }
+  if (record.type === "image_url") {
+    return { type: "text", text: "[camera image unavailable after reload]" };
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).map(([key, child]) => [key, sanitizeForPersistence(child)]),
+  );
+}
+
 function defaultConversation(): Conversation {
   return { turns: [], draft: "", usage: { input: 0, output: 0, context: 0, noData: false } };
 }
@@ -172,7 +202,10 @@ function save(): void {
     // forever if even one turn will not fit.
     let turns = conversation.turns;
     for (;;) {
-      const payload = JSON.stringify({ ...conversation, turns });
+      const payload = JSON.stringify({
+        ...conversation,
+        turns: sanitizeForPersistence(turns),
+      });
       if (payload.length <= MAX_CONV_BYTES) {
         localStorage.setItem(CONV_KEY, payload);
         return;

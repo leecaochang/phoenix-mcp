@@ -2358,6 +2358,10 @@ hui-card { display: block; min-width: 0; }
 .agentcli-tool { font-size: 12px; color: var(--phx-text-2); }
 .agentcli-tool-result { font-size: 12px; color: var(--phx-text-2); overflow-wrap: anywhere; }
 .agentcli-tool-result.is-error { color: var(--phx-error); }
+.agentcli-tool-image { align-self: flex-start; max-width: min(95%, 720px); margin: 8px 0; }
+.agentcli-tool-image img { display: block; max-width: 100%; height: auto; border-radius: var(--phx-radius-sm); border: 1px solid var(--phx-divider); }
+.agentcli-tool-image figcaption { margin-top: 4px; font-size: 11px; color: var(--phx-text-2); }
+.agentcli-tool-image-unavailable { padding: 10px; border: 1px dashed var(--phx-divider); border-radius: var(--phx-radius-sm); color: var(--phx-text-2); font-size: 12px; }
 /* Live progress from a held tool (a firmware build). Visible regardless of the
    verbose toggle, since during a multi-minute call it is the only sign of life. */
 .agentcli-progress {

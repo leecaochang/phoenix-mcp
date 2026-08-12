@@ -956,6 +956,41 @@ def test_append_tool_results_shapes():
     assert oai_msgs[0]["role"] == "tool" and oai_msgs[0]["tool_call_id"] == "t1"
 
 
+def test_append_tool_results_translates_images_only_for_vision_models():
+    image = {
+        "data": "aGVsbG8=",
+        "mime_type": "image/jpeg",
+    }
+    results = [{
+        "tool_use_id": "t1",
+        "tool_name": "get_camera_image",
+        "result_text": "camera metadata",
+        "images": [image],
+        "is_error": False,
+    }]
+
+    claude_msgs: list = []
+    ClaudeProvider(ProviderConfig("claude", "m", "https://x", "k", True)).append_tool_results(
+        claude_msgs, results,
+    )
+    assert claude_msgs[0]["content"][0]["content"][1]["source"]["media_type"] == "image/jpeg"
+
+    openai_msgs: list = []
+    OpenAICompatProvider(ProviderConfig("chatgpt", "m", "https://x", "k", True)).append_tool_results(
+        openai_msgs, results,
+    )
+    assert openai_msgs[1]["role"] == "user"
+    assert openai_msgs[1]["content"][1]["type"] == "image_url"
+    assert openai_msgs[1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+    text_only: list = []
+    ClaudeProvider(ProviderConfig("claude", "m", "https://x", "k")).append_tool_results(
+        text_only, results,
+    )
+    assert "not known to support visual input" in text_only[0]["content"][0]["content"][0]["text"]
+    assert len(text_only[0]["content"][0]["content"]) == 1
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers
 # --------------------------------------------------------------------------- #
@@ -2389,11 +2424,18 @@ class TestDeclaredCapabilities:
 
     def test_openrouter_keeps_what_the_tools_filter_threw_away(self):
         caps = agentcli._openrouter_capabilities([
-            {"id": "a/reasoner", "supported_parameters": ["tools", "reasoning", "temperature"]},
+            {"id": "a/reasoner", "supported_parameters": ["tools", "reasoning", "temperature"],
+             "architecture": {"input_modalities": ["text", "image"]}},
             {"id": "b/plain", "supported_parameters": ["temperature"]},
         ])
-        assert caps["a/reasoner"] == {"tools": True, "thinking": True, "temperature": True}
+        assert caps["a/reasoner"] == {"tools": True, "thinking": True, "temperature": True, "vision": True}
         assert caps["b/plain"] == {"tools": False, "thinking": False, "temperature": True}
+
+    def test_openrouter_can_keep_modality_metadata_without_parameters(self):
+        caps = agentcli._openrouter_capabilities([
+            {"id": "a/vision", "architecture": {"input_modalities": ["text", "image"]}},
+        ])
+        assert caps["a/vision"] == {"vision": True}
 
     def test_openrouter_skips_a_model_that_declares_nothing(self):
         """No supported_parameters is "not declared", so the model must be absent
@@ -2427,8 +2469,8 @@ class TestDeclaredCapabilities:
         session.post = lambda url, **kw: _Resp(bodies[kw["json"]["model"]])
 
         caps = await agentcli._ollama_capabilities(session, "http://h", {}, ["toolful", "toolless"])
-        assert caps["toolful"] == {"tools": True, "thinking": True}
-        assert caps["toolless"] == {"tools": False, "thinking": False}
+        assert caps["toolful"] == {"tools": True, "thinking": True, "vision": False}
+        assert caps["toolless"] == {"tools": False, "thinking": False, "vision": False}
         assert "temperature" not in caps["toolful"]
 
     @pytest.mark.asyncio

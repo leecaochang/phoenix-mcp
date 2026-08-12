@@ -10,7 +10,7 @@ vi.mock("../phoenix-mcp-panel.css?inline", () => ({ default: "" }));
 
 const { apiMock } = vi.hoisted(() => {
   const CAPS = [
-    "cap_config_read", "cap_template_render", "cap_log_read", "cap_log_control", "cap_search",
+    "cap_config_read", "cap_camera_read", "cap_template_render", "cap_log_read", "cap_log_control", "cap_search",
     "cap_registry_read", "cap_traces", "cap_diagnostics", "cap_broadcast",
     "cap_service_response", "cap_automation_write", "cap_script_write",
     "cap_scene_write", "cap_helper_write", "cap_physical_control", "cap_restart",

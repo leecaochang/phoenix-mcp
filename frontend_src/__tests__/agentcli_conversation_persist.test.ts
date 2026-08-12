@@ -56,6 +56,34 @@ describe("conversation survives a reload", () => {
     expect(getDurable().size).toEqual({ w: 700, h: 500 });
     expect(getDurable().tokenId).toBe("t1");
   });
+
+  it("strips camera bytes while preserving an unavailable image placeholder", () => {
+    const bytes = "iVBORw0KGgo=";
+    setSessionTurns([{
+      entries: [{ kind: "tool_image", id: "tc1", name: "get_camera_image", mimeType: "image/png",
+                  dataUrl: `data:image/png;base64,${bytes}`, alt: "Camera image" }],
+      messages: [{ role: "assistant", content: [
+        { type: "image", source: { media_type: "image/png", data: bytes } },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${bytes}` } },
+      ] }],
+      lines: 1,
+    }]);
+
+    const stored = localStorage.getItem(CONV_KEY) ?? "";
+    expect(stored).not.toContain(bytes);
+    expect(stored).not.toContain("data:image/png");
+
+    __reloadFromStorage();
+    const [turn] = getSessionTurns() as Array<{ entries: Array<Record<string, unknown>>; messages: unknown[] }>;
+    expect(turn.entries[0]).toMatchObject({ kind: "tool_image", unavailable: true });
+    expect(turn.entries[0].dataUrl).toBeUndefined();
+    expect(turn.messages).toEqual([
+      { role: "assistant", content: [
+        { type: "text", text: "[camera image unavailable after reload]" },
+        { type: "text", text: "[camera image unavailable after reload]" },
+      ] },
+    ]);
+  });
 });
 
 describe("Agent Chat open geometry", () => {

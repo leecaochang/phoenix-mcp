@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 124 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 125 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 124 of its own, 147 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 125 of its own, 148 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 147 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 148 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -538,6 +538,10 @@
             <div class="tool-head"><span class="tool-name">get_states</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">All entity states the token can read. The required <code>projection</code> object uses the same <code>compact</code>, <code>full</code>, or exact <code>fields</code> form as <code>get_state</code>. Pass-through tokens receive every non-Phoenix entity.</p>
             <dl><dt>params</dt><dd><code>projection</code> (required; <code>{kind: compact}</code>, <code>{kind: full}</code>, or <code>{kind: fields, fields: [...]}</code>)</dd></dl>
+          </article>
+          <article class="tool" data-cap="read" data-search="get_camera_image camera image still privacy multimodal">
+            <div class="tool-head"><span class="tool-name">get_camera_image</span><span class="badge badge-cap">cap_camera_read</span></div>
+            <p class="tool-desc">Retrieve a still image from one accessible <code>camera.*</code> entity named by <code>entity_id</code>, which is required. Requires the dedicated camera-image capability and READ or WRITE permission for the entity. Returns standard MCP image content for multimodal clients and never exposes a stream URL.</p>
           </article>
 
           <article class="tool" data-cap="read" data-search="get_statistics long term numeric">

@@ -61,6 +61,10 @@
         "label": "读取配置",
         "description": "读取 Home Assistant 配置和事件监听器数量。"
       },
+      "cap_camera_read": {
+        "label": "读取摄像头图像",
+        "description": "从明确授权的 Home Assistant 摄像头读取静态图像。"
+      },
       "cap_diagnostics": {
         "label": "诊断",
         "description": "检查系统健康状况，校验自动化、脚本和场景的 YAML。"
@@ -1349,6 +1353,7 @@
       "token": "令牌",
       "tokenHint": "本次对话所使用的 Phoenix MCP 令牌；其范围和能力将同样适用。",
       "toolResult": "<code>{name}</code>：{summary}",
+      "imageUnavailable": "重新加载后摄像头图像不可用。",
       "unsafeContent": "警告：Phoenix MCP 已中和此回复中可能不安全的内容；它以纯文本显示，无法运行。",
       "usageContext": " · 上下文 {tokens}",
       "usageNoData": "此服务商未提供用量数据",

@@ -228,7 +228,7 @@ describe("buildSkillInstall", () => {
 describe("PERSONA_CAP_DEFAULTS drift guard", () => {
   // Must mirror const.py CAPABILITY_NAMES exactly.
   const CAP_KEYS = [
-    "cap_config_read", "cap_template_render", "cap_log_read", "cap_log_control",
+    "cap_config_read", "cap_camera_read", "cap_template_render", "cap_log_read", "cap_log_control",
     "cap_search", "cap_registry_read", "cap_traces", "cap_diagnostics",
     "cap_broadcast", "cap_service_response",
     "cap_automation_write", "cap_script_write", "cap_blueprint_write",

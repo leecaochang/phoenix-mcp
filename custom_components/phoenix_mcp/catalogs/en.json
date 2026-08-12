@@ -127,6 +127,10 @@
         "label": "Configuration read",
         "description": "Read Home Assistant configuration and event listener counts."
       },
+      "cap_camera_read": {
+        "label": "Camera image read",
+        "description": "Retrieve still images from explicitly permitted Home Assistant cameras."
+      },
       "cap_template_render": {
         "label": "Template render",
         "description": "Render Jinja templates using entities this token can access."
@@ -1321,6 +1325,7 @@
       "token": "Token",
       "tokenHint": "The Phoenix MCP token this chat acts as; its scope and capabilities apply.",
       "toolResult": "<code>{name}</code>: {summary}",
+      "imageUnavailable": "Camera image unavailable after reload.",
       "unsafeContent": "Warning: Phoenix MCP neutralized potentially unsafe content in this reply; it is shown as plain text and cannot run.",
       "usageContext": " · context {tokens}",
       "usageNoData": "No usage data available from this provider",

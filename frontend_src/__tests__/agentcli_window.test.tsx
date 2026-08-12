@@ -722,6 +722,8 @@ describe("AgentCliWindow streaming", () => {
       onEvent("approval_required", { approval_id: "ap1", tool_name: "call_service", review_url: "/x" });
       onEvent("approval_resolved", { approval_id: "ap1", status: "approved" });
       onEvent("tool_result", { id: "tc1", name: "call_service", is_error: false, summary: "applied" });
+      onEvent("tool_image", { id: "cam1", name: "get_camera_image", mime_type: "image/jpeg",
+        data: "aW1hZ2U=", alt: "Front door camera" });
       onEvent("messages", { messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "ok" }] });
       onEvent("done", { stop_reason: "end_turn" });
     });
@@ -749,6 +751,9 @@ describe("AgentCliWindow streaming", () => {
     await waitFor(() => expect(screen.getByText("Approved")).toBeInTheDocument());
     // Verbose is off by default: the tool-result detail is hidden.
     expect(screen.queryByText(/applied/)).toBeNull();
+    const image = screen.getByRole("img", { name: "Front door camera" });
+    expect(image).toHaveAttribute("src", "data:image/jpeg;base64,aW1hZ2U=");
+    expect(image.closest("figure")).toHaveClass("agentcli-tool-image");
   });
 
   it("pauses at the round-cap checkpoint and resumes with continue:true on Continue", async () => {

@@ -70,6 +70,7 @@ export const PERSONAS: PersonaDef[] = [
 export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null> = {
   new_user: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "deny",
     cap_log_control: "deny",
@@ -99,6 +100,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   read_only: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "allow",
     cap_log_control: "deny",
@@ -128,6 +130,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   voice_assistant: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "allow",
     cap_log_control: "deny",
@@ -157,6 +160,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   dashboard_designer: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "deny",
     cap_log_control: "deny",
@@ -186,6 +190,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   maintenance: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "allow",
     cap_log_control: "deny",
@@ -215,6 +220,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   automation_builder: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "allow",
     cap_log_control: "deny",
@@ -244,6 +250,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   power_user: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "allow",
     cap_log_control: "deny",
@@ -273,6 +280,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   home_admin: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "allow",
     cap_log_read: "allow",
     cap_log_control: "deny",
@@ -302,6 +310,7 @@ export const PERSONA_CAP_DEFAULTS: Record<Persona, Record<string, string> | null
   },
   esphome: {
     cap_config_read: "allow",
+    cap_camera_read: "deny",
     cap_template_render: "deny",
     cap_log_read: "allow",
     cap_log_control: "deny",

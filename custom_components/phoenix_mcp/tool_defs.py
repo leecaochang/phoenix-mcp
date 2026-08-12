@@ -55,6 +55,37 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "get_camera_image",
+        "description": (
+            "Retrieve one still image from an accessible Home Assistant camera. This is a privacy-sensitive "
+            "read that requires the dedicated cap_camera_read capability plus READ or WRITE permission for "
+            "the camera entity. Returns standard MCP image content; it never returns a camera stream URL."
+        ),
+        "cap": "cap_camera_read",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {
+                    "type": "string",
+                    "description": "Accessible camera entity ID, for example camera.front_door.",
+                },
+                "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2048,
+                    "description": "Optional requested image width in pixels.",
+                },
+                "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2048,
+                    "description": "Optional requested image height in pixels.",
+                },
+            },
+            "required": ["entity_id"],
+        },
+    },
+    {
         "name": "get_history",
         "description": (
             "Get a bounded, chronological page of Recorder history for one accessible entity. "
@@ -2877,6 +2908,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     # Entity reads and the approval/report tools.
     "get_state": _annot(True, False, True),
     "get_states": _annot(True, False, True),
+    "get_camera_image": _annot(True, False, True),
     "get_history": _annot(True, False, True),
     "get_statistics": _annot(True, False, True),
     "get_calendar_events": _annot(True, False, True),

@@ -30,6 +30,7 @@ type ChatEntry =
   | { kind: "assistant"; text: string; thinking: string; ts?: number }
   | { kind: "tool_call"; id: string; name: string; args: unknown }
   | { kind: "tool_result"; id: string; name: string; isError: boolean; summary: string }
+  | { kind: "tool_image"; id: string; name: string; mimeType: string; dataUrl?: string; alt: string; unavailable?: boolean }
   | { kind: "progress"; id: string; message: string; activity?: boolean }
   | { kind: "approval"; approvalId: string; toolName: string; reviewUrl?: string; status: string; reason?: string }
   | { kind: "notice"; code?: string; message: string }
@@ -870,6 +871,22 @@ export function AgentCliWindow({
               push({ kind: "tool_result", id: String(p.id ?? ""), name: String(p.name ?? ""),
                      isError: Boolean(p.is_error), summary: String(p.summary ?? "") });
               break;
+            case "tool_image": {
+              const mimeType = String(p.mime_type ?? "");
+              const data = String(p.data ?? "");
+              const allowed = new Set(["image/jpeg", "image/png", "image/gif"]);
+              if (allowed.has(mimeType) && data) {
+                push({
+                  kind: "tool_image",
+                  id: String(p.id ?? ""),
+                  name: String(p.name ?? ""),
+                  mimeType,
+                  dataUrl: `data:${mimeType};base64,${data}`,
+                  alt: String(p.alt ?? "Camera image"),
+                });
+              }
+              break;
+            }
             case "approval_required":
               push({ kind: "approval", approvalId: String(p.approval_id ?? ""),
                      toolName: String(p.tool_name ?? ""), reviewUrl: p.review_url as string | undefined,
@@ -1651,6 +1668,19 @@ function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
                  { name: entry.name, summary: entry.summary || (entry.isError ? t("agentchat.resultError") : t("agentchat.resultOk")) })}
         </div>
       ) : null;
+    case "tool_image":
+      return (
+        <figure className="agentcli-tool-image">
+          {entry.unavailable || !entry.dataUrl ? (
+            <div className="agentcli-tool-image-unavailable" role="status">
+              {t("agentchat.imageUnavailable")}
+            </div>
+          ) : (
+            <img src={entry.dataUrl} alt={entry.alt} />
+          )}
+          <figcaption>{entry.unavailable ? "" : entry.name}</figcaption>
+        </figure>
+      );
     case "approval":
       return (
         <div className="agentcli-approval">

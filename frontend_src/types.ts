@@ -26,6 +26,7 @@ export type CapTier = "read" | "everyday" | "config_write" | "system" | "irrever
 
 export interface CapabilityFlagsMap {
   cap_config_read: CapMode;
+  cap_camera_read: CapMode;
   cap_template_render: CapMode;
   cap_log_read: CapMode;
   cap_log_control: CapMode;
@@ -197,6 +198,8 @@ export interface DeclaredModelCaps {
   tools?: boolean;
   thinking?: boolean;
   temperature?: boolean;
+  /** Explicit provider/model visual-input support. Absent means unknown. */
+  vision?: boolean;
   /** Effort levels the API accepted when probed. Present only when the field was
    *  proved to be validated first, so an empty or absent value means "unknown",
    *  never "none". */

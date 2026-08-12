@@ -584,6 +584,7 @@ CAP_MODES = frozenset({CAP_DENY, CAP_ALLOW, CAP_CONFIRM})
 # add to CAPABILITY_TIERS, and update the persona table in personas.py.
 CAPABILITY_NAMES = (
     "cap_config_read",
+    "cap_camera_read",
     "cap_template_render",
     "cap_log_read",
     "cap_log_control",
@@ -616,6 +617,7 @@ CAPABILITY_NAMES = (
 # Read and Everyday tiers are deny/allow only; the others support Confirm.
 CAPABILITY_TIERS: dict[str, str] = {
     "cap_config_read": "read",
+    "cap_camera_read": "read",
     "cap_template_render": "read",
     "cap_log_read": "read",
     "cap_log_control": "system",
@@ -679,6 +681,7 @@ CONFIRM_AVAILABLE_CAPS = frozenset({
 # except that "confirm" is honored even for non-exempt caps under pass_through
 # (admin's intent to gate is preserved). See helpers.effective_cap.
 PASS_THROUGH_EXEMPT_CAPS = frozenset({
+    "cap_camera_read",
     "cap_restart",
     "cap_physical_control",
     "cap_automation_write",
