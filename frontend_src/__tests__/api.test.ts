@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { api, setHass, ApiError } from "../api";
+import { primeTranslations } from "../i18n";
+import en from "../../custom_components/phoenix_mcp/catalogs/en.json";
 
 function mockFetchResponse(status: number, body: unknown = {}) {
   return vi.fn().mockResolvedValue({
@@ -357,6 +359,23 @@ describe("error handling", () => {
     } catch (e) {
       expect((e as ApiError).status).toBe(403);
       expect((e as ApiError).code).toBe("forbidden");
+    }
+  });
+
+  it("localizes a backend error when it supplies a message key", async () => {
+    primeTranslations({ adminError: { providerAlreadyConfigured: "此提供商账户已配置。" } });
+    globalThis.fetch = mockFetchResponse(409, {
+      error: "already_exists",
+      message: "This provider account is already configured.",
+      message_key: "adminError.providerAlreadyConfigured",
+    });
+
+    try {
+      await expect(api.createAgentCliProvider("ollama", {
+        base_url: "http://localhost:11434",
+      })).rejects.toThrow("此提供商账户已配置。");
+    } finally {
+      primeTranslations(en.panel);
     }
   });
 });

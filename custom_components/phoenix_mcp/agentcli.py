@@ -28,7 +28,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, cast
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
@@ -234,13 +234,50 @@ def _with_learned(inst: dict) -> dict:
     return caps
 
 
+class DuplicateProviderError(ValueError):
+    """Raised when an account with the same provider identity already exists."""
+
+    def __str__(self) -> str:
+        return "This provider account is already configured."
+
+
+def _normalized_provider_url(value: object) -> str:
+    """Normalize an Ollama endpoint for duplicate detection only."""
+    raw = str(value or "").strip()
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return raw.rstrip("/")
+    if not parsed.scheme or not parsed.netloc:
+        return raw.rstrip("/")
+    hostname = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return raw.rstrip("/")
+    netloc = hostname
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunparse((
+        parsed.scheme.lower(), netloc, parsed.path.rstrip("/"),
+        parsed.params, parsed.query, parsed.fragment,
+    )).rstrip("/")
+
+
+def _provider_identity(kind: str, cfg: dict) -> tuple[str, str]:
+    """Return the non-secret identity used to reject exact duplicate accounts."""
+    if _KINDS.get(kind, {}).get("keyless"):
+        return kind, _normalized_provider_url(cfg.get("base_url"))
+    return kind, str(cfg.get("api_key") or "").strip()
+
+
 class AgentCliStore:
     """Provider accounts ("instances") in a dedicated Store, separate from tokens.
 
     Shape: {"instances": {"<id>": {"kind": str, "api_key"?: str, "base_url"?: str,
-    "model": str}}}. Multiple instances of the same kind are allowed (e.g. two
-    Claude keys, two Ollama servers). Keys are write-only; list_instances() never
-    returns a secret.
+    "model": str}}}. Multiple instances of the same kind are allowed when their
+    credentials or Ollama endpoints differ. Keys are write-only; list_instances()
+    never returns a secret.
     """
 
     def __init__(self, store: Store) -> None:
@@ -272,7 +309,18 @@ class AgentCliStore:
         cfg = self._data.get(instance_id)
         return dict(cfg) if isinstance(cfg, dict) else None
 
+    def has_duplicate(self, kind: str, cfg: dict) -> bool:
+        """Whether the same provider endpoint or credential is already stored."""
+        identity = _provider_identity(kind, cfg)
+        return bool(identity[1]) and any(
+            _provider_identity(inst.get("kind", ""), inst) == identity
+            for inst in self._data.values()
+            if isinstance(inst, dict)
+        )
+
     async def add(self, kind: str, cfg: dict) -> str:
+        if self.has_duplicate(kind, cfg):
+            raise DuplicateProviderError
         instance_id = uuid.uuid4().hex
         self._data[instance_id] = {"kind": kind, **cfg}
         await self._save()
@@ -935,9 +983,10 @@ def _refused_option(status: int, message: str, sent: dict) -> str | None:
 def _effort_probe_body(kind: str, level: str) -> dict | None:
     """The request fragment that carries an effort level for this backend.
 
-    None for a backend with no effort control at all, which is then not probed:
-    Ollama takes a boolean `think` and MiniMax an adaptive object, neither of
-    which has a level vocabulary.
+    None for a backend with no effort control at all, which is then not probed.
+    MiniMax takes an adaptive object with no level vocabulary. Ollama's current
+    OpenAI-compatible endpoint validates `reasoning_effort`, so it is probed like
+    the other per-model APIs instead of being reduced to its older boolean shape.
 
     The aggregators (OpenRouter, NVIDIA) ARE probed, and excluding them was a
     wrong call worth not repeating. The reason given was that they pass through
@@ -953,7 +1002,10 @@ def _effort_probe_body(kind: str, level: str) -> dict | None:
         return {"output_config": {"effort": level}}
     if kind == "deepseek":
         return {"thinking": {"type": "enabled"}, "reasoning_effort": level}
-    if kind in ("chatgpt", "grok", "gemini", "kimi", "meta", "openrouter", "nvidia"):
+    if kind in (
+        "chatgpt", "grok", "gemini", "kimi", "meta", "openrouter", "nvidia",
+        "ollama", "ollama_cloud",
+    ):
         return {"reasoning_effort": level}
     return None
 
@@ -1141,10 +1193,12 @@ class OpenAICompatProvider:
     """OpenAI-compatible chat/completions, streaming. Backs DeepSeek, ChatGPT,
     Gemini, Grok, Kimi, Meta, OpenRouter, NVIDIA, and both Ollama flavours.
 
-    Ollama uses a slightly different shape (the OpenAI path lives under /v1, models
-    come from /api/tags, thinking is a boolean `think`). Local Ollama is keyless
-    with a user-supplied base URL and is the fragile tool backend (see _parse);
-    Ollama Cloud is the same shape hosted at a fixed URL with a Bearer API key.
+    Ollama uses a slightly different shape (the OpenAI path lives under /v1 and
+    models come from /api/tags). Its current OpenAI-compatible endpoint accepts
+    reasoning_effort; older endpoints retain a boolean UI fallback until a probe
+    proves level support. Local Ollama is keyless with a user-supplied base URL
+    and is the fragile tool backend (see _parse); Ollama Cloud is the same shape
+    hosted at a fixed URL with a Bearer API key.
     """
 
     def __init__(self, cfg: ProviderConfig) -> None:
@@ -1153,7 +1207,7 @@ class OpenAICompatProvider:
 
     @property
     def _is_ollama(self) -> bool:
-        # Ollama-shaped (local or cloud): drives the /v1 + /api/tags + `think` path.
+        # Ollama-shaped (local or cloud): drives /v1 chat plus /api/tags metadata.
         return self.cfg.kind in ("ollama", "ollama_cloud")
 
     @property
@@ -1349,7 +1403,10 @@ class OpenAICompatProvider:
         #     aliases; before that low and medium both remapped to high.
         #   OpenAI reasoning models: reasoning_effort only (none/minimal/low/
         #     medium/high; none disables it), and they reject a custom temperature.
-        #   Ollama: a boolean `think` flag.
+        #   Ollama: reasoning_effort on its OpenAI-compatible endpoint. Older
+        #     servers that do not validate levels never establish effort_levels,
+        #     so the panel keeps its boolean fallback. Off maps to `none`; on with
+        #     no established level omits the field and uses the model's default.
         thinking_on = False
         reasoning_model = False
         if self.cfg.kind == "deepseek":
@@ -1421,8 +1478,11 @@ class OpenAICompatProvider:
             # for its default temperature, so Phoenix MCP does not send one.
             if effort:
                 body["reasoning_effort"] = effort
-        elif self._is_ollama and thinking:
-            body["think"] = True
+        elif self._is_ollama:
+            if effort:
+                body["reasoning_effort"] = effort
+            elif thinking is False:
+                body["reasoning_effort"] = "none"
         temp = options.get("temperature")
         skip_temp = (
             (self.cfg.kind == "deepseek" and thinking_on)
@@ -1511,11 +1571,12 @@ class OpenAICompatProvider:
                 continue
             choice = choices[0]
             delta = choice.get("delta") or {}
-            # DeepSeek's reasoner model streams its chain-of-thought in
-            # reasoning_content (not content); surface it as thinking (only when
-            # asked), and never fold it into the assistant message.
-            if delta.get("reasoning_content") and show_thinking:
-                yield _norm(EV_THINKING, text=delta["reasoning_content"])
+            # DeepSeek uses reasoning_content; Ollama's OpenAI-compatible path
+            # uses reasoning. Both are display-only and never enter the assistant
+            # message that Phoenix sends back on the next round.
+            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning and show_thinking:
+                yield _norm(EV_THINKING, text=reasoning)
             if delta.get("content"):
                 for kind, seg in think.feed(delta["content"]):
                     if kind == "text":
@@ -3005,10 +3066,6 @@ class PhoenixAgentCliProvidersView(PhoenixView):
         probe = await _probe_config(kind, body)
         if isinstance(probe, str):
             return _err("invalid_request", probe, 400, rid)
-        session = async_get_clientsession(self.hass)
-        ok, reason = await build_provider(probe).validate(session)
-        if not ok:
-            return _err("invalid_request", f"Connection failed: {reason}", 400, rid)
 
         cfg: dict = {}
         if _KINDS[kind]["keyless"]:
@@ -3020,7 +3077,36 @@ class PhoenixAgentCliProvidersView(PhoenixView):
             cfg["model"] = model
 
         store = await _get_secret_store(self.hass)
-        instance_id = await store.add(kind, cfg)
+        if store.has_duplicate(kind, cfg):
+            return _err(
+                "already_exists", str(DuplicateProviderError()), 409, rid,
+                key="providerAlreadyConfigured",
+            )
+
+        session = async_get_clientsession(self.hass)
+        provider = build_provider(probe)
+        ok, reason = await provider.validate(session)
+        if not ok:
+            return _err("invalid_request", f"Connection failed: {reason}", 400, rid)
+
+        try:
+            instance_id = await store.add(kind, cfg)
+        except DuplicateProviderError as err:
+            return _err(
+                "already_exists", str(err), 409, rid,
+                key="providerAlreadyConfigured",
+            )
+        # Initial setup must establish the same declared model capabilities as
+        # the explicit Refresh models action. This is metadata-only (no model
+        # completion calls), but it may be one /api/show request per model for
+        # Ollama. The account is already valid and stored, so a transient
+        # catalogue failure must not turn a successful setup into a failure.
+        try:
+            models = await provider.list_models(session)
+            capabilities = await provider.list_model_capabilities(session, models)
+            await store.set_capabilities(instance_id, capabilities, utcnow().isoformat())
+        except Exception:  # noqa: BLE001 - capability discovery is best effort
+            _LOGGER.debug("Initial Agent Chat capability discovery failed", exc_info=True)
         created = next((i for i in store.list_instances() if i["id"] == instance_id), None)
         return _ok({"instance": created}, status=201, request_id=rid)
 
@@ -3230,6 +3316,17 @@ class PhoenixAgentCliProbeView(PhoenixView):
         probe = await _probe_config(kind, body)
         if isinstance(probe, str):
             return _ok({"ok": False, "error": probe, "models": []}, request_id=rid)
+        cfg = (
+            {"base_url": probe.base_url}
+            if _KINDS[kind]["keyless"]
+            else {"api_key": probe.api_key}
+        )
+        store = await _get_secret_store(self.hass)
+        if store.has_duplicate(kind, cfg):
+            return _err(
+                "already_exists", str(DuplicateProviderError()), 409, rid,
+                key="providerAlreadyConfigured",
+            )
         session = async_get_clientsession(self.hass)
         provider = build_provider(probe)
         ok, reason = await provider.validate(session)

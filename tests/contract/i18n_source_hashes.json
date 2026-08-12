@@ -28,6 +28,7 @@
       "panel.adminError.nodeIdTooLong": "8588e7aed8d8",
       "panel.adminError.presetNotFound": "ec71ed136d0a",
       "panel.adminError.presetsDisabled": "19bc4e25f2fc",
+      "panel.adminError.providerAlreadyConfigured": "c31216e1b9a4",
       "panel.adminError.tokenNameTaken": "a655d759d447",
       "panel.adminError.tokenNotFound": "5c07427565da",
       "panel.adminError.unknownPersona": "271ad1e2f66b",

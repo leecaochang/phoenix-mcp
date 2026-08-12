@@ -77,6 +77,19 @@ describe("AgentCliSettings", () => {
     expect(createAgentCliProvider.mock.calls[0][0]).toBe("claude");
   });
 
+  it("shows a duplicate error before default-model selection", async () => {
+    probeAgentCliProvider.mockRejectedValueOnce(new Error("This provider account is already configured."));
+    renderCard();
+    await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
+    fireEvent.click(screen.getByText("Add new provider…"));
+    fireEvent.change(screen.getByPlaceholderText("API key"), { target: { value: "sk-abc" } });
+    fireEvent.click(screen.getByText("Validate"));
+
+    await waitFor(() => expect(screen.getByText("This provider account is already configured.")).toBeInTheDocument());
+    expect(screen.queryByText(/Select default model/i)).toBeNull();
+    expect(createAgentCliProvider).not.toHaveBeenCalled();
+  });
+
   it("Cancel abandons the add without creating", async () => {
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());

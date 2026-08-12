@@ -138,7 +138,10 @@ function thinkOpts(values: string[]): ThinkOption[] {
  *  lookup degrades to today's behaviour instead of stripping a working model's
  *  controls.
  */
-function applyDeclared(caps: ModelCaps, declared?: DeclaredModelCaps): ModelCaps {
+function applyDeclared(
+  caps: ModelCaps, declared: DeclaredModelCaps | undefined,
+  kind: AgentCliProviderKind,
+): ModelCaps {
   if (!declared) return caps;
   const out = { ...caps };
   if (declared.thinking === false) out.thinking = [];
@@ -149,9 +152,10 @@ function applyDeclared(caps: ModelCaps, declared?: DeclaredModelCaps): ModelCaps
   // unvalidated field records nothing at all, so a list here means the API
   // accepted exactly these and refused the rest. "off" is kept if the table had
   // it, since that is Phoenix not sending the field rather than a level.
-  // style must be "effort": a boolean control (Ollama's `think` flag) has no
-  // level vocabulary, so replacing its on/off pair with effort levels would
-  // build a dropdown whose values the backend does not know how to send.
+  // A control already using effort can be narrowed directly. Ollama is the one
+  // deliberate conversion: its fallback is boolean for older servers, but a
+  // successful per-model probe proves that this endpoint validates effort
+  // levels, so the backend knows how to send the resulting dropdown values.
   //
   // Probed levels may also CREATE a control the table does not offer, which is
   // the aggregator case: one key fronting many vendors, where no single built-in
@@ -159,7 +163,9 @@ function applyDeclared(caps: ModelCaps, declared?: DeclaredModelCaps): ModelCaps
   // altogether. Creating one is justified by the same evidence as narrowing one,
   // since the probe proved the field is validated AND which values pass. A
   // created control always gets "off", or the operator could not decline it.
-  if (declared.effort_levels?.length && out.style === "effort") {
+  if (declared.effort_levels?.length
+      && (out.style === "effort" || kind === "ollama" || kind === "ollama_cloud")) {
+    out.style = "effort";
     const keepOff = out.thinking.length === 0 || out.thinking.some((o) => o.value === "off");
     out.thinking = [
       ...(keepOff ? thinkOpts(["off"]) : []),
@@ -176,7 +182,7 @@ export function modelCaps(
   kind: AgentCliProviderKind, model: string, thinkingOn: boolean,
   declared?: DeclaredModelCaps,
 ): ModelCaps {
-  return applyDeclared(shippedCaps(kind, model, thinkingOn), declared);
+  return applyDeclared(shippedCaps(kind, model, thinkingOn), declared, kind);
 }
 
 function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: boolean): ModelCaps {
@@ -253,8 +259,9 @@ function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: bool
       return { thinking: thinkOpts(["off", "on"]), style: "boolean", defaultLevel: "on", temperature: false };
     case "ollama":
     case "ollama_cloud":
-      // Ollama's `think` is a boolean for the general case; cloud is the same
-      // wire format, just hosted.
+      // Boolean is the compatibility fallback until a per-model probe proves
+      // which reasoning_effort levels this Ollama endpoint validates. Cloud is
+      // the same wire format, just hosted.
       return { thinking: thinkOpts(["off", "on"]), style: "boolean", defaultLevel: "on", temperature: true };
     case "openrouter":
     case "nvidia":

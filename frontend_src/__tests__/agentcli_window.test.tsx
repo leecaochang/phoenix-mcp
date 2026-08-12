@@ -398,7 +398,7 @@ describe("agentCLI model capabilities (real per-provider levels)", () => {
     expect(vals(caps)).toEqual(["off", "on"]);
     expect(caps.temperature).toBe(false);
   });
-  it("ollama cloud matches local: boolean think + temperature", () => {
+  it("ollama cloud starts with the local compatibility fallback", () => {
     const caps = modelCaps("ollama_cloud", "gpt-oss:120b", false);
     expect(caps.style).toBe("boolean");
     expect(vals(caps)).toEqual(["off", "on"]);
@@ -438,7 +438,7 @@ describe("agentCLI generation options mapping", () => {
     expect(buildOptions("chatgpt", { thinking: true, effort: "high", temperature: "0.5", verbose: false }, plain))
       .toEqual({ temperature: 0.5, show_thinking: false });
   });
-  it("ollama sends thinking + temperature", () => {
+  it("ollama boolean fallback sends thinking + temperature", () => {
     const caps = modelCaps("ollama", "llama3", false);
     expect(buildOptions("ollama", { thinking: false, effort: "high", temperature: "0.2", verbose: false }, caps))
       .toEqual({ thinking: false, temperature: 0.2, show_thinking: false });
@@ -1619,10 +1619,13 @@ describe("modelCaps with probed effort levels", () => {
     expect(vals3(probed)).toEqual(vals3(shipped));
   });
 
-  it("does not invent a control on a model that has none", () => {
+  it("turns a validated Ollama level set into an effort control", () => {
     const c = modelCaps("ollama", "llama3", false, { effort_levels: ["low", "high"] });
-    const shipped = modelCaps("ollama", "llama3", false);
-    expect(vals3(c)).toEqual(vals3(shipped));
+    expect(c.style).toBe("effort");
+    expect(vals3(c)).toEqual(["off", "low", "high"]);
+    expect(buildOptions("ollama", {
+      thinking: true, effort: "high", temperature: "0.2", verbose: false,
+    }, c)).toEqual({ thinking: true, effort: "high", temperature: 0.2, show_thinking: false });
   });
 });
 
@@ -1654,10 +1657,8 @@ describe("modelCaps for aggregator providers", () => {
     expect(modelCaps("openrouter", "vendor/m", false, { temperature: true }).thinking).toEqual([]);
   });
 
-  it("a boolean backend is still never given levels", () => {
-    // Ollama normalizes reasoning to one flag across every model, so there is no
-    // level vocabulary to discover and none may be invented.
-    const c = modelCaps("ollama", "deepseek-r1:8b", false, { effort_levels: ["low", "high"] });
-    expect(vals4(c)).toEqual(["off", "on"]);
+  it("Ollama cloud also adopts levels proved by its selected model", () => {
+    const c = modelCaps("ollama_cloud", "deepseek-r1:8b", false, { effort_levels: ["low", "high"] });
+    expect(vals4(c)).toEqual(["off", "low", "high"]);
   });
 });

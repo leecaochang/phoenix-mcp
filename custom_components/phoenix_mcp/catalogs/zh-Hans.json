@@ -503,6 +503,7 @@
       "nodeIdTooLong": "节点 ID 过长。",
       "presetNotFound": "未找到预设。",
       "presetsDisabled": "令牌预设已禁用。请在“设置”中启用。",
+      "providerAlreadyConfigured": "此提供商账户已配置。",
       "tokenNameTaken": "已存在同名（或等价 slug）的令牌。",
       "tokenNotFound": "未找到令牌。",
       "unknownPersona": "未知的角色。"

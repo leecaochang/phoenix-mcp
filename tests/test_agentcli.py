@@ -311,6 +311,23 @@ async def test_openai_reasoning_hidden_when_show_thinking_off():
 
 
 @pytest.mark.asyncio
+async def test_ollama_reasoning_field_surfaces_as_thinking_only():
+    body = _sse(
+        'data: {"choices":[{"delta":{"reasoning":"Let me think. "},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    )
+    cfg = ProviderConfig(kind="ollama", model="m", base_url="http://h:11434")
+    events = await _collect(OpenAICompatProvider(cfg).stream_turn(
+        _FakeSession(_FakeResp(200, body)), system_prompt="s", messages=[], tools=[],
+        options={"show_thinking": True},
+    ))
+    assert "".join(e["text"] for e in events if e["type"] == agentcli.EV_THINKING) == "Let me think. "
+    done = next(e for e in events if e["type"] == agentcli.EV_DONE)
+    assert done["assistant_msg"]["content"] == "Done."
+
+
+@pytest.mark.asyncio
 async def test_openai_inline_think_tags_are_split_out():
     # <think> arrives split across chunks; the reply text must exclude it.
     body = _sse(
@@ -384,6 +401,32 @@ async def test_chatgpt_reasoning_effort_maps_to_body():
     sent = session.calls[-1][1]["json"]
     assert "reasoning_effort" not in sent
     assert sent["temperature"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_ollama_reasoning_effort_maps_to_openai_body():
+    body = _sse('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}', "data: [DONE]")
+    provider = OpenAICompatProvider(ProviderConfig(
+        kind="ollama", model="m", base_url="http://h:11434",
+    ))
+    session = _FakeSession(_FakeResp(200, body))
+    await _collect(provider.stream_turn(
+        session, system_prompt="s", messages=[], tools=[],
+        options={"thinking": True, "effort": "high", "temperature": 0.2},
+    ))
+    sent = session.calls[-1][1]["json"]
+    assert sent["reasoning_effort"] == "high"
+    assert sent["temperature"] == 0.2
+    assert "think" not in sent
+
+    session = _FakeSession(_FakeResp(200, body))
+    await _collect(provider.stream_turn(
+        session, system_prompt="s", messages=[], tools=[],
+        options={"thinking": False, "temperature": 0.2},
+    ))
+    sent = session.calls[-1][1]["json"]
+    assert sent["reasoning_effort"] == "none"
+    assert "think" not in sent
 
 
 @pytest.mark.asyncio
@@ -661,9 +704,10 @@ async def test_ollama_cloud_uses_bearer_and_v1_path_and_tags_with_auth():
     body = _sse('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}', "data: [DONE]")
     session = _FakeSession(_FakeResp(200, body))
     await _collect(provider.stream_turn(
-        session, system_prompt="s", messages=[], tools=[], options={"thinking": True}))
+        session, system_prompt="s", messages=[], tools=[], options={"effort": "high"}))
     assert session.calls[-1][1]["url"] == "https://ollama.com/v1/chat/completions"
-    assert session.calls[-1][1]["json"]["think"] is True
+    assert session.calls[-1][1]["json"]["reasoning_effort"] == "high"
+    assert "think" not in session.calls[-1][1]["json"]
     # Model listing hits /api/tags (with the Bearer header) and 401 rejects.
     ok, _ = await provider.validate(_FakeSession(_FakeResp(200, b"", json_data={"models": []})))
     assert ok is True
@@ -1120,6 +1164,23 @@ async def test_secret_store_instances(hass):
     # With one Anthropic account left, its name drops the discriminator.
     remaining = {i["name"] for i in store.list_instances()}
     assert "Anthropic" in remaining
+
+
+@pytest.mark.asyncio
+async def test_secret_store_rejects_duplicate_provider_identity():
+    store = agentcli.AgentCliStore(AsyncMock())
+    await store.add("ollama", {"base_url": "HTTP://LOCALHOST:11434/", "model": "one"})
+
+    with pytest.raises(agentcli.DuplicateProviderError):
+        await store.add("ollama", {"base_url": "http://localhost:11434", "model": "two"})
+
+    # Different endpoints are legitimate separate Ollama accounts.
+    await store.add("ollama", {"base_url": "http://other-host:11434", "model": "one"})
+
+    await store.add("openrouter", {"api_key": "same-key", "model": "one"})
+    with pytest.raises(agentcli.DuplicateProviderError):
+        await store.add("openrouter", {"api_key": "same-key", "model": "two"})
+    await store.add("openrouter", {"api_key": "different-key", "model": "one"})
 
 
 @pytest.mark.asyncio
@@ -2344,6 +2405,129 @@ def _admin_request(body: dict | None = None):
     return req
 
 
+@pytest.mark.asyncio
+async def test_create_provider_discovers_declared_capabilities(hass):
+    """A newly added account has model metadata before its first chat."""
+    secret_store = MagicMock()
+    secret_store.add = AsyncMock(return_value="new-id")
+    secret_store.list_instances.return_value = [{
+        "id": "new-id", "kind": "ollama", "model": "muse-glimmer:30b-mlx",
+    }]
+    secret_store.has_duplicate.return_value = False
+    secret_store.set_capabilities = AsyncMock(return_value=True)
+
+    provider = MagicMock()
+    provider.validate = AsyncMock(return_value=(True, ""))
+    provider.list_models = AsyncMock(return_value=["muse-glimmer:30b-mlx"])
+    provider.list_model_capabilities = AsyncMock(return_value={
+        "muse-glimmer:30b-mlx": {"tools": True, "thinking": True, "vision": True},
+    })
+    cfg = agentcli.ProviderConfig(
+        kind="ollama", model="muse-glimmer:30b-mlx",
+        base_url="http://127.0.0.1:11434",
+    )
+    view = agentcli.PhoenixAgentCliProvidersView()
+    view.hass = hass
+
+    with patch("custom_components.phoenix_mcp.agentcli._probe_config", AsyncMock(return_value=cfg)), \
+         patch("custom_components.phoenix_mcp.agentcli.build_provider", return_value=provider), \
+         patch("custom_components.phoenix_mcp.agentcli._get_secret_store", AsyncMock(return_value=secret_store)), \
+         patch("custom_components.phoenix_mcp.agentcli.async_get_clientsession", return_value=MagicMock()):
+        response = await view.post(_admin_request({
+            "kind": "ollama", "base_url": "http://127.0.0.1:11434",
+            "model": "muse-glimmer:30b-mlx",
+        }))
+
+    assert response.status == 201
+    secret_store.set_capabilities.assert_awaited_once()
+    assert secret_store.set_capabilities.await_args.args[1] == {
+        "muse-glimmer:30b-mlx": {"tools": True, "thinking": True, "vision": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_provider_returns_conflict_for_duplicate(hass):
+    secret_store = MagicMock()
+    secret_store.has_duplicate.return_value = True
+    secret_store.add = AsyncMock()
+    provider = MagicMock()
+    provider.validate = AsyncMock(return_value=(True, ""))
+    cfg = agentcli.ProviderConfig(
+        kind="ollama", model="m", base_url="http://127.0.0.1:11434",
+    )
+    view = agentcli.PhoenixAgentCliProvidersView()
+    view.hass = hass
+
+    with patch("custom_components.phoenix_mcp.agentcli._probe_config", AsyncMock(return_value=cfg)), \
+         patch("custom_components.phoenix_mcp.agentcli.build_provider", return_value=provider), \
+         patch("custom_components.phoenix_mcp.agentcli._get_secret_store", AsyncMock(return_value=secret_store)), \
+         patch("custom_components.phoenix_mcp.agentcli.async_get_clientsession", return_value=MagicMock()):
+        response = await view.post(_admin_request({
+            "kind": "ollama", "base_url": "http://127.0.0.1:11434", "model": "m",
+        }))
+
+    assert response.status == 409
+    assert json.loads(response.text)["error"] == "already_exists"
+    assert "already configured" in json.loads(response.text)["message"]
+    assert json.loads(response.text)["message_key"] == "adminError.providerAlreadyConfigured"
+    provider.validate.assert_not_awaited()
+    secret_store.add.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_provider_handles_duplicate_detected_during_add(hass):
+    secret_store = MagicMock()
+    secret_store.has_duplicate.return_value = False
+    secret_store.add = AsyncMock(side_effect=agentcli.DuplicateProviderError())
+    provider = MagicMock()
+    provider.validate = AsyncMock(return_value=(True, ""))
+    cfg = agentcli.ProviderConfig(
+        kind="ollama", model="m", base_url="http://127.0.0.1:11434",
+    )
+    view = agentcli.PhoenixAgentCliProvidersView()
+    view.hass = hass
+
+    with patch("custom_components.phoenix_mcp.agentcli._probe_config", AsyncMock(return_value=cfg)), \
+         patch("custom_components.phoenix_mcp.agentcli.build_provider", return_value=provider), \
+         patch("custom_components.phoenix_mcp.agentcli._get_secret_store", AsyncMock(return_value=secret_store)), \
+         patch("custom_components.phoenix_mcp.agentcli.async_get_clientsession", return_value=MagicMock()):
+        response = await view.post(_admin_request({
+            "kind": "ollama", "base_url": "http://127.0.0.1:11434", "model": "m",
+        }))
+
+    assert response.status == 409
+    assert json.loads(response.text)["message_key"] == "adminError.providerAlreadyConfigured"
+    secret_store.add.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_probe_provider_returns_conflict_before_listing_models(hass):
+    secret_store = MagicMock()
+    secret_store.has_duplicate.return_value = True
+    provider = MagicMock()
+    provider.validate = AsyncMock(return_value=(True, ""))
+    provider.list_models = AsyncMock(return_value=["m"])
+    cfg = agentcli.ProviderConfig(
+        kind="ollama", model="", base_url="http://127.0.0.1:11434",
+    )
+    view = agentcli.PhoenixAgentCliProbeView()
+    view.hass = hass
+
+    with patch("custom_components.phoenix_mcp.agentcli._probe_config", AsyncMock(return_value=cfg)), \
+         patch("custom_components.phoenix_mcp.agentcli.build_provider", return_value=provider), \
+         patch("custom_components.phoenix_mcp.agentcli._get_secret_store", AsyncMock(return_value=secret_store)), \
+         patch("custom_components.phoenix_mcp.agentcli.async_get_clientsession", return_value=MagicMock()):
+        response = await view.post(_admin_request({
+            "kind": "ollama", "base_url": "http://127.0.0.1:11434",
+        }))
+
+    assert response.status == 409
+    assert json.loads(response.text)["error"] == "already_exists"
+    assert json.loads(response.text)["message_key"] == "adminError.providerAlreadyConfigured"
+    provider.validate.assert_not_awaited()
+    provider.list_models.assert_not_awaited()
+
+
 class TestSetDefaultModel:
     """The default model was frozen at creation, so correcting it meant deleting
     the account and re-entering the API key. That is the wrong cost for a value
@@ -2631,14 +2815,19 @@ class TestCapabilityProbe:
         assert "temperature" not in caps
 
     @pytest.mark.asyncio
-    async def test_a_backend_with_no_effort_control_is_not_probed_for_one(self, hass):
-        """Ollama takes a boolean think flag and OpenRouter passes through
-        whatever the underlying model takes, so there is no vocabulary here that
-        belongs to the account."""
-        caps, calls, prov, _a = await self._probe(hass, "ollama", lambda extra: 400)
-        assert "effort_levels" not in caps
-        assert calls == 1                       # temperature only
-        assert all(_effort_of(s) is None for s in prov.sent)
+    async def test_ollama_is_probed_for_validated_effort_levels(self, hass):
+        accepted = {"low", "medium", "high", "max"}
+
+        def answer(extra):
+            level = _effort_of(extra)
+            if level is None:
+                return 200
+            return 200 if level in accepted else 400
+
+        caps, calls, prov, _a = await self._probe(hass, "ollama", answer)
+        assert caps["effort_levels"] == ["low", "medium", "high", "max"]
+        assert calls == 7  # sentinel + five candidates + temperature
+        assert _effort_of(prov.sent[0]) == agentcli.AGENTCLI_PROBE_SENTINEL
 
     @pytest.mark.asyncio
     async def test_claude_uses_its_own_nested_effort_field(self, hass):
@@ -2793,11 +2982,14 @@ class TestAggregatorEffort:
     def test_the_probe_asks_them_about_effort(self, kind):
         assert agentcli._effort_probe_body(kind, "high") == {"reasoning_effort": "high"}
 
-    @pytest.mark.parametrize("kind", ["ollama", "ollama_cloud", "minimax"])
+    @pytest.mark.parametrize("kind", ["minimax"])
     def test_a_backend_with_no_level_vocabulary_is_still_skipped(self, kind):
-        """Ollama normalizes reasoning to one boolean flag across every model,
-        so there is nothing to enumerate."""
+        """MiniMax has an adaptive toggle, not a level vocabulary."""
         assert agentcli._effort_probe_body(kind, "high") is None
+
+    @pytest.mark.parametrize("kind", ["ollama", "ollama_cloud"])
+    def test_ollama_probe_uses_its_openai_compatible_effort_field(self, kind):
+        assert agentcli._effort_probe_body(kind, "high") == {"reasoning_effort": "high"}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["openrouter", "nvidia"])

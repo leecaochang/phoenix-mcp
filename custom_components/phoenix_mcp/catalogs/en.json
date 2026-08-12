@@ -1469,6 +1469,7 @@
       "archivedTokenNotFound": "Archived token not found.",
       "approvalNotFound": "Approval not found.",
       "presetNotFound": "Preset not found.",
+      "providerAlreadyConfigured": "This provider account is already configured.",
       "unknownPersona": "Unknown persona.",
       "presetsDisabled": "Token presets are disabled. Enable them in Settings.",
       "tokenNameTaken": "A token with that name (or equivalent slug) already exists.",
