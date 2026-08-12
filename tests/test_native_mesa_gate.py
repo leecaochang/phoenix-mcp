@@ -39,6 +39,7 @@ def _hass(*, with_mesa: bool) -> MagicMock:
     hass = MagicMock()
     data = MagicMock()
     data.mesa = MagicMock() if with_mesa else None
+    data.mesa_setup_failed = False
     hass.data = {DOMAIN: data}
     hass.services = MagicMock()
     hass.services.async_call = AsyncMock(return_value=None)
@@ -191,6 +192,39 @@ class TestMesaRuntimeAbsent:
 
         gate.assert_not_awaited()
         assert outcome == "allowed"
+
+    async def test_failed_runtime_refuses_native_write(self):
+        """A configured MESA failure must not become native allow-all."""
+        hass = _hass(with_mesa=False)
+        data = hass.data[DOMAIN]
+        data.mesa_setup_failed = True
+        data.store.get_settings.return_value.mesa_mode = "advisory"
+
+        content, outcome, _ = await _tool_intent_action(
+            "HassTurnOn", "homeassistant", "turn_on", {}, ["light.kitchen"],
+            hass, _token(), {},
+        )
+
+        assert outcome == "denied"
+        assert content["content"][0]["text"] == (
+            "No accessible entities matched your request."
+        )
+        hass.services.async_call.assert_not_awaited()
+
+    async def test_explicit_off_mode_allows_write_after_runtime_failure(self):
+        """Off is an operator decision and remains distinct from setup failure."""
+        hass = _hass(with_mesa=False)
+        data = hass.data[DOMAIN]
+        data.mesa_setup_failed = True
+        data.store.get_settings.return_value.mesa_mode = "off"
+
+        _content, outcome, _ = await _tool_intent_action(
+            "HassTurnOn", "homeassistant", "turn_on", {}, ["light.kitchen"],
+            hass, _token(), {},
+        )
+
+        assert outcome == "allowed"
+        hass.services.async_call.assert_awaited_once()
 
 
 class TestServiceCallFailures:

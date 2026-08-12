@@ -623,7 +623,12 @@ class PhoenixSkillView(PhoenixView):
         # kill switch is flipped at runtime the route already exists (HA cannot
         # unregister it), so refuse here the way the token-authenticated routes do.
         data = self.hass.data.get(DOMAIN)
-        if data is None or data.shutting_down or data.store.get_settings().kill_switch:
+        if (
+            data is None
+            or not data.ready
+            or data.shutting_down
+            or data.store.get_settings().kill_switch
+        ):
             return web.Response(status=503, text="Service unavailable.")
         return web.Response(text=PHOENIX_SKILL_MARKDOWN, content_type="text/markdown")
 

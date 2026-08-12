@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import dataclasses
 import hashlib
@@ -10,6 +11,7 @@ import json
 import logging
 import math
 import re
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
@@ -41,8 +43,9 @@ from homeassistant.util.dt import utcnow
 from homeassistant.util.ulid import ulid_to_bytes_or_none
 
 from .audit import generate_request_id
-from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_PROTOCOL_VERSION_PREFERRED, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_LOGBOOK_HOME_DAYS, MAX_LOGBOOK_NARROWED_DAYS, MAX_LOGBOOK_RESOURCE_IDS, MAX_SEARCH_QUERY_LEN, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
+from .const import AGENTCLI_CLIENT_IP, AI_TASK_CLIENT_IP, ASSIST_CLIENT_IP, PHOENIX_VERSION, BLOCKED_DOMAINS, VOICE_AGENT_CLIENT_IP, CAP_ALLOW, CAP_CONFIRM, CAP_DENY, CAPABILITY_NAMES, DOMAIN, DOMAIN_IMPORTANT_ATTRIBUTES, DUAL_GATE_SERVICES, LEAN_ALWAYS_ATTRS, HIGH_RISK_DOMAINS, MCP_DISCOVER_TTL_MS, MCP_LEGACY_PROTOCOL_VERSION_PREFERRED, MCP_LEGACY_PROTOCOL_VERSIONS, MCP_PROTOCOL_VERSIONS, MCP_SSE_KEEPALIVE_SECONDS, MAX_APPROVAL_RESULT_CHARS, MAX_BATCH_APPROVALS, MAX_BATCH_ITEMS, LOG_LEVELS, LOG_LEVEL_ERROR_MESSAGE, MAX_LOG_ENTRIES, MAX_LOGBOOK_HOME_DAYS, MAX_LOGBOOK_NARROWED_DAYS, MAX_LOGBOOK_RESOURCE_IDS, MAX_SEARCH_QUERY_LEN, MAX_SUBSCRIPTION_SECONDS, MAX_ENTITY_ALIASES, MAX_ENTITY_ALIAS_LENGTH, MAX_TOOL_NAME_LENGTH, MESA_APPROVED_EXECUTOR, MESA_MODE_OFF, NO_TARGET_SERVICES, PROXY_TIMEOUT_SECONDS
 from .data import PhoenixData
+from .service_targets import secondary_target_error, unsupported_secondary_targets
 from .tool_contracts import normalize_tool_args
 from .mesa import (
     RegistryMesaDecision,
@@ -398,16 +401,15 @@ def _jsonrpc_result(msg_id: Any, result: Any) -> dict:
 
 
 def _valid_jsonrpc_id(raw_id: Any) -> bool:
-    """Is this a conforming JSON-RPC 2.0 id?
+    """Is this an MCP-conforming request id?
 
-    The spec allows String, Number or Null, and requires the server to echo the
-    SAME value back. `bool` is excluded explicitly because it is a subclass of
-    `int` in Python: `id: true` would otherwise pass every type check here and
-    then be echoed back as `true`, which is not a value any client can correlate.
+    MCP narrows JSON-RPC's general Number shape to strings and integers, and a
+    request ID must not be null. `bool` is excluded explicitly because it is a
+    subclass of `int` in Python.
     """
     if isinstance(raw_id, bool):
         return False
-    return raw_id is None or isinstance(raw_id, (str, int, float))
+    return isinstance(raw_id, (str, int))
 
 
 def _sanitize_jsonrpc_id(raw_id: Any) -> str | int | None:
@@ -421,9 +423,164 @@ def _sanitize_jsonrpc_id(raw_id: Any) -> str | int | None:
     return raw_id if _valid_jsonrpc_id(raw_id) else None
 
 
-def _jsonrpc_error(msg_id: Any, code: int, message: str) -> dict:
+def _jsonrpc_error(
+    msg_id: Any, code: int, message: str, *, data: dict | None = None
+) -> dict:
     """Wrap an error in a JSON-RPC 2.0 error envelope."""
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+
+_MCP_MODERN_VERSION = "2026-07-28"
+_MCP_PROTOCOL_META = "io.modelcontextprotocol/protocolVersion"
+_MCP_CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo"
+_MCP_CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
+_MCP_SERVER_INFO_META = "io.modelcontextprotocol/serverInfo"
+_MCP_NAMED_METHOD_FIELDS = {
+    "tools/call": "name",
+    "resources/read": "uri",
+    "prompts/get": "name",
+}
+_MCP_CACHEABLE_METHODS = frozenset({
+    "server/discover", "tools/list", "prompts/list", "resources/list",
+    "resources/templates/list", "resources/read",
+})
+_MCP_LEGACY_SESSION_TTL_SECONDS = 3600.0
+_MCP_LEGACY_SESSION_LIMIT = 256
+
+
+def _protocol_error_response(
+    msg_id: Any,
+    code: int,
+    message: str,
+    request_id: str,
+    *,
+    data: dict | None = None,
+    status: int = 400,
+) -> web.Response:
+    """Return a protocol-level JSON-RPC error with its required HTTP status."""
+    return web.Response(
+        status=status,
+        content_type="application/json",
+        text=json.dumps(_jsonrpc_error(msg_id, code, message, data=data)),
+        headers={"X-Phoenix-Request-ID": request_id},
+    )
+
+
+def _request_meta(params: Any) -> dict | None:
+    if not isinstance(params, dict):
+        return None
+    meta = params.get("_meta")
+    return meta if isinstance(meta, dict) else None
+
+
+def _is_modern_request(body: dict, request: web.Request) -> bool:
+    """Select an MCP era without inferring modern behavior from method names."""
+    params = body.get("params")
+    meta = _request_meta(params)
+    if meta is not None and _MCP_PROTOCOL_META in meta:
+        return True
+    header_version = request.headers.get("MCP-Protocol-Version")
+    return bool(header_version and header_version not in MCP_LEGACY_PROTOCOL_VERSIONS)
+
+
+def _decode_mcp_header(value: str) -> str | None:
+    """Decode the modern MCP Base64 sentinel form, or return a plain value."""
+    if not (value.startswith("=?base64?") and value.endswith("?=")):
+        return value
+    encoded = value[len("=?base64?"):-2]
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _validate_modern_request(
+    body: dict, request: web.Request, request_id: str
+) -> web.Response | None:
+    """Validate 2026-07-28 per-request metadata and mirrored HTTP headers."""
+    msg_id = _sanitize_jsonrpc_id(body.get("id"))
+    params = body.get("params")
+    meta = _request_meta(params)
+    header_version = request.headers.get("MCP-Protocol-Version")
+    body_version = meta.get(_MCP_PROTOCOL_META) if meta is not None else None
+
+    if not isinstance(header_version, str) or not isinstance(body_version, str):
+        return _protocol_error_response(
+            msg_id, -32020, "Header mismatch: protocol version metadata is required.",
+            request_id,
+        )
+    if header_version != body_version:
+        return _protocol_error_response(
+            msg_id, -32020, "Header mismatch: MCP-Protocol-Version does not match the request body.",
+            request_id,
+        )
+    if body_version not in MCP_PROTOCOL_VERSIONS or body_version != _MCP_MODERN_VERSION:
+        return _protocol_error_response(
+            msg_id,
+            -32022,
+            "Unsupported protocol version",
+            request_id,
+            data={"supported": list(MCP_PROTOCOL_VERSIONS), "requested": body_version},
+        )
+
+    if meta is None or not isinstance(meta.get(_MCP_CLIENT_CAPABILITIES_META), dict):
+        return _protocol_error_response(
+            msg_id, -32602, "Invalid params: client capabilities metadata is required.",
+            request_id,
+        )
+    client_info = meta.get(_MCP_CLIENT_INFO_META)
+    if client_info is not None and (
+        not isinstance(client_info, dict)
+        or not isinstance(client_info.get("name"), str)
+        or not isinstance(client_info.get("version"), str)
+    ):
+        return _protocol_error_response(
+            msg_id, -32602, "Invalid params: clientInfo metadata is malformed.",
+            request_id,
+        )
+
+    method = body.get("method")
+    method_header = request.headers.get("Mcp-Method")
+    if not isinstance(method, str) or method_header != method:
+        return _protocol_error_response(
+            msg_id, -32020, "Header mismatch: Mcp-Method does not match the request body.",
+            request_id,
+        )
+
+    name_field = _MCP_NAMED_METHOD_FIELDS.get(method)
+    if name_field is not None:
+        body_name = params.get(name_field) if isinstance(params, dict) else None
+        raw_name = request.headers.get("Mcp-Name")
+        header_name = _decode_mcp_header(raw_name) if isinstance(raw_name, str) else None
+        if not isinstance(body_name, str) or header_name != body_name:
+            return _protocol_error_response(
+                msg_id, -32020, "Header mismatch: Mcp-Name does not match the request body.",
+                request_id,
+            )
+    return None
+
+
+def _modernize_response(response_msg: dict | None, method: str) -> dict | None:
+    """Add wire-only 2026-07-28 result fields without touching legacy replies."""
+    if response_msg is None:
+        return None
+    result = response_msg.get("result")
+    if not isinstance(result, dict):
+        return response_msg
+    result["resultType"] = "complete"
+    meta = result.setdefault("_meta", {})
+    if isinstance(meta, dict):
+        meta.setdefault(
+            _MCP_SERVER_INFO_META,
+            {"name": "Phoenix MCP", "version": PHOENIX_VERSION},
+        )
+    if method in _MCP_CACHEABLE_METHODS:
+        result.setdefault("ttlMs", MCP_DISCOVER_TTL_MS if method == "server/discover" else 0)
+        result.setdefault("cacheScope", "private")
+    return response_msg
 
 
 def _classify_jsonrpc_message(body: dict) -> tuple[str, Any]:
@@ -457,7 +614,7 @@ def _classify_jsonrpc_message(body: dict) -> tuple[str, Any]:
         return "accepted", None
     if not isinstance(method, str) or not method:
         return "error", (-32600, "Invalid Request.")
-    # A present id must be String, Number or Null. A malformed one used to be
+    # A present MCP id must be a String or Integer. A malformed one used to be
     # coerced to None and then DISPATCHED, so `{"id": {}, "method": "tools/call"}`
     # ran its side effect and answered with an id the caller could not match to
     # its request, which is exactly the shape that makes a client retry a
@@ -931,6 +1088,16 @@ async def _tool_call_service(
     if not domain or not service:
         return _tool_error("Missing required arguments: domain and service"), "denied", "call_service"
 
+    secondary_targets = await unsupported_secondary_targets(
+        hass, args.get("service_data")
+    )
+    if secondary_targets:
+        return (
+            _tool_error(secondary_target_error(secondary_targets)),
+            "invalid_request",
+            "call_service",
+        )
+
     service_key = f"{domain}/{service}"
 
     if service_key in DUAL_GATE_SERVICES:
@@ -1043,6 +1210,19 @@ async def _execute_call_service(
 
     resource = f"service:{domain}/{service}"
     service_key = f"{domain}/{service}"
+
+    # Re-run at the executor choke point. Confirm stores caller arguments and a
+    # service can register or change its description while approval is pending,
+    # so the request-time precheck alone is not an authorization boundary.
+    secondary_targets = await unsupported_secondary_targets(
+        hass, args.get("service_data")
+    )
+    if secondary_targets:
+        return (
+            _tool_error(secondary_target_error(secondary_targets)),
+            "invalid_request",
+            resource,
+        )
 
     entity_id = args.get("entity_id")
     device_id = args.get("device_id")
@@ -2732,7 +2912,7 @@ def _device_mesa_decision(
     else:
         entity_ids = sorted(set(entity_ids))
     mesa_active = (
-        data.mesa is not None
+        (data.mesa is not None or data.mesa_setup_failed is True)
         and data.store.get_settings().mesa_mode != MESA_MODE_OFF
     )
     if mesa_active and not entity_ids:
@@ -5282,7 +5462,7 @@ def _config_entry_action_decision(
     if context is None:
         return _tool_error("Integration not found."), "not_found", entry.entry_id
     mesa_active = (
-        data.mesa is not None
+        (data.mesa is not None or data.mesa_setup_failed is True)
         and data.store.get_settings().mesa_mode != MESA_MODE_OFF
     )
     entity_ids = sorted(context.entity_ids)
@@ -6972,6 +7152,10 @@ _MCP_METHODS: frozenset[str] = frozenset({
     "prompts/list",
     "prompts/get",
 })
+_MCP_MODERN_METHODS = _MCP_METHODS - {
+    "initialize", "notifications/initialized", "initialized",
+}
+_MCP_LEGACY_METHODS = _MCP_METHODS - {"server/discover"}
 
 
 async def _dispatch_mcp(
@@ -7025,7 +7209,11 @@ async def _dispatch_mcp(
         # (live-observed shapes are not always what a schema declares) falls to
         # the preferred version instead of raising.
         requested = params.get("protocolVersion")
-        version = requested if requested in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSION_PREFERRED
+        version = (
+            requested
+            if requested in MCP_LEGACY_PROTOCOL_VERSIONS
+            else MCP_LEGACY_PROTOCOL_VERSION_PREFERRED
+        )
         resp = _jsonrpc_result(msg_id, {
             "protocolVersion": version,
             "capabilities": _SERVER_CAPABILITIES,
@@ -7358,6 +7546,24 @@ async def _dispatch_mcp_result(
     return response_msg
 
 
+async def _dispatch_modern_mcp_result(
+    method: str,
+    msg_id: Any,
+    params: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    client_ip: str,
+    *,
+    base_url: str,
+) -> dict | None:
+    """Dispatch and apply the 2026-07-28 wire shape for an SSE response."""
+    response_msg = await _dispatch_mcp_result(
+        method, msg_id, params, token, hass, data, client_ip, base_url=base_url
+    )
+    return _modernize_response(response_msg, method)
+
+
 def _rate_limit_headers(token: TokenRecord, rl_result: Any) -> dict[str, str]:
     """The X-RateLimit-* trio, or nothing when rate limiting is off for this token."""
     if token.rate_limit_requests <= 0:
@@ -7537,6 +7743,70 @@ def _origin_rejected(hass: HomeAssistant, request: web.Request, request_id: str)
     return _error("forbidden", "Origin not allowed.", 403, request_id)
 
 
+def _prune_legacy_sessions(data: PhoenixData) -> None:
+    """Expire idle legacy sessions and bound worst-case in-memory growth."""
+    now = time.monotonic()
+    expired = [
+        session_id
+        for session_id, state in data.mcp_sessions.items()
+        if now - float(state.get("last_seen", 0.0)) > _MCP_LEGACY_SESSION_TTL_SECONDS
+    ]
+    for session_id in expired:
+        data.mcp_sessions.pop(session_id, None)
+    while len(data.mcp_sessions) > _MCP_LEGACY_SESSION_LIMIT:
+        oldest = min(
+            data.mcp_sessions,
+            key=lambda key: float(data.mcp_sessions[key].get("last_seen", 0.0)),
+        )
+        data.mcp_sessions.pop(oldest, None)
+
+
+def _validate_legacy_initialize(params: dict) -> tuple[int, str] | None:
+    """Validate the required 2025-03-26 initialize parameters."""
+    if not isinstance(params.get("protocolVersion"), str):
+        return -32602, "Invalid params: protocolVersion is required."
+    if not isinstance(params.get("capabilities"), dict):
+        return -32602, "Invalid params: capabilities are required."
+    client_info = params.get("clientInfo")
+    if (
+        not isinstance(client_info, dict)
+        or not isinstance(client_info.get("name"), str)
+        or not isinstance(client_info.get("version"), str)
+    ):
+        return -32602, "Invalid params: clientInfo is required."
+    return None
+
+
+def _open_legacy_session(data: PhoenixData, token: TokenRecord) -> str:
+    _prune_legacy_sessions(data)
+    while len(data.mcp_sessions) >= _MCP_LEGACY_SESSION_LIMIT:
+        oldest = min(
+            data.mcp_sessions,
+            key=lambda key: float(data.mcp_sessions[key].get("last_seen", 0.0)),
+        )
+        data.mcp_sessions.pop(oldest, None)
+    session_id = secrets.token_urlsafe(32)
+    data.mcp_sessions[session_id] = {
+        "token_id": token.id,
+        "initialized": False,
+        "last_seen": time.monotonic(),
+        "protocol_version": MCP_LEGACY_PROTOCOL_VERSION_PREFERRED,
+    }
+    return session_id
+
+
+def _legacy_session(
+    data: PhoenixData, request: web.Request, token: TokenRecord
+) -> dict | None:
+    _prune_legacy_sessions(data)
+    session_id = request.headers.get("Mcp-Session-Id")
+    state = data.mcp_sessions.get(session_id) if isinstance(session_id, str) else None
+    if state is None or state.get("token_id") != token.id:
+        return None
+    state["last_seen"] = time.monotonic()
+    return state
+
+
 class PhoenixMcpView(PhoenixView):
     """POST /api/phoenix-mcp - MCP Streamable HTTP transport.
 
@@ -7557,8 +7827,12 @@ class PhoenixMcpView(PhoenixView):
     async def post(self, request: web.Request) -> web.Response:
         """Handle one Streamable HTTP request."""
         hass = self.hass
-        data: PhoenixData = hass.data[DOMAIN]
         request_id = generate_request_id()
+        data = hass.data.get(DOMAIN)
+        if data is None or not data.ready or data.shutting_down:
+            return _error(
+                "service_unavailable", "Service unavailable.", 503, request_id
+            )
         client_ip = _get_client_ip(request)
 
         rejected = _origin_rejected(hass, request, request_id)
@@ -7629,6 +7903,42 @@ class PhoenixMcpView(PhoenixView):
         rl_headers = _rate_limit_headers(token, rl_result)
 
         if isinstance(parsed, list):
+            if data.enforce_mcp_lifecycle:
+                header_version = request.headers.get("MCP-Protocol-Version")
+                carries_modern_meta = any(
+                    isinstance(item, dict)
+                    and _MCP_PROTOCOL_META in (_request_meta(item.get("params")) or {})
+                    for item in parsed
+                )
+                if (
+                    header_version == _MCP_MODERN_VERSION
+                    or carries_modern_meta
+                ):
+                    return _protocol_error_response(
+                        None,
+                        -32600,
+                        "Invalid Request: JSON-RPC batches are not supported by this protocol version.",
+                        request_id,
+                    )
+                if any(
+                    isinstance(item, dict) and item.get("method") == "initialize"
+                    for item in parsed
+                ):
+                    return _protocol_error_response(
+                        None,
+                        -32600,
+                        "Invalid Request: initialize must not be sent in a batch.",
+                        request_id,
+                    )
+                session = _legacy_session(data, request, token)
+                if session is None:
+                    return _protocol_error_response(
+                        None, -32000, "Legacy MCP session required.", request_id
+                    )
+                if not session.get("initialized"):
+                    return _protocol_error_response(
+                        None, -32000, "Legacy MCP initialization is not complete.", request_id
+                    )
             # A batch is ONE HTTP request carrying up to MAX_BATCH_ITEMS calls,
             # and the auth check above charged it as one, so a token on the
             # default 60/min could issue 3,000 tool calls a minute by batching.
@@ -7711,16 +8021,74 @@ class PhoenixMcpView(PhoenixView):
             )
         method, params = payload
 
-        if method not in _MCP_METHODS:
+        modern = False
+        legacy_session_id: str | None = None
+        if data.enforce_mcp_lifecycle:
+            modern = _is_modern_request(body, request)
+            if modern:
+                validation_error = _validate_modern_request(body, request, request_id)
+                if validation_error is not None:
+                    return validation_error
+                known_methods = _MCP_MODERN_METHODS
+            else:
+                known_methods = _MCP_LEGACY_METHODS
+                if method == "initialize":
+                    if request.headers.get("Mcp-Session-Id"):
+                        return _protocol_error_response(
+                            msg_id,
+                            -32600,
+                            "Invalid Request: initialize must start a new session.",
+                            request_id,
+                        )
+                    invalid_initialize = _validate_legacy_initialize(params)
+                    if invalid_initialize is not None:
+                        return _protocol_error_response(
+                            msg_id, *invalid_initialize, request_id
+                        )
+                    legacy_session_id = _open_legacy_session(data, token)
+                else:
+                    session = _legacy_session(data, request, token)
+                    if session is None:
+                        return _protocol_error_response(
+                            msg_id, -32000, "Legacy MCP session required.", request_id
+                        )
+                    if method in ("notifications/initialized", "initialized"):
+                        session["initialized"] = True
+                    elif method != "ping" and not session.get("initialized"):
+                        return _protocol_error_response(
+                            msg_id,
+                            -32000,
+                            "Legacy MCP initialization is not complete.",
+                            request_id,
+                        )
+        else:
+            known_methods = _MCP_METHODS
+
+        response_msg: dict | None
+        if method not in known_methods:
             # Still routed through the dispatcher rather than answered here, so
             # the error body and the audit row keep one definition; only the
             # HTTP status is decided at this layer. A notification for a method
             # we do not implement is accepted and dropped (202), not refused:
             # the envelope is valid and the sender is not owed a reply.
-            response_msg, _m, _r, _o = await _dispatch_mcp(
-                method, msg_id, params, token, hass, data, client_ip,
-                base_url=base_url,
-            )
+            if method in _MCP_METHODS:
+                _log(
+                    data,
+                    token,
+                    request_id=generate_request_id(),
+                    method=method,
+                    resource="/api/phoenix-mcp",
+                    outcome="not_implemented",
+                    client_ip=client_ip,
+                )
+                response_msg = _jsonrpc_error(msg_id, -32601, "Method not found.")
+            else:
+                response_msg, _m, _r, _o = await _dispatch_mcp(
+                    method, msg_id, params, token, hass, data, client_ip,
+                    base_url=base_url,
+                )
+            if modern:
+                response_msg = _modernize_response(response_msg, method)
             if is_notification or response_msg is None:
                 return web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id})
             return web.Response(
@@ -7730,20 +8098,34 @@ class PhoenixMcpView(PhoenixView):
                 headers={"X-Phoenix-Request-ID": request_id},
             )
 
+        if legacy_session_id is not None:
+            rl_headers = {**rl_headers, "Mcp-Session-Id": legacy_session_id}
+
         if wants_sse and not is_notification:
             bus = _ProgressBus(token=_progress_token(method, params))
             _progress_ctx.set(bus)
+            dispatch = (
+                _dispatch_modern_mcp_result(
+                    method, msg_id, params, token, hass, data, client_ip,
+                    base_url=base_url,
+                )
+                if modern
+                else _dispatch_mcp_result(
+                    method, msg_id, params, token, hass, data, client_ip,
+                    base_url=base_url,
+                )
+            )
             return cast(web.Response, await _mcp_sse_response(
                 request, hass, request_id, rl_headers, bus,
-                _dispatch_mcp_result(
-                    method, msg_id, params, token, hass, data, client_ip,
-                    base_url=base_url),
+                dispatch,
             ))
 
         response_msg, _log_method, _log_resource, _outcome = await _dispatch_mcp(
             method, msg_id, params, token, hass, data, client_ip,
             base_url=base_url,
         )
+        if modern:
+            response_msg = _modernize_response(response_msg, method)
 
         if is_notification or response_msg is None:
             return web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id})
@@ -7770,8 +8152,12 @@ class PhoenixMcpContextView(PhoenixView):
 
     async def get(self, request: web.Request) -> web.Response:
         hass = self.hass
-        data: PhoenixData = hass.data[DOMAIN]
         request_id = generate_request_id()
+        data = hass.data.get(DOMAIN)
+        if data is None or not data.ready or data.shutting_down:
+            return _error(
+                "service_unavailable", "Service unavailable.", 503, request_id
+            )
         client_ip = _get_client_ip(request)
 
         result = await _async_get_authenticated_token(

@@ -81,7 +81,12 @@ async def async_voice_answer(
     )
 
     settings = data.store.get_settings()
-    if data.shutting_down or settings.kill_switch or not settings.voice_agent_enabled:
+    if (
+        not data.ready
+        or data.shutting_down
+        or settings.kill_switch
+        or not settings.voice_agent_enabled
+    ):
         return voice_text(language, "unavailable")
     if not (settings.voice_agent_token_id and settings.voice_agent_provider_id):
         return voice_text(language, "not_configured")
@@ -194,7 +199,7 @@ def async_sync_voice_agent(hass: HomeAssistant, entry: Any, data: Any) -> None:
         s.voice_agent_enabled and s.voice_agent_token_id
         and s.voice_agent_provider_id and s.voice_agent_model
     )
-    if fully_configured and not data.shutting_down:
+    if fully_configured and data.ready and not data.shutting_down:
         async_register_voice_agent(hass, entry, data)
     else:
         async_unregister_voice_agent(hass, entry)

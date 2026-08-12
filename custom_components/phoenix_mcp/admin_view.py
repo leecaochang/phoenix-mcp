@@ -43,6 +43,7 @@ from .const import (
     MIN_HA_VERSION,
     PERSONA_NAMES,
     PRESET_NAME_MAX_LENGTH,
+    RUNTIME_READY_KEY,
     TOKEN_NAME_REGEX,
 )
 from .data import PhoenixData
@@ -129,6 +130,13 @@ def require_admin(method: Callable) -> Callable:
         if not user or not user.is_admin:
             _LOGGER.info("Admin %s %s forbidden rid=%s", request.method, request.path, request_id)
             return _err("forbidden", "Admin access required.", 403, request_id, key="adminRequired")
+        if self.hass.data.get(RUNTIME_READY_KEY, True) is False:
+            return _err(
+                "service_unavailable",
+                "Phoenix MCP setup is not complete.",
+                503,
+                request_id,
+            )
         # Logs user.id (UUID) rather than user.name. UUID is stable and non-spoofable;
         # user.name can be changed by the admin. Intentional.
         _LOGGER.info("Admin %s %s rid=%s user=%s", request.method, request.path, request_id, user.id)

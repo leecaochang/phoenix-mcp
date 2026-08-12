@@ -13,6 +13,12 @@
       "default": "Use the Phoenix MCP panel to manage your tokens"
     }
   },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "MESA safety runtime is unavailable",
+      "description": "Phoenix MCP could not initialize its MESA safety runtime. Reads and admin recovery remain available, but protected state-changing operations are refused while MESA mode is Advisory or Enforced. Review the Home Assistant logs, then reload the Phoenix MCP integration. You may explicitly select Off mode only if you intend to operate without MESA protection."
+    }
+  },
   "entity": {
     "sensor": {
       "status": {

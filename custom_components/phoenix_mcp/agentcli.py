@@ -2666,7 +2666,11 @@ def _current_dispatch_token(data: PhoenixData, token_id: str) -> TokenRecord | N
     token has been revoked/expired or narrowed away since the turn started; the
     fresh record is returned otherwise so cap changes take effect immediately.
     """
-    if data.shutting_down or data.store.get_settings().kill_switch:
+    if (
+        getattr(data, "ready", True) is False
+        or getattr(data, "shutting_down", False) is True
+        or data.store.get_settings().kill_switch
+    ):
         return None
     token = data.store.get_token_by_id(token_id)
     if token is None or not token.is_valid():
@@ -2698,7 +2702,7 @@ class PhoenixAgentCliChatView(PhoenixView):
         # Agent Chat bypasses async_get_authenticated_token (it is admin-authed, not
         # bearer-authed), so it must enforce the same invariants that gate every
         # MCP request: shutdown, the runtime kill switch, and token validity.
-        if data.shutting_down or data.store.get_settings().kill_switch:
+        if not data.ready or data.shutting_down or data.store.get_settings().kill_switch:
             return _err("service_unavailable", "Phoenix MCP is disabled (kill switch).", 503, rid)
 
         token_id = str(body.get("token_id") or "")

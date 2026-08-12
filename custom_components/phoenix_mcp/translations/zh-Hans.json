@@ -11,5 +11,11 @@
         "description": "点击“提交”即可安装 Phoenix MCP 集成。请注意，同一时间只能配置一个实例"
       }
     }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "MESA 安全运行时不可用",
+      "description": "Phoenix MCP 无法初始化 MESA 安全运行时。读取和管理员恢复功能仍然可用，但当 MESA 模式为“建议”或“强制”时，受保护的状态更改操作将被拒绝。请检查 Home Assistant 日志，然后重新加载 Phoenix MCP 集成。只有在您明确打算不使用 MESA 保护时，才应选择“关闭”模式。"
+    }
   }
 }

@@ -97,7 +97,7 @@
           <div class="card">
             <div class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></div>
             <h3>Automatic primer</h3>
-            <p>On every connection, Phoenix MCP sends a short, token-aware primer in the MCP <code>initialize</code> response, and in <code>server/discover</code> for clients that skip the handshake. It names which of this token's capabilities are approval-gated and links to the full guide. No install, nothing to maintain.</p>
+            <p>Phoenix MCP sends a short, token-aware primer in the legacy <code>initialize</code> response and in modern <code>server/discover</code>. It names which of this token's capabilities are approval-gated and links to the full guide. Legacy 2025-03-26 clients complete initialization and keep their session ID; modern 2026-07-28 clients carry protocol metadata on each request and use no session. No install, nothing to maintain.</p>
           </div>
           <div class="card">
             <div class="card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></div>

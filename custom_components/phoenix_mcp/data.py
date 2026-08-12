@@ -43,6 +43,10 @@ class PhoenixData:
     # MESA semantic-safety runtime (store, resolver, enforcer, validator).
     # None only if MESA setup failed; views guard accordingly.
     mesa: MesaRuntime | None = None
+    # Distinguishes an explicit MESA-off configuration from a runtime that
+    # failed to initialize. State-changing MESA gates fail closed only for the
+    # latter while advisory or enforced mode remains configured.
+    mesa_setup_failed: bool = False
     # Process-global manager is also kept under its own hass.data key, so a
     # Phoenix config-entry reload cannot strand a timed logger restoration.
     logger_control: LoggerOverrideManager | None = None
@@ -102,3 +106,12 @@ class PhoenixData:
     # Set to True by async_unload_entry. Views check this before accessing store/audit
     # to avoid KeyError 500s after unload (HA does not expose a view unregister API).
     shutting_down: bool = False
+    # Direct constructions are ready by default for isolated tests. Real setup
+    # passes False and publishes readiness only after every mandatory step has
+    # completed. Permanent aiohttp routes refuse while this is false.
+    ready: bool = True
+    # Legacy Streamable HTTP sessions, keyed by the cryptographically random
+    # Mcp-Session-Id returned from initialize. Direct unit constructions leave
+    # lifecycle enforcement off; production setup enables it explicitly.
+    mcp_sessions: dict[str, dict] = field(default_factory=dict)
+    enforce_mcp_lifecycle: bool = False

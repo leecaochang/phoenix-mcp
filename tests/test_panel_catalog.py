@@ -128,8 +128,9 @@ def test_catalogs_dir_is_not_the_translations_dir() -> None:
     assert CATALOGS_DIR.name == "catalogs"
     translations = CATALOGS_DIR.parent / "translations"
     shipped = json.loads((translations / "en.json").read_text(encoding="utf-8"))
-    assert set(shipped) <= {"config", "entity"}, (
-        f"translations/en.json carries {sorted(set(shipped) - {'config', 'entity'})},"
+    allowed = {"config", "entity", "issues"}
+    assert set(shipped) <= allowed, (
+        f"translations/en.json carries {sorted(set(shipped) - allowed)},"
         " which hassfest rejects as an unknown category"
     )
 

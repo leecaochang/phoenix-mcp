@@ -337,11 +337,16 @@ async def _mesa_gate_native(
     would actuate a MESA read_only or prohibited entity that the identical call
     through _tool_intent_action denies, so both route through here instead.
 
-    data/request_id come from hass since native tools do not thread them; a
-    missing MESA runtime degrades to allow-all.
+    data/request_id come from hass since native tools do not thread them. The
+    shared gate distinguishes an explicit off mode from a failed production
+    runtime.
     """
     data = hass.data.get(DOMAIN)
-    if data is None or getattr(data, "mesa", None) is None:
+    if data is None:
+        return _MesaGate(None, list(entities), [])
+    if getattr(data, "mesa", None) is None and getattr(
+        data, "mesa_setup_failed", False
+    ) is not True:
         return _MesaGate(None, list(entities), [])
     request_id = generate_request_id()
     outcome = await async_apply_mesa_to_call(

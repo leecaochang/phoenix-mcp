@@ -77,7 +77,7 @@ def _make_data(**settings_over):
     settings = GlobalSettings(**settings_over)
     store = MagicMock()
     store.get_settings.return_value = settings
-    return SimpleNamespace(store=store, mesa=None, shutting_down=False)
+    return SimpleNamespace(store=store, mesa=None, ready=True, shutting_down=False)
 
 
 # --------------------------------------------------------------------------- #

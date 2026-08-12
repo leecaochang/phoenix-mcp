@@ -156,6 +156,9 @@ KNOWN_IMPORTS: dict[str, dict[str, str]] = {
         "entity_registry": "0.0.0",
         "floor_registry": "0.0.0",
         "intent": "0.0.0",
+        # Both the issue registry and its helper-module import predate the
+        # earliest Home Assistant release Phoenix has claimed.
+        "issue_registry": "0.0.0",
         # Verified absent in 2024.2.5, present in 2024.3.0.
         "label_registry": "2024.3.0",
         "sun": "0.0.0",
@@ -176,6 +179,10 @@ KNOWN_IMPORTS: dict[str, dict[str, str]] = {
     },
     "homeassistant.helpers.storage": {
         "Store": "0.0.0",
+    },
+    "homeassistant.helpers.service": {
+        # Present in 2024.1.0, before Phoenix's earliest claimed HA floor.
+        "async_get_all_descriptions": "0.0.0",
     },
     "homeassistant.loader": {
         "IntegrationNotFound": "0.0.0",

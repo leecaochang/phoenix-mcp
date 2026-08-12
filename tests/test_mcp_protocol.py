@@ -22,6 +22,8 @@ import pytest
 from custom_components.phoenix_mcp import mcp_view
 from custom_components.phoenix_mcp.const import (
     MCP_DISCOVER_TTL_MS,
+    MCP_LEGACY_PROTOCOL_VERSION_PREFERRED,
+    MCP_LEGACY_PROTOCOL_VERSIONS,
     MCP_PROTOCOL_VERSION_PREFERRED,
     MCP_PROTOCOL_VERSIONS,
 )
@@ -38,6 +40,32 @@ def _env(**token_kwargs):
     data = _make_data(token)
     hass = _make_hass(data)
     return token, raw, data, hass
+
+
+def _strict_env(**token_kwargs):
+    token, raw, data, hass = _env(**token_kwargs)
+    data.enforce_mcp_lifecycle = True
+    return token, raw, data, hass
+
+
+def _modern_body(method: str, *, msg_id=1, params: dict | None = None) -> dict:
+    modern_params = dict(params or {})
+    modern_params["_meta"] = {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1.0"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }
+    return {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": modern_params}
+
+
+def _modern_headers(method: str, name: str | None = None) -> dict[str, str]:
+    headers = {
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": method,
+    }
+    if name is not None:
+        headers["Mcp-Name"] = name
+    return headers
 
 
 async def _dispatch(method: str, params: dict | None = None, msg_id=1, **token_kwargs):
@@ -119,10 +147,10 @@ class TestServerDiscover:
         assert resp.status == 401
 
     async def test_no_handshake_required(self):
-        _token, raw, _data, hass = _env()
+        _token, raw, _data, hass = _strict_env()
         resp = await _view(hass).post(_make_request(
-            {"jsonrpc": "2.0", "id": 9, "method": "server/discover"},
-            "application/json", raw))
+            _modern_body("server/discover", msg_id=9),
+            "application/json", raw, _modern_headers("server/discover")))
         assert resp.status == 200
         assert json.loads(resp.text)["result"]["supportedVersions"]
 
@@ -133,8 +161,8 @@ class TestServerDiscover:
 class TestProtocolVersions:
     async def test_initialize_echoes_a_supported_version(self):
         resp, _m, _r, _o = await _dispatch(
-            "initialize", {"protocolVersion": MCP_PROTOCOL_VERSION_PREFERRED})
-        assert resp["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION_PREFERRED
+            "initialize", {"protocolVersion": MCP_LEGACY_PROTOCOL_VERSION_PREFERRED})
+        assert resp["result"]["protocolVersion"] == MCP_LEGACY_PROTOCOL_VERSION_PREFERRED
 
     async def test_initialize_echoes_a_non_preferred_supported_version(self):
         # The assertion above is VACUOUS while the list holds one entry: echoing
@@ -143,8 +171,8 @@ class TestProtocolVersions:
         # so the echo cannot quietly regress the day a second one is added.
         # Patched on mcp_view (the reader), not const; patching the definition
         # module would not reach the already-imported name.
-        with patch.object(mcp_view, "MCP_PROTOCOL_VERSIONS", ("2026-01-01", "2025-03-26")), \
-             patch.object(mcp_view, "MCP_PROTOCOL_VERSION_PREFERRED", "2026-01-01"):
+        with patch.object(mcp_view, "MCP_LEGACY_PROTOCOL_VERSIONS", ("2025-11-25", "2025-03-26")), \
+             patch.object(mcp_view, "MCP_LEGACY_PROTOCOL_VERSION_PREFERRED", "2025-11-25"):
             resp, _m, _r, _o = await _dispatch(
                 "initialize", {"protocolVersion": "2025-03-26"})
         assert resp["result"]["protocolVersion"] == "2025-03-26"
@@ -157,11 +185,11 @@ class TestProtocolVersions:
     async def test_initialize_names_its_preferred_version_for_an_unknown_one(self):
         resp, _m, _r, _o = await _dispatch(
             "initialize", {"protocolVersion": "1900-01-01"})
-        assert resp["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION_PREFERRED
+        assert resp["result"]["protocolVersion"] == MCP_LEGACY_PROTOCOL_VERSION_PREFERRED
 
     async def test_initialize_without_a_requested_version(self):
         resp, _m, _r, _o = await _dispatch("initialize", {})
-        assert resp["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION_PREFERRED
+        assert resp["result"]["protocolVersion"] == MCP_LEGACY_PROTOCOL_VERSION_PREFERRED
 
     @pytest.mark.parametrize(
         "bogus", [None, 42, ["2025-03-26"], {"v": "2025-03-26"}, True])
@@ -171,22 +199,149 @@ class TestProtocolVersions:
         # unhashable value degrades to the preferred version instead of raising.
         resp, _m, _r, _o = await _dispatch(
             "initialize", {"protocolVersion": bogus})
-        assert resp["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION_PREFERRED
+        assert resp["result"]["protocolVersion"] == MCP_LEGACY_PROTOCOL_VERSION_PREFERRED
 
-    def test_versions_are_not_overclaimed(self):
-        # These two are ABSENT on purpose and adding either without the work is
-        # the failure this pins. 2025-06-18 requires the server to validate the
-        # MCP-Protocol-Version header and reject an unsupported value with 400;
-        # this transport ignores that header and still accepts the JSON-RPC
-        # batches that revision removed. 2026-07-28 additionally requires
-        # header/body validation, a resultType on every result, and cache fields
-        # on every list result.
+    def test_versions_claim_only_the_two_implemented_eras(self):
         assert "2025-06-18" not in MCP_PROTOCOL_VERSIONS
-        assert "2026-07-28" not in MCP_PROTOCOL_VERSIONS
+        assert MCP_PROTOCOL_VERSIONS == ("2026-07-28", "2025-03-26")
+        assert MCP_LEGACY_PROTOCOL_VERSIONS == ("2025-03-26",)
 
     def test_version_list_is_ordered_newest_first(self):
         assert MCP_PROTOCOL_VERSION_PREFERRED == MCP_PROTOCOL_VERSIONS[0]
         assert list(MCP_PROTOCOL_VERSIONS) == sorted(MCP_PROTOCOL_VERSIONS, reverse=True)
+
+
+class TestModernProtocolEra:
+    async def test_modern_result_has_discriminator_identity_and_private_cache_hints(self):
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            _modern_body("tools/list"),
+            "application/json",
+            raw,
+            _modern_headers("tools/list"),
+        ))
+        result = json.loads(resp.text)["result"]
+        assert result["resultType"] == "complete"
+        assert result["ttlMs"] == 0
+        assert result["cacheScope"] == "private"
+        assert result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "Phoenix MCP"
+
+    async def test_header_body_version_mismatch_is_a_recognized_modern_error(self):
+        _token, raw, _data, hass = _strict_env()
+        headers = _modern_headers("ping")
+        headers["MCP-Protocol-Version"] = "1900-01-01"
+        resp = await _view(hass).post(_make_request(
+            _modern_body("ping"), "application/json", raw, headers))
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"]["code"] == -32020
+
+    async def test_unsupported_version_lists_both_supported_eras(self):
+        _token, raw, _data, hass = _strict_env()
+        body = _modern_body("ping")
+        body["params"]["_meta"][
+            "io.modelcontextprotocol/protocolVersion"
+        ] = "1900-01-01"
+        headers = _modern_headers("ping")
+        headers["MCP-Protocol-Version"] = "1900-01-01"
+        resp = await _view(hass).post(_make_request(
+            body, "application/json", raw, headers))
+        error = json.loads(resp.text)["error"]
+        assert resp.status == 400
+        assert error["code"] == -32022
+        assert error["data"] == {
+            "supported": list(MCP_PROTOCOL_VERSIONS),
+            "requested": "1900-01-01",
+        }
+
+    async def test_method_and_name_headers_are_validated(self):
+        _token, raw, _data, hass = _strict_env()
+        body = _modern_body("tools/call", params={"name": "ping", "arguments": {}})
+        for headers in (
+            _modern_headers("tools/list", "ping"),
+            _modern_headers("tools/call", "another-tool"),
+        ):
+            resp = await _view(hass).post(_make_request(
+                body, "application/json", raw, headers))
+            assert resp.status == 400
+            assert json.loads(resp.text)["error"]["code"] == -32020
+
+    async def test_modern_batch_is_rejected_before_dispatch(self):
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            [_modern_body("ping")],
+            "application/json",
+            raw,
+            _modern_headers("ping"),
+        ))
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"]["code"] == -32600
+
+    async def test_modern_initialize_is_not_a_supported_method(self):
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            _modern_body("initialize"),
+            "application/json",
+            raw,
+            _modern_headers("initialize"),
+        ))
+        assert resp.status == 404
+        assert json.loads(resp.text)["error"]["code"] == -32601
+
+
+class TestLegacyProtocolEra:
+    @staticmethod
+    def _initialize_body() -> dict:
+        return {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "legacy-client", "version": "1.0"},
+            },
+        }
+
+    async def test_initialize_session_then_initialized_notification_enables_operations(self):
+        _token, raw, _data, hass = _strict_env()
+        init = await _view(hass).post(_make_request(
+            self._initialize_body(), "application/json", raw))
+        session_id = init.headers["Mcp-Session-Id"]
+        init_result = json.loads(init.text)["result"]
+        assert init_result["protocolVersion"] == "2025-03-26"
+        assert "resultType" not in init_result
+
+        session_headers = {"Mcp-Session-Id": session_id}
+        premature = await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            "application/json", raw, session_headers))
+        assert premature.status == 400
+
+        initialized = await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            "application/json", raw, session_headers))
+        assert initialized.status == 202
+
+        tools = await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+            "application/json", raw, session_headers))
+        assert tools.status == 200
+        assert "resultType" not in json.loads(tools.text)["result"]
+
+    async def test_operation_without_initialize_is_refused(self):
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            "application/json", raw))
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"]["code"] == -32000
+
+    async def test_initialize_must_not_be_batched(self):
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            [self._initialize_body()], "application/json", raw))
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"]["code"] == -32600
 
 
 # --- unknown methods ---------------------------------------------------------

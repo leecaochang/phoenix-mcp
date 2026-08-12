@@ -186,7 +186,7 @@ async def async_generate_ai_task_data(
     )
 
     settings = data.store.get_settings()
-    if data.shutting_down or settings.kill_switch:
+    if not data.ready or data.shutting_down or settings.kill_switch:
         raise HomeAssistantError("The Phoenix MCP AI Task entity is currently unavailable.")
     if not _is_fully_configured(settings):
         raise HomeAssistantError("The Phoenix MCP AI Task entity is not fully configured.")
@@ -249,7 +249,7 @@ if _AI_TASK_AVAILABLE:
             switch clears, rather than churning the entity in and out.
             """
             data = self.hass.data.get(DOMAIN)
-            if data is None or data.shutting_down:
+            if data is None or not data.ready or data.shutting_down:
                 return False
             settings = data.store.get_settings()
             return _is_fully_configured(settings) and not settings.kill_switch
@@ -304,7 +304,7 @@ def async_sync_ai_task(hass: HomeAssistant, entry, data, async_add_entities) -> 
     """
     if not _AI_TASK_AVAILABLE:
         return
-    should_exist = _is_fully_configured(data.store.get_settings())
+    should_exist = data.ready and _is_fully_configured(data.store.get_settings())
 
     if should_exist and data.ai_task_entity is None:
         entity = PhoenixAITaskEntity(hass, entry)

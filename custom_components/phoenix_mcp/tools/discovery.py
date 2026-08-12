@@ -51,6 +51,7 @@ from homeassistant.util.dt import as_utc, parse_datetime, utcnow
 
 from ..const import CAP_ALLOW, CAP_CONFIRM, CAP_DENY, DUAL_GATE_SERVICES, MAX_COMPARE_LIST_VALUES, MAX_COMPARE_VALUE_CHARS, MAX_DANGLING_PATHS, MAX_SEARCH_QUERY_LEN, MESA_MODE_OFF, NO_TARGET_SERVICES, PHYSICAL_GATE_DOMAINS, SEARCH_FUZZY_MATCH_CUTOFF
 from ..data import PhoenixData
+from ..service_targets import secondary_target_error, unsupported_secondary_targets
 from ..tool_contracts import normalize_tool_args
 from ..mesa import async_semantic_moments, build_expand_target, entity_control_mode, evaluate_service_entities
 from ..mesa_core.trigger_validator import entities_by_role
@@ -2173,6 +2174,15 @@ async def _tool_dry_run_service(
     service = str_arg(args.get("service"))
     if not domain or not service:
         return _tool_error("Missing required arguments: domain and service"), "invalid_request", "dry_run_service"
+    secondary_targets = await unsupported_secondary_targets(
+        hass, args.get("service_data")
+    )
+    if secondary_targets:
+        return (
+            _tool_error(secondary_target_error(secondary_targets)),
+            "invalid_request",
+            "dry_run_service",
+        )
     # Sanitised exactly as the real call sanitises it, so the preview predicts
     # the call that would actually run rather than the one the caller wrote.
     service_data = _sanitize_service_data(args.get("service_data"))

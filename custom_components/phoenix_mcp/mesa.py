@@ -758,11 +758,26 @@ def evaluate_registry_action(
     """
     runtime = data.mesa
     settings = data.store.get_settings()
-    if runtime is None or settings.mesa_mode == MESA_MODE_OFF:
+    if settings.mesa_mode == MESA_MODE_OFF:
         return RegistryMesaDecision(
             decision="allow",
             rule="mesa:off",
             reason="MESA is off.",
+        )
+    if runtime is None:
+        if data.mesa_setup_failed is True:
+            return RegistryMesaDecision(
+                decision="deny",
+                rule="mesa:runtime_unavailable",
+                reason=(
+                    "MESA is configured but its runtime failed to initialize. "
+                    "Reload Phoenix MCP after resolving the Repairs issue."
+                ),
+            )
+        return RegistryMesaDecision(
+            decision="allow",
+            rule="mesa:unavailable_in_test_context",
+            reason="MESA has no runtime in this host context.",
         )
 
     explanation = runtime.resolver.explain(entity_id)
@@ -1065,11 +1080,26 @@ async def async_apply_mesa_to_call(
     - deny: every entity was blocked; caller returns its standard Forbidden.
     - pending: at least one entity needs confirmation; an approval was created.
 
-    ``mesa_mode == off`` or a missing runtime short-circuits to allow-all.
+    ``mesa_mode == off`` short-circuits to allow-all. A production setup failure
+    fails closed while advisory or enforced mode remains configured.
     """
     runtime = data.mesa
     settings = data.store.get_settings()
-    if runtime is None or settings.mesa_mode == MESA_MODE_OFF:
+    if settings.mesa_mode == MESA_MODE_OFF:
+        return MesaGateOutcome(decision="allow", entities=list(entities))
+    if runtime is None:
+        if data.mesa_setup_failed is True:
+            reason = (
+                "MESA is configured but its runtime failed to initialize. "
+                "Reload Phoenix MCP after resolving the Repairs issue."
+            )
+            return MesaGateOutcome(
+                decision="deny",
+                blocked=[
+                    (entity_id, "mesa:runtime_unavailable", reason)
+                    for entity_id in entities
+                ],
+            )
         return MesaGateOutcome(decision="allow", entities=list(entities))
 
     # Only this path sets the audit context: the same enforcer runs from

@@ -29,10 +29,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.phoenix_mcp.audit import AuditLog
-from custom_components.phoenix_mcp.const import DOMAIN, TARGET_SELECTOR_KEYS, TOKEN_PREFIX
+from custom_components.phoenix_mcp.const import (
+    DOMAIN,
+    SECONDARY_TARGET_SELECTOR_KEYS,
+    TARGET_SELECTOR_KEYS,
+    TOKEN_PREFIX,
+)
 from custom_components.phoenix_mcp.data import PhoenixData
 from custom_components.phoenix_mcp.helpers import sanitize_service_data
 from custom_components.phoenix_mcp.rate_limiter import RateLimiter, RateLimitResult
+from custom_components.phoenix_mcp.service_targets import (
+    secondary_target_fields,
+    unsupported_secondary_targets,
+)
 from custom_components.phoenix_mcp.token_store import TokenRecord, TokenStore
 
 # A body carrying every selector Home Assistant honours, alongside real service
@@ -146,6 +155,39 @@ def test_target_selection_reads_exactly_those_keys():
     assert selected == set(TARGET_SELECTOR_KEYS)
 
 
+def test_static_secondary_selector_fallback_covers_installed_home_assistant():
+    """A new HA service selector cannot silently become a new target channel."""
+    from pathlib import Path
+
+    import homeassistant
+    import yaml
+
+    component_root = Path(homeassistant.__file__).parent / "components"
+    descriptions: dict[str, dict] = {}
+    for path in component_root.glob("*/services.yaml"):
+        loaded = yaml.safe_load(path.read_text()) or {}
+        if isinstance(loaded, dict):
+            descriptions[path.parent.name] = loaded
+
+    discovered = secondary_target_fields(descriptions) - TARGET_SELECTOR_KEYS
+    assert discovered <= SECONDARY_TARGET_SELECTOR_KEYS
+
+
+def test_nested_target_selector_is_discovered_for_custom_integrations():
+    descriptions = {
+        "example": {
+            "route": {
+                "fields": {
+                    "destination": {
+                        "selector": {"object": {"fields": {"to": {"target": {}}}}}
+                    }
+                }
+            }
+        }
+    }
+    assert "destination" in secondary_target_fields(descriptions)
+
+
 # --- the helper --------------------------------------------------------------
 
 
@@ -204,6 +246,61 @@ async def test_mcp_call_service_strips_selectors(hass, token_store):
     call_data = _call_data(hass)
     _assert_no_selectors_but_entity_list(call_data, ["light.kitchen"])
     assert call_data["brightness_pct"] == 40
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_service_refuses_tts_secondary_target(hass, token_store):
+    """A permitted TTS entity cannot be used to speak on a denied media player."""
+    from custom_components.phoenix_mcp.mcp_view import _execute_call_service
+
+    token, _ = _make_token()
+    data = _make_data(token)
+    hass = _hass_with(data)
+    args = {
+        "domain": "tts",
+        "service": "speak",
+        "entity_id": "tts.allowed",
+        "service_data": {
+            "media_player_entity_id": "media_player.denied",
+            "message": "hello",
+        },
+    }
+
+    with patch(
+        "custom_components.phoenix_mcp.mcp_view.resolve_service_targets"
+    ) as resolve:
+        content, outcome, resource = await _execute_call_service(
+            args, token, hass, data, request_id="r1"
+        )
+
+    assert outcome == "invalid_request"
+    assert resource == "service:tts/speak"
+    assert "media_player_entity_id" in content["content"][0]["text"]
+    resolve.assert_not_called()
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_service_description_adds_secondary_target_guard(hass):
+    """Third-party selector metadata is enforced without a Phoenix release."""
+    descriptions = {
+        "example": {
+            "route": {
+                "fields": {
+                    "destination": {"selector": {"entity": {"multiple": True}}}
+                }
+            }
+        }
+    }
+    with patch(
+        "custom_components.phoenix_mcp.service_targets.async_get_all_descriptions",
+        AsyncMock(return_value=descriptions),
+    ):
+        blocked = await unsupported_secondary_targets(
+            hass, {"destination": ["light.denied"]}
+        )
+
+    assert blocked == ("destination",)
 
 
 @pytest.mark.asyncio

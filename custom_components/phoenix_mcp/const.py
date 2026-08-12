@@ -27,6 +27,7 @@ PHOENIX_VERSION = "1.1.1"
 MIN_HA_VERSION = "2025.2.0"
 GITHUB_URL = "https://github.com/leecaochang/phoenix-mcp"
 DOMAIN = "phoenix_mcp"
+RUNTIME_READY_KEY = "phoenix_mcp_runtime_ready"
 STORAGE_KEY = "phoenix_mcp"
 STORAGE_VERSION = 2
 
@@ -856,6 +857,37 @@ PHYSICAL_GATE_DOMAINS = frozenset({"lock", "alarm_control_panel", "cover", "valv
 # here rather than silently widening what a call can reach.
 TARGET_SELECTOR_KEYS = frozenset({"entity_id", "device_id", "area_id", "floor_id", "label_id"})
 
+# Service fields whose selectors name additional HA entities, devices, or areas
+# outside the service's ordinary target block. Home Assistant integrations use
+# these for destinations, group members, source players, rooms, and similar
+# secondary targets. Phoenix cannot authorize them by flattening the primary
+# target, so call_service refuses them until a dedicated adapter models the
+# field's exact authorization semantics. The runtime also discovers selector
+# fields from HA's service descriptions; this set is the fail-closed fallback
+# when a description cannot be loaded and an upgrade guard for newly added keys.
+SECONDARY_TARGET_SELECTOR_KEYS = frozenset({
+    "add_entities",
+    "bridge",
+    "cleaning_area_id",
+    "container_device_id",
+    "device_ids",
+    "doorbells",
+    "entities",
+    "entity",
+    "group_members",
+    "master",
+    "media_player",
+    "media_player_entity_id",
+    "remove_entities",
+    "rooms",
+    "slaves",
+    "snapshot_entities",
+    "source_player",
+    "target_device",
+    "transfer_id",
+    "vehicle",
+})
+
 # The ESPHome integration's domain. Its services are ALL dynamically registered
 # per device (services.yaml is deliberately empty upstream): a device's firmware
 # declares actions, and HA registers each as
@@ -1049,23 +1081,18 @@ MAX_SUBSCRIPTION_SECONDS = 30
 # when the client supplied a progressToken, tells it what the hold is waiting for.
 MCP_SSE_KEEPALIVE_SECONDS = 15.0
 
-# The MCP protocol revisions this transport implements, newest first.
-# server/discover returns the whole list; initialize echoes the client's
-# requested version when it appears here and the first entry otherwise.
+# The MCP protocol revisions this transport implements, newest first. Phoenix
+# is deliberately dual-era: modern requests use 2026-07-28 per-request metadata,
+# while initialize selects the older 2025-03-26 session lifecycle. Response
+# fields are shaped for the selected era, since modern-only fields can break
+# strict legacy clients.
 #
-# ADDING AN ENTRY IS A COMPLIANCE CLAIM, NOT A LABEL: a client is entitled to
-# assume every MUST that revision introduces is honored here, and the only thing
-# stopping a wrong claim is this comment. Two revisions are deliberately ABSENT
-# even though much of Phoenix MCP already matches them. 2025-06-18 requires the
-# server to validate the MCP-Protocol-Version header and reject an unsupported
-# value with HTTP 400; this transport ignores that header entirely, and it also
-# still accepts the JSON-RPC batches that revision removed. 2026-07-28 requires
-# server-side header/body validation (Mcp-Method, Mcp-Name, Mcp-Param-*), a
-# resultType on every result, and cache fields on every list result, none of
-# which exist yet. Claiming either today would make a conforming client trust
-# checks that do not run.
-MCP_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-03-26",)
+# ADDING AN ENTRY IS A COMPLIANCE CLAIM, NOT A LABEL. Do not add an intermediate
+# legacy revision unless every MUST introduced by that revision is implemented.
+MCP_PROTOCOL_VERSIONS: tuple[str, ...] = ("2026-07-28", "2025-03-26")
 MCP_PROTOCOL_VERSION_PREFERRED = MCP_PROTOCOL_VERSIONS[0]
+MCP_LEGACY_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-03-26",)
+MCP_LEGACY_PROTOCOL_VERSION_PREFERRED = MCP_LEGACY_PROTOCOL_VERSIONS[0]
 
 # Freshness hint (milliseconds) on the server/discover result. Nothing in it is
 # enforcement: identity and the version list are fixed for a build, and the

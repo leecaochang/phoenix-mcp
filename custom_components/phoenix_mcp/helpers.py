@@ -279,7 +279,7 @@ async def async_get_authenticated_token(
     Checks for kill switch, query-param token leakage, format pre-validation,
     hash lookup, revocation, expiry, and rate limits in that order.
     """
-    if data.shutting_down:
+    if not data.ready or data.shutting_down:
         return build_error_response("service_unavailable", "Service unavailable.", 503, request_id)
 
     if data.store.get_settings().kill_switch:

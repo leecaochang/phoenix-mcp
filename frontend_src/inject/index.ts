@@ -41,6 +41,7 @@ import { JS_BUILD } from "../version";
 import { syncCardCatalog } from "../utils/card_harvest";
 import { loadTranslations, resolveLanguage, syncTranslations, t } from "../i18n";
 import { BTN_CLASS, deepQueryAll, extractEntityId, isSelfMutation, nameInsertionPoint, onEntityPage, SUBPAGE_SURFACES, WIDEN_STYLE_ID } from "./dom";
+import { claimInjectController, type InjectController } from "./ownership";
 import type { QuickAddScope } from "./QuickAdd";
 
 const LOG = "[Phoenix MCP inject]";
@@ -60,8 +61,28 @@ const profiled: Record<Scope, Set<string>> = {
   area: new Set(),
   integration: new Set(),
 };
-const observedRoots = new WeakSet<ShadowRoot>();
+let observedRoots = new WeakSet<ShadowRoot>();
+const observers = new Set<MutationObserver>();
+const timeouts = new Set<number>();
+const intervals = new Set<number>();
+const listeners: Array<{ type: string; handler: EventListener }> = [];
+let disposed = false;
 let debounceTimer: number | undefined;
+
+function trackedTimeout(fn: () => void, delay: number): number {
+  const id = window.setTimeout(() => {
+    timeouts.delete(id);
+    if (!disposed) fn();
+  }, delay);
+  timeouts.add(id);
+  return id;
+}
+
+function trackedInterval(fn: () => void, delay: number): number {
+  const id = window.setInterval(() => { if (!disposed) fn(); }, delay);
+  intervals.add(id);
+  return id;
+}
 
 function log(...args: unknown[]): void {
   // Quiet by default; visible with verbose console logging.
@@ -113,7 +134,7 @@ function buildButton(scope: Scope, key: string, placement: Placement = "cell"): 
     minWidth: toolbar ? "34px" : "26px",
     flex: "0 0 auto",
     padding: "0",
-    border: "1px solid var(--divider-color, #c4c4c4)",
+    border: "1px solid var(--divider-color)",
     borderRadius: toolbar ? "8px" : "6px",
     font: "inherit",
     fontSize: toolbar ? "16px" : "15px",
@@ -183,7 +204,7 @@ function applyButtonState(btn: HTMLButtonElement, scope: Scope, key: string): vo
   btn.setAttribute("aria-label", label);
   btn.style.background = has ? "var(--primary-color, #03a9f4)" : "var(--secondary-background-color, rgba(127,127,127,0.16))";
   btn.style.color = has ? "var(--text-primary-color, #fff)" : "var(--secondary-text-color, #717171)";
-  btn.style.borderColor = has ? "var(--primary-color, #03a9f4)" : "var(--divider-color, #c4c4c4)";
+  btn.style.borderColor = has ? "var(--primary-color, #03a9f4)" : "var(--divider-color)";
 }
 
 function decorateRow(row: HTMLElement): void {
@@ -329,9 +350,14 @@ const _scanReasons = new Set<string>();
 let _scanCount = 0;
 let _scanWindow = 0;
 function debouncedScan(reason = "?"): void {
+  if (disposed) return;
   _scanReasons.add(reason);
-  window.clearTimeout(debounceTimer);
-  debounceTimer = window.setTimeout(() => {
+  if (debounceTimer !== undefined) {
+    window.clearTimeout(debounceTimer);
+    timeouts.delete(debounceTimer);
+  }
+  debounceTimer = trackedTimeout(() => {
+    debounceTimer = undefined;
     if (DEBUG) {
       const now = Date.now();
       _scanCount++;
@@ -351,15 +377,17 @@ function observeRoot(sr: ShadowRoot): void {
   if (observedRoots.has(sr)) return;
   observedRoots.add(sr);
   try {
-    new MutationObserver((records) => {
+    const observer = new MutationObserver((records) => {
       // Ignore our own button/style writes so applyButtonState's glyph swap cannot
       // ping-pong with HA's row re-render into an endless loop (the "+/check
       // toggles until reload" bug after adding or deleting a profile).
       if (!isSelfMutation(records)) debouncedScan("table-observer");
-    }).observe(sr, {
+    });
+    observer.observe(sr, {
       childList: true,
       subtree: true,
     });
+    observers.add(observer);
   } catch (e) {
     log("observe failed", e);
   }
@@ -425,6 +453,7 @@ async function openModal(scope: Scope, key: string): Promise<void> {
 }
 
 function safe(fn: () => void): void {
+  if (disposed) return;
   try {
     fn();
   } catch (e) {
@@ -434,27 +463,32 @@ function safe(fn: () => void): void {
 
 function installListeners(): void {
   for (const ev of ["location-changed", "popstate", "hashchange"]) {
-    window.addEventListener(ev, () => debouncedScan(ev));
+    const handler = () => debouncedScan(ev);
+    window.addEventListener(ev, handler);
+    listeners.push({ type: ev, handler });
   }
   // Coarse observer for navigation/panel swaps (shadow-internal changes are
   // covered by the per-table observers and the poll).
   try {
-    new MutationObserver(() => debouncedScan("body-observer")).observe(document.body, {
+    const observer = new MutationObserver(() => debouncedScan("body-observer"));
+    observer.observe(document.body, {
       childList: true,
       subtree: true,
     });
+    observers.add(observer);
   } catch (e) {
     log("body observe failed", e);
   }
-  window.setInterval(() => debouncedScan("poll"), POLL_MS);
+  trackedInterval(() => debouncedScan("poll"), POLL_MS);
 }
 
 let startAttempts = 0;
 function start(): void {
+  if (disposed) return;
   const hass = getHass();
   if (!hass) {
     // <home-assistant> not ready yet; retry briefly, then give up.
-    if (startAttempts++ < 40) window.setTimeout(() => safe(start), 250);
+    if (startAttempts++ < 40) trackedTimeout(() => safe(start), 250);
     return;
   }
   if (!hass.user?.is_admin) return; // non-admins get nothing
@@ -474,11 +508,13 @@ function start(): void {
   ]).then(() => safe(scan));
   // These buttons are painted once per scan, so without this their labels stay
   // in the old language until the next full page load.
-  window.addEventListener("phx-language-changed", () => {
+  const languageHandler = () => {
     void loadTranslations(getHass(), resolveLanguage(getHass())).then(() => safe(scan));
-  });
+  };
+  window.addEventListener("phx-language-changed", languageHandler);
+  listeners.push({ type: "phx-language-changed", handler: languageHandler });
   // "auto" tracks the HA profile language, which changes without a page load.
-  window.setInterval(() => {
+  trackedInterval(() => {
     void syncTranslations(getHass()).then((changed) => { if (changed) safe(scan); });
   }, 5000);
   installListeners();
@@ -488,17 +524,39 @@ function start(): void {
   log("active", "build", JS_BUILD);
 }
 
-// A single page can end up with more than one copy of this module loaded: a
-// redeploy bumps the cache-bust ?v= on the module URL, and HA live-updates
-// extra_module_url into the open page without a full browser reload, so the old
-// and new modules both run. Each copy keeps its own profiledEntities set, and
-// they fight over the one shared button, flipping its glyph +/check forever (only
-// a full reload clears it). Guard on a window flag so only the first copy in a
-// page is ever active; later copies stand down until the next full reload.
+// HA can load a cache-busted replacement without unloading the old module. The
+// newest build takes ownership and explicitly tears down the old build's
+// observers, timers, listeners and DOM, so a live deploy does not require a full
+// browser reload and two profile snapshots cannot fight over the same button.
 const ACTIVE_FLAG = "__phxMesaInjectActive";
-if ((window as unknown as Record<string, unknown>)[ACTIVE_FLAG]) {
-  log("another injector instance is already active in this page; standing down");
-} else {
-  (window as unknown as Record<string, unknown>)[ACTIVE_FLAG] = true;
+const controllerHost = window as unknown as Record<string, unknown>;
+let controller: InjectController;
+controller = {
+  build: JS_BUILD,
+  dispose: () => {
+    if (disposed) return;
+    disposed = true;
+    if (debounceTimer !== undefined) window.clearTimeout(debounceTimer);
+    for (const id of timeouts) window.clearTimeout(id);
+    for (const id of intervals) window.clearInterval(id);
+    for (const observer of observers) observer.disconnect();
+    for (const { type, handler } of listeners) window.removeEventListener(type, handler);
+    timeouts.clear();
+    intervals.clear();
+    observers.clear();
+    listeners.length = 0;
+    observedRoots = new WeakSet<ShadowRoot>();
+    for (const element of deepQueryAll(`.${BTN_CLASS},#${WIDEN_STYLE_ID}`)) element.remove();
+    for (const element of deepQueryAll("[data-phx-widen]")) {
+      element.removeAttribute("data-phx-widen");
+    }
+    if (controllerHost[ACTIVE_FLAG] === controller) delete controllerHost[ACTIVE_FLAG];
+  },
+};
+
+if (claimInjectController(controllerHost, ACTIVE_FLAG, controller)) {
   safe(start);
+} else {
+  disposed = true;
+  log("an equal or newer injector build is already active; standing down");
 }

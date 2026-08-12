@@ -5,6 +5,8 @@
       "config.abort.already_configured": "5b00273b49dd",
       "config.create_entry.default": "6314faf45d84",
       "config.step.user.description": "993bec296693",
+      "issues.mesa_runtime_unavailable.description": "92fc39ec0a1b",
+      "issues.mesa_runtime_unavailable.title": "e84c2cf159a6",
       "notification.approval.message": "7571808cfcff",
       "notification.rate_limit.message": "d5cfc1e83979",
       "notification.rate_limit.title": "935681db3aab",

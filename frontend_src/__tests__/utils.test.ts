@@ -24,6 +24,7 @@ function makeToken(overrides: Partial<TokenRecord> = {}): TokenRecord {
     cap_script_write: "deny",
     cap_blueprint_write: "deny",
     cap_log_read: "deny",
+    cap_log_control: "deny",
     cap_config_read: "deny",
     cap_template_render: "deny",
     cap_restart: "deny",

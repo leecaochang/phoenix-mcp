@@ -162,7 +162,7 @@ if _ASSIST_API_SUPPORTED:
             # Resolve the bound token FRESH every turn (never cache token state).
             # Unbound, missing, invalid, or Phoenix MCP disabled -> zero tools, never raise
             # (raising would fail the whole conversation turn).
-            if not data.shutting_down and not settings.kill_switch:
+            if data.ready and not data.shutting_down and not settings.kill_switch:
                 token_id = settings.assist_bound_token_id
                 if token_id:
                     candidate = data.store.get_token_by_id(token_id)

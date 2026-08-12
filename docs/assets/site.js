@@ -216,13 +216,21 @@
   function toggleNav() {
     var open = document.body.classList.toggle("nav-open");
     var btn = document.getElementById("menu-btn");
-    if (btn) { btn.setAttribute("aria-expanded", String(open)); btn.innerHTML = open ? SVG.close : SVG.menu; }
+    if (btn) {
+      btn.setAttribute("aria-expanded", String(open));
+      btn.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+      btn.innerHTML = open ? SVG.close : SVG.menu;
+    }
   }
   function closeNav() {
     if (!document.body.classList.contains("nav-open")) return;
     document.body.classList.remove("nav-open");
     var btn = document.getElementById("menu-btn");
-    if (btn) { btn.setAttribute("aria-expanded", "false"); btn.innerHTML = SVG.menu; }
+    if (btn) {
+      btn.setAttribute("aria-expanded", "false");
+      btn.setAttribute("aria-label", "Open navigation");
+      btn.innerHTML = SVG.menu;
+    }
   }
 
   /* ---- code blocks: copy + light highlight ---- */

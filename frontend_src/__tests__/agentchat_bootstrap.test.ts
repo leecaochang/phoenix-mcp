@@ -6,6 +6,10 @@ const ACTIVE_FLAG = "__phxAgentChatBootstrapped";
 
 describe("global Agent Chat bootstrap", () => {
   afterEach(() => {
+    const controller = (window as unknown as Record<string, unknown>)[ACTIVE_FLAG] as
+      | { dispose?: () => void }
+      | undefined;
+    controller?.dispose?.();
     vi.clearAllTimers();
     vi.useRealTimers();
     document.body.replaceChildren();

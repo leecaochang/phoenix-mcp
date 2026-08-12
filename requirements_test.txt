@@ -8,10 +8,10 @@
 #   PHACC 0.13.354  ->  homeassistant==2026.8.0
 #   Python: 3.14
 #
-# This is a TEST pin only. Phoenix MCP's runtime floor is unchanged (manifest
-# min_ha_version = 2024.5.0); the integration is version-adaptive and runs on
-# older HA too. Keep this tracking the live HA version and re-run the suite on
-# every HA upgrade (the ws_dispatch module leans on HA internals).
+# This is a TEST pin only. Phoenix MCP does not declare a manifest-level
+# min_ha_version; compatibility is feature-detected at runtime. Keep this
+# tracking the live HA version and re-run the suite on every HA upgrade (the
+# ws_dispatch module leans on HA internals).
 #
 # Set up / upgrade:
 #   python3.14 -m venv venv

@@ -27,7 +27,7 @@ TRANSLATIONS = PACKAGE / "translations"
 
 # Sections the panel and HA actually read. `entity` is deliberately absent from
 # every translated locale (see KEEP_ENGLISH_SECTIONS).
-SECTIONS = ("config", "panel", "notification", "voice")
+SECTIONS = ("config", "issues", "panel", "notification", "voice")
 
 # Which directory each section is stored in. To a translator, and to every check
 # in this file, there is ONE catalog per language; it is split across two
@@ -39,6 +39,7 @@ SECTIONS = ("config", "panel", "notification", "voice")
 SECTION_DIRS = {
     "config": TRANSLATIONS,
     "entity": TRANSLATIONS,
+    "issues": TRANSLATIONS,
     "panel": CATALOGS,
     "notification": CATALOGS,
     "voice": CATALOGS,

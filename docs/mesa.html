@@ -48,7 +48,7 @@
         </ul>
 
         <h2>Where MESA runs</h2>
-        <p>Every service-call path resolves and flattens its target to explicit entity IDs, applies the token's capability gates, and only then hands the entity list to MESA. MESA never sees an entity Phoenix MCP has already denied; it has the final say on what survives. When MESA is off or no runtime is loaded, it reverts to allow-all and changes nothing.</p>
+        <p>Every supported service-call path resolves and flattens its primary target to explicit entity IDs, applies the token's capability gates, and only then hands the entity list to MESA. Service fields that can name additional entity, device, or area targets are refused until Phoenix can model them safely. MESA never sees an entity Phoenix MCP has already denied; it has the final say on what survives. Explicitly selecting Off makes MESA allow all. If a configured MESA runtime fails to initialize, Phoenix keeps reads and admin recovery available, creates a Repairs issue, and refuses protected state-changing operations until the integration is reloaded successfully.</p>
         <p>MESA governs <strong>writes</strong>. Reads are scoped by the permission tree, not by MESA, so a read-only or confirm entity is still readable if the token can read it.</p>
 
         <h2>An entity's control mode</h2>

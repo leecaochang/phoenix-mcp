@@ -576,11 +576,12 @@ async def test_mcp_notification_gets_no_response():
     assert result.status == 202
     assert not result.text
 
-    # A request WITH id: null is NOT a notification, it still gets a response.
+    # A request WITH id: null is not a notification, but MCP rejects that ID.
     body2 = json.dumps({"jsonrpc": "2.0", "id": None, "method": "ping"}).encode()
     request2 = _make_request(method="POST", headers={"Authorization": f"Bearer {raw}"}, body=body2)
     result2 = await view.post(request2)
     assert result2.status == 200
+    assert json.loads(result2.text)["error"]["code"] == -32600
 
 
 @pytest.mark.asyncio
@@ -602,9 +603,9 @@ async def test_mcp_malformed_no_id_is_invalid_request_not_notification():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_id", [{}, [], True, False, {"a": 1}, [1, 2]])
+@pytest.mark.parametrize("bad_id", [{}, [], True, False, None, 2.5, {"a": 1}, [1, 2]])
 async def test_mcp_invalid_id_is_refused_and_never_dispatched(bad_id):
-    """An id that is not a String, Number or Null must not reach a tool.
+    """An id that is not an MCP String or Integer must not reach a tool.
 
     It used to be coerced to None and dispatched anyway, so a tools/call with
     `id: {}` ran its side effect and answered with an id its sender could not
@@ -634,7 +635,7 @@ async def test_mcp_invalid_id_is_refused_and_never_dispatched(bad_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("good_id", ["abc", 1, 0, -5, 2.5, None])
+@pytest.mark.parametrize("good_id", ["abc", 1, 0, -5])
 async def test_mcp_valid_id_shapes_still_dispatch(good_id):
     # The refusal above must not narrow what a conforming client may send.
     token, raw = _make_token()

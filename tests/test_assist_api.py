@@ -51,6 +51,7 @@ def _make_data(token: TokenRecord | None, *, kill_switch: bool = False, bound_id
     return SimpleNamespace(
         store=store,
         mesa=None,
+        ready=True,
         shutting_down=False,
         assist_api_unregister=None,
     )

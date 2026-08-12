@@ -14,11 +14,12 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from homeassistant.core import HomeAssistant, callback
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.phoenix_mcp as phoenix_init
-from custom_components.phoenix_mcp.const import DOMAIN
+from custom_components.phoenix_mcp.const import DOMAIN, RUNTIME_READY_KEY
 
 
 def _settings(kill_switch: bool = False):
@@ -98,8 +99,88 @@ async def test_setup_skips_client_routes_when_kill_switch_on(hass: HomeAssistant
 async def test_setup_degrades_when_mesa_fails(hass: HomeAssistant):
     result, _entry, _ = await _run_setup(hass, mesa_fail=True)
     assert result is True
-    # MESA setup raising must not block startup; the runtime degrades to off.
-    assert hass.data[DOMAIN].mesa is None
+    # MESA setup raising must not block reads or admin recovery, but protected
+    # writes must be able to distinguish this from an explicit off mode.
+    data = hass.data[DOMAIN]
+    assert data.mesa is None
+    assert data.mesa_setup_failed is True
+
+    from homeassistant.helpers import issue_registry as ir
+
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, "mesa_runtime_unavailable"
+    ) is not None
+
+
+async def test_mandatory_platform_failure_rolls_back_every_published_surface(
+    hass: HomeAssistant,
+):
+    """A late mandatory failure must leave permanent routes inert and retryable."""
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    hass.http = MagicMock()
+    store = _mock_store()
+    forward = AsyncMock(side_effect=RuntimeError("sensor setup failed"))
+
+    with patch.object(phoenix_init.TokenStore, "async_create", AsyncMock(return_value=store)), \
+         patch("custom_components.phoenix_mcp.mesa.async_setup_mesa", AsyncMock(return_value=None)), \
+         patch("custom_components.phoenix_mcp.panel.async_register_phoenix_panel", AsyncMock()), \
+         patch("custom_components.phoenix_mcp.panel.async_sync_mesa_inject", AsyncMock()), \
+         patch("custom_components.phoenix_mcp.panel.async_sync_agentchat_inject", AsyncMock()), \
+         patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel") as panel, \
+         patch("custom_components.phoenix_mcp.panel.remove_mesa_inject") as mesa_inject, \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject") as chat_inject, \
+         patch("custom_components.phoenix_mcp.ws_dispatch.check_ws_dispatch_compat", return_value=None), \
+         patch.object(phoenix_init, "async_track_time_interval", MagicMock(return_value=MagicMock())), \
+         patch.object(hass, "async_create_background_task", _fake_bg), \
+         patch.object(hass.config_entries, "async_forward_entry_setups", forward), \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)) as unload:
+        with pytest.raises(RuntimeError, match="sensor setup failed"):
+            await phoenix_init.async_setup_entry(hass, entry)
+
+    assert DOMAIN not in hass.data
+    assert hass.data[RUNTIME_READY_KEY] is False
+    panel.assert_called_once()
+    mesa_inject.assert_called_once()
+    chat_inject.assert_called_once()
+    unload.assert_awaited_once()
+
+    # HA cannot unregister aiohttp routes. They survive the rollback by design,
+    # but the process-wide readiness marker makes them refuse every request.
+    from custom_components.phoenix_mcp.mcp_view import PhoenixMcpView
+
+    view = PhoenixMcpView()
+    view.hass = hass
+    response = await view.post(MagicMock())
+    assert response.status == 503
+
+
+async def test_setup_can_retry_after_mandatory_platform_failure(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    hass.http = MagicMock()
+    store = _mock_store()
+    forward = AsyncMock(side_effect=[RuntimeError("first attempt"), None])
+
+    with patch.object(phoenix_init.TokenStore, "async_create", AsyncMock(return_value=store)), \
+         patch("custom_components.phoenix_mcp.mesa.async_setup_mesa", AsyncMock(return_value=None)), \
+         patch("custom_components.phoenix_mcp.panel.async_register_phoenix_panel", AsyncMock()), \
+         patch("custom_components.phoenix_mcp.panel.async_sync_mesa_inject", AsyncMock()), \
+         patch("custom_components.phoenix_mcp.panel.async_sync_agentchat_inject", AsyncMock()), \
+         patch("custom_components.phoenix_mcp.panel.remove_phoenix_panel"), \
+         patch("custom_components.phoenix_mcp.panel.remove_mesa_inject"), \
+         patch("custom_components.phoenix_mcp.panel.remove_agentchat_inject"), \
+         patch("custom_components.phoenix_mcp.ws_dispatch.check_ws_dispatch_compat", return_value=None), \
+         patch.object(phoenix_init, "async_track_time_interval", MagicMock(return_value=MagicMock())), \
+         patch.object(hass, "async_create_background_task", _fake_bg), \
+         patch.object(hass.config_entries, "async_forward_entry_setups", forward), \
+         patch.object(hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)):
+        with pytest.raises(RuntimeError, match="first attempt"):
+            await phoenix_init.async_setup_entry(hass, entry)
+        assert await phoenix_init.async_setup_entry(hass, entry) is True
+
+    assert hass.data[DOMAIN].ready is True
+    assert hass.data[RUNTIME_READY_KEY] is True
 
 
 async def test_unload_removes_data(hass: HomeAssistant):
@@ -313,6 +394,8 @@ async def test_a_failed_unload_keeps_the_frontend(hass: HomeAssistant):
     mesa.assert_not_called()
     chat.assert_not_called()
     assert hass.data[DOMAIN].shutting_down is False
+    assert hass.data[DOMAIN].ready is True
+    assert hass.data[RUNTIME_READY_KEY] is True
 
 
 async def test_a_failed_unload_leaves_the_integration_usable(hass: HomeAssistant):
@@ -330,6 +413,8 @@ async def test_a_failed_unload_leaves_the_integration_usable(hass: HomeAssistant
     assert ok is False
     assert DOMAIN in hass.data
     assert hass.data[DOMAIN].shutting_down is False
+    assert hass.data[DOMAIN].ready is True
+    assert hass.data[RUNTIME_READY_KEY] is True
 
 
 # --- startup compat probes (system_log shape, template env construction) -----

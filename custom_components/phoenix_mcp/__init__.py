@@ -14,11 +14,12 @@ from homeassistant.helpers import area_registry as ar_mod
 from homeassistant.helpers import device_registry as dr_mod
 from homeassistant.helpers import entity_registry as er_mod
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from .audit import AuditLog
 from .version_store import VersionStore
 from .card_catalog import CardCatalogStore
-from .const import APPROVAL_SWEEP_INTERVAL, AUDIT_STORAGE_KEY, AUDIT_STORAGE_VERSION, CARD_CATALOG_STORAGE_KEY, CARD_CATALOG_STORAGE_VERSION, DOMAIN, EXPIRY_CHECK_INTERVAL, FLUSH_INTERVAL, SENSOR_PUSH_INTERVAL, VERSION_STORAGE_KEY, VERSION_STORAGE_VERSION
+from .const import APPROVAL_SWEEP_INTERVAL, AUDIT_STORAGE_KEY, AUDIT_STORAGE_VERSION, CARD_CATALOG_STORAGE_KEY, CARD_CATALOG_STORAGE_VERSION, DOMAIN, EXPIRY_CHECK_INTERVAL, FLUSH_INTERVAL, RUNTIME_READY_KEY, SENSOR_PUSH_INTERVAL, VERSION_STORAGE_KEY, VERSION_STORAGE_VERSION
 from .data import PhoenixData
 from .helpers import async_archive_expired_token, cancel_expiry_timer, schedule_expiry_timer
 from .policy_engine import template_blocklist_vars
@@ -222,7 +223,50 @@ def _register_views(hass: HomeAssistant, view_classes: list) -> None:
         registered.add(view_cls.__name__)
 
 
+async def _rollback_failed_setup(
+    hass: HomeAssistant, entry: ConfigEntry, data: PhoenixData | None
+) -> None:
+    """Remove every surface a partial setup could have published."""
+    hass.data[RUNTIME_READY_KEY] = False
+    if data is not None:
+        data.ready = False
+        data.shutting_down = True
+        try:
+            from .assist_api import async_unregister_assist_api  # noqa: PLC0415
+
+            async_unregister_assist_api(data)
+        except Exception:  # noqa: BLE001 - rollback continues through every surface
+            _LOGGER.exception("Phoenix MCP: failed to unregister Assist during setup rollback")
+        try:
+            from .voice_agent import async_unregister_voice_agent  # noqa: PLC0415
+
+            async_unregister_voice_agent(hass, entry)
+        except Exception:  # noqa: BLE001 - rollback continues through every surface
+            _LOGGER.exception("Phoenix MCP: failed to unregister voice during setup rollback")
+
+    _remove_frontend(hass)
+    try:
+        await hass.config_entries.async_unload_platforms(entry, _entry_platforms())
+    except Exception:  # noqa: BLE001 - preserve the original setup exception
+        _LOGGER.exception("Phoenix MCP: failed to unload platforms during setup rollback")
+    if data is not None and hass.data.get(DOMAIN) is data:
+        hass.data.pop(DOMAIN, None)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Phoenix MCP atomically from a config entry."""
+    hass.data[RUNTIME_READY_KEY] = False
+    try:
+        result = await _async_setup_entry_impl(hass, entry)
+    except BaseException:
+        await _rollback_failed_setup(hass, entry, hass.data.get(DOMAIN))
+        raise
+    if not result:
+        await _rollback_failed_setup(hass, entry, hass.data.get(DOMAIN))
+    return result
+
+
+async def _async_setup_entry_impl(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Phoenix MCP from a config entry.
 
     Initialises storage, registers admin views and the panel unconditionally.
@@ -251,6 +295,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         audit=audit,
         versions=versions,
         card_catalog=card_catalog,
+        ready=False,
+        enforce_mcp_lifecycle=True,
     )
     # hass.data is keyed by DOMAIN (not config entry ID). This is intentional: the config
     # flow enforces a single Phoenix MCP instance via async_abort("already_configured"), so there
@@ -263,13 +309,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Build the MESA runtime unconditionally (even under the kill switch): the
     # admin profile API must work regardless, and the enforcement gate is simply
     # never reached when no client routes are registered. A failure here must
-    # not block Phoenix MCP setup; MESA degrades to off (data.mesa stays None).
+    # not block Phoenix MCP setup. The integration remains available for reads
+    # and recovery, while state-changing MESA gates fail closed unless the
+    # operator explicitly selected off mode.
     from .mesa import async_setup_mesa
     try:
         data.mesa = await async_setup_mesa(hass, store.get_settings().mesa_mode)
+        data.mesa_setup_failed = False
+        ir.async_delete_issue(hass, DOMAIN, "mesa_runtime_unavailable")
     except Exception:  # noqa: BLE001 - MESA must never block Phoenix MCP startup
-        _LOGGER.exception("Phoenix MCP: MESA runtime setup failed; MESA disabled this session")
+        _LOGGER.exception(
+            "Phoenix MCP: MESA runtime setup failed; protected writes will be refused"
+        )
         data.mesa = None
+        data.mesa_setup_failed = True
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            "mesa_runtime_unavailable",
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="mesa_runtime_unavailable",
+        )
 
     # Record mesa-core's own denials into the audit log. Attached even when MESA
     # is off (the mode is a runtime setting an admin can flip without a restart)
@@ -588,6 +650,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.bus.async_listen("automation_reloaded", _on_automation_reloaded)
         )
 
+    # Publish readiness as the final synchronous setup action. Anything that
+    # raised before here is caught by async_setup_entry and rolled back.
+    data.ready = True
+    hass.data[RUNTIME_READY_KEY] = True
     return True
 
 
@@ -605,11 +671,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     data: PhoenixData | None = hass.data.get(DOMAIN)
     if data is not None:
+        data.ready = False
         data.shutting_down = True
         try:
             await data.audit.async_save()
         except Exception:  # noqa: BLE001 - teardown must not depend on a writable disk
             _LOGGER.exception("Phoenix MCP: could not persist the audit log during unload")
+    hass.data[RUNTIME_READY_KEY] = False
 
     # The platform unload runs BEFORE the frontend comes down, and that order is
     # load-bearing: HA keeps a FAILED unload loaded, so tearing the panel down
@@ -626,6 +694,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Still loaded, so it has to stay usable: this flag gates every token
         # request, and the panel and injectors are deliberately left registered.
         data.shutting_down = False
+        data.ready = True
+        hass.data[RUNTIME_READY_KEY] = True
 
     return unload_ok
 

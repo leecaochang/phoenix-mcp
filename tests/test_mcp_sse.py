@@ -72,12 +72,18 @@ def _stream_patch(stream: _FakeStream):
     return patch.object(mcp_view.web, "StreamResponse", side_effect=_factory)
 
 
-def _make_request(body: dict | list, accept: str, raw_token: str) -> MagicMock:
+def _make_request(
+    body: dict | list,
+    accept: str,
+    raw_token: str,
+    extra_headers: dict[str, str] | None = None,
+) -> MagicMock:
     payload = json.dumps(body).encode()
     req = MagicMock()
     req.method = "POST"
     req.remote = "127.0.0.1"
     headers = {"Authorization": f"Bearer {raw_token}", "Accept": accept}
+    headers.update(extra_headers or {})
     req.headers = MagicMock()
     req.headers.get = MagicMock(side_effect=lambda k, default="": headers.get(k, default))
     req.content_length = len(payload)

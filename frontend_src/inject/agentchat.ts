@@ -17,6 +17,7 @@
 
 import { JS_BUILD } from "../version";
 import { registerAgentChatShortcut } from "../utils/agentchat_shortcut";
+import { claimInjectController, type InjectController } from "./ownership";
 import {
   agentCliOpenPatch,
   getDurable as getAgentCliDurable,
@@ -30,6 +31,19 @@ function getHass(): any {
 }
 
 let winMod: typeof import("./AgentChatWindow") | null = null;
+let disposed = false;
+const timeouts = new Set<number>();
+let unregisterShortcut: (() => void) | null = null;
+let bridge: { ready: boolean; open: typeof summon; close: typeof close; toggle: typeof toggle } | null = null;
+
+function trackedTimeout(fn: () => void, delay: number): number {
+  const id = window.setTimeout(() => {
+    timeouts.delete(id);
+    if (!disposed) fn();
+  }, delay);
+  timeouts.add(id);
+  return id;
+}
 
 async function ensureMod(): Promise<typeof import("./AgentChatWindow")> {
   if (!winMod) winMod = await import("./AgentChatWindow");
@@ -38,7 +52,8 @@ async function ensureMod(): Promise<typeof import("./AgentChatWindow")> {
 
 async function open(tokenId?: string): Promise<void> {
   try {
-    (await ensureMod()).showAgentChat(tokenId);
+    const module = await ensureMod();
+    if (!disposed) module.showAgentChat(tokenId);
   } catch (e) {
     // eslint-disable-next-line no-console
     console.debug(LOG, "open failed", e);
@@ -46,6 +61,7 @@ async function open(tokenId?: string): Promise<void> {
 }
 
 async function summon(tokenId?: string): Promise<void> {
+  if (disposed) return;
   // If the mounted chat lives in its popup, this button press is the browser
   // user gesture that can bring that window forward. Do it synchronously before
   // any async import boundary or durable geometry update consumes the gesture.
@@ -59,6 +75,7 @@ async function summon(tokenId?: string): Promise<void> {
 }
 
 async function restore(): Promise<void> {
+  if (disposed) return;
   // Shift+A is a visibility toggle, so reopening restores the last dragged
   // location instead of behaving like the header button's centered summon.
   patchAgentCliDurable(agentCliOpenPatch(getAgentCliDurable()));
@@ -79,23 +96,25 @@ async function toggle(): Promise<void> {
 }
 
 function start(): void {
+  if (disposed) return;
   const hass = getHass();
   if (!hass?.user) {
     // The root and its partial hass object can exist before browser
     // authentication finishes. Wait for the user instead of permanently
     // falling back to the panel after an arbitrary startup deadline.
-    window.setTimeout(start, 250);
+    trackedTimeout(start, 250);
     return;
   }
   if (!hass.user.is_admin) return; // non-admins get nothing
-  (window as any).__phxAgentChat = { ready: true, open: summon, close, toggle };
-  registerAgentChatShortcut(getHass, toggle);
+  bridge = { ready: true, open: summon, close, toggle };
+  (window as any).__phxAgentChat = bridge;
+  unregisterShortcut = registerAgentChatShortcut(getHass, toggle);
   // Opportunistic card-catalog harvest, same reasoning as the profile injector:
   // this loads on every HA page, so it catches dashboards where the Lovelace
   // resources are already imported. DYNAMICALLY imported and deferred so the
   // always-loaded footprint this module promises stays tiny; the harvester pulls
   // in api.ts, which is far larger than everything here. Rate-limited internally.
-  window.setTimeout(() => {
+  trackedTimeout(() => {
     import("../utils/card_harvest")
       .then((m) => m.syncCardCatalog())
       .catch(() => { /* harvesting is best effort and never blocks the chat bridge */ });
@@ -108,15 +127,33 @@ function start(): void {
   console.debug(LOG, "ready", "build", JS_BUILD);
 }
 
-// A page can end up with more than one copy of this module (a redeploy bumps the
-// cache-bust ?v= and HA live-updates the module URL without a full reload). Guard
-// so only the first copy installs the bridge.
+// A cache-busted replacement can enter an already-open page. The newest build
+// disposes the prior shortcut, retry/harvest timers, bridge and mounted window
+// before taking ownership.
 const FLAG = "__phxAgentChatBootstrapped";
-if ((window as any)[FLAG]) {
+const controllerHost = window as unknown as Record<string, unknown>;
+let controller: InjectController;
+controller = {
+  build: JS_BUILD,
+  dispose: () => {
+    if (disposed) return;
+    disposed = true;
+    for (const id of timeouts) window.clearTimeout(id);
+    timeouts.clear();
+    unregisterShortcut?.();
+    unregisterShortcut = null;
+    winMod?.hideAgentChat();
+    if ((window as any).__phxAgentChat === bridge) delete (window as any).__phxAgentChat;
+    bridge = null;
+    if (controllerHost[FLAG] === controller) delete controllerHost[FLAG];
+  },
+};
+
+if (!claimInjectController(controllerHost, FLAG, controller)) {
+  disposed = true;
   // eslint-disable-next-line no-console
-  console.debug(LOG, "another instance already active; standing down");
+  console.debug(LOG, "an equal or newer build is already active; standing down");
 } else {
-  (window as any)[FLAG] = true;
   try {
     start();
   } catch (e) {
