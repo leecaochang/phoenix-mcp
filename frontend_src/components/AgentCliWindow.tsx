@@ -9,6 +9,7 @@ import {
 } from "../utils/agentcli_state";
 import { approvalStatusLabel, effortLevelLabel } from "../utils";
 import { clearReasonDraft, getReasonDraft } from "../utils/approval_reason_draft";
+import { localizedApprovalReason } from "../utils/approval_reason";
 import { subscribeApprovalEvents } from "../utils/approval_events";
 import PHOENIX_ICON from "../../custom_components/phoenix_mcp/brand/icon.png";
 import type {
@@ -30,11 +31,11 @@ type ChatEntry =
   | { kind: "assistant"; text: string; thinking: string; ts?: number }
   | { kind: "tool_call"; id: string; name: string; args: unknown }
   | { kind: "tool_result"; id: string; name: string; isError: boolean; summary: string }
-  | { kind: "tool_image"; id: string; name: string; mimeType: string; dataUrl?: string; alt: string; unavailable?: boolean }
+  | { kind: "tool_image"; id: string; name: string; mimeType: string; dataUrl?: string; unavailable?: boolean }
   | { kind: "progress"; id: string; message: string; activity?: boolean }
   | { kind: "approval"; approvalId: string; toolName: string; reviewUrl?: string; status: string; reason?: string }
-  | { kind: "notice"; code?: string; message: string }
-  | { kind: "error"; code: string; message: string };
+  | { kind: "notice"; code?: string; message: string; messageParams?: Record<string, string | number> }
+  | { kind: "error"; code: string; message: string; messageParams?: Record<string, string | number> };
 
 // A completed turn: its entries plus the provider-format messages it produced.
 export interface Turn {
@@ -872,7 +873,18 @@ export function AgentCliWindow({
               // A tool reporting its own progress says strictly more than the
               // generic line, so it takes over rather than stacking under it.
               clearActivity();
-              showProgress(String(p.id ?? ""), String(p.message ?? ""));
+              {
+                const messageKey = typeof p.message_key === "string" ? p.message_key : "";
+                const messageParams = p.message_params && typeof p.message_params === "object"
+                  ? p.message_params as Record<string, string | number>
+                  : undefined;
+                showProgress(
+                  String(p.id ?? ""),
+                  messageKey && hasMessage(messageKey)
+                    ? t(messageKey, messageParams)
+                    : String(p.message ?? ""),
+                );
+              }
               break;
             case "tool_result":
               push({ kind: "tool_result", id: String(p.id ?? ""), name: String(p.name ?? ""),
@@ -889,7 +901,6 @@ export function AgentCliWindow({
                   name: String(p.name ?? ""),
                   mimeType,
                   dataUrl: `data:${mimeType};base64,${data}`,
-                  alt: String(p.alt ?? "Camera image"),
                 });
               }
               break;
@@ -924,7 +935,9 @@ export function AgentCliWindow({
             }
             case "notice":
               push({ kind: "notice", code: p.code ? String(p.code) : undefined,
-                     message: String(p.message ?? "") });
+                     message: String(p.message ?? ""),
+                     messageParams: p.message_params && typeof p.message_params === "object"
+                       ? p.message_params as Record<string, string | number> : undefined });
               break;
             case "continue_required":
               // The turn paused at the round-cap checkpoint. Show the
@@ -932,8 +945,16 @@ export function AgentCliWindow({
               setPendingContinue(Number(p.iterations ?? 0) || 0);
               break;
             case "error":
-              push({ kind: "error", code: String(p.code ?? "error"), message: String(p.message ?? "") });
-              setAnnouncement(t("agentchat.announceError", { message: String(p.message ?? "") }));
+              {
+                const code = String(p.code ?? "error");
+                const message = String(p.message ?? "");
+                const messageParams = p.message_params && typeof p.message_params === "object"
+                  ? p.message_params as Record<string, string | number> : undefined;
+                push({ kind: "error", code, message, messageParams });
+                setAnnouncement(t("agentchat.announceError", {
+                  message: serverText(code, message, messageParams),
+                }));
+              }
               break;
             case "messages":
               newMessages = (Array.isArray(p.messages) ? p.messages : []).slice(sentLen);
@@ -1610,9 +1631,13 @@ export function AgentCliWindow({
  *  itself raises have a catalog entry; a provider-relayed message (a model API's
  *  own error text) has none and shows verbatim, which is what you want for text
  *  Phoenix did not write. */
-function serverText(code: string | undefined, message: string): string {
+function serverText(
+  code: string | undefined,
+  message: string,
+  params?: Record<string, string | number>,
+): string {
   const key = code ? `agentchat.notice.${code}` : "";
-  return key && hasMessage(key) ? t(key) : message;
+  return key && hasMessage(key) ? t(key, params) : message;
 }
 
 function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
@@ -1683,7 +1708,7 @@ function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
               {t("agentchat.imageUnavailable")}
             </div>
           ) : (
-            <img src={entry.dataUrl} alt={entry.alt} />
+            <img src={entry.dataUrl} alt={t("agentchat.toolImageAlt", { name: entry.name })} />
           )}
           <figcaption>{entry.unavailable ? "" : entry.name}</figcaption>
         </figure>
@@ -1701,15 +1726,15 @@ function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
           ) : (
             <div className="agentcli-approval-status">
               {approvalStatusLabel(entry.status)}
-              {entry.reason ? <span className="agentcli-approval-reason">{t("agentchat.approvalReason", { reason: entry.reason })}</span> : null}
+              {entry.reason ? <span className="agentcli-approval-reason">{t("agentchat.approvalReason", { reason: localizedApprovalReason(entry.reason) })}</span> : null}
             </div>
           )}
         </div>
       );
     case "notice":
-      return <div className="agentcli-notice">{serverText(entry.code, entry.message)}</div>;
+      return <div className="agentcli-notice">{serverText(entry.code, entry.message, entry.messageParams)}</div>;
     case "error":
-      return <div className="agentcli-error">{serverText(entry.code, entry.message)}</div>;
+      return <div className="agentcli-error">{serverText(entry.code, entry.message, entry.messageParams)}</div>;
     default:
       return null;
   }

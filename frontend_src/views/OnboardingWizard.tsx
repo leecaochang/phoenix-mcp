@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentCliInstance, AgentCliProviderKind, CreateTokenBody, EntityTree as EntityTreeData, Persona, PermissionTree } from "../types";
-import { api, ApiError } from "../api";
+import { api, ApiError, localizedApiMessage } from "../api";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { EntityTree } from "../components/EntityTree";
 import { CopyButton } from "../components/TokenCreateModal";
@@ -435,7 +435,9 @@ function WizardProviderSetup({ onBack, onTryNow }: {
       if (!r.ok) {
         setValidated(false);
         setModels([]);
-        setErr(r.error ?? t("wizard.connectionFailed"));
+        setErr(r.error
+          ? localizedApiMessage(r.error, r.message_key, r.message_params)
+          : t("wizard.connectionFailed"));
         return;
       }
       setValidated(true);

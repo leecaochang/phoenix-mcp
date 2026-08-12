@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { api, setHass, ApiError } from "../api";
+import { api, setHass, ApiError, localizedApiMessage } from "../api";
 import { primeTranslations } from "../i18n";
 import en from "../../custom_components/phoenix_mcp/catalogs/en.json";
 
@@ -374,6 +374,18 @@ describe("error handling", () => {
       await expect(api.createAgentCliProvider("ollama", {
         base_url: "http://localhost:11434",
       })).rejects.toThrow("此提供商账户已配置。");
+    } finally {
+      primeTranslations(en.panel);
+    }
+  });
+
+  it("localizes keyed messages returned inside successful response bodies", () => {
+    primeTranslations({ adminError: { providerApiKeyRequired: "请输入 API 密钥。" } });
+    try {
+      expect(localizedApiMessage(
+        "Enter your API key.",
+        "adminError.providerApiKeyRequired",
+      )).toBe("请输入 API 密钥。");
     } finally {
       primeTranslations(en.panel);
     }

@@ -40,6 +40,7 @@ from homeassistant.util.dt import parse_datetime, utcnow
 
 from .admin_view import _err, _ok, _read_body, require_admin
 from .approvals import (
+    REASON_AGENT_CHAT_ENDED,
     STATUS_APPROVED,
     STATUS_CANCELLED,
     STATUS_PENDING,
@@ -157,6 +158,26 @@ class ProviderConfig:
     # Tri-state: True is explicit provider/model evidence, False is explicit
     # refusal, and None means unknown. Unknown must remain text-only.
     vision: bool | None = None
+
+
+@dataclass(frozen=True)
+class ProbeConfigError:
+    """A Phoenix-authored setup error with its panel localization contract."""
+
+    message: str
+    key: str
+    params: dict[str, str | int] | None = None
+
+    def payload(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "ok": False,
+            "error": self.message,
+            "message_key": f"adminError.{self.key}",
+            "models": [],
+        }
+        if self.params:
+            out["message_params"] = self.params
+        return out
 
 
 # Provider-kind metadata. Adding a kind here (plus a branch in build_provider if
@@ -1928,7 +1949,12 @@ async def _dispatch_with_progress(emit: Any, tool_id: Any, coro: Any) -> Any:
                 return await task
             if bus.status and bus.status != last:
                 last = bus.status
-                await emit("tool_progress", {"id": tool_id, "message": bus.status})
+                await emit("tool_progress", {
+                    "id": tool_id,
+                    "message": bus.status,
+                    **({"message_key": bus.status_key} if bus.status_key else {}),
+                    **({"message_params": bus.status_params} if bus.status_params else {}),
+                })
     finally:
         _progress_ctx.set(None)
 
@@ -1983,7 +2009,7 @@ async def _await_agent_approval(
                 resolved = await async_update_approval_status(
                     data.store, approval_id,
                     status=STATUS_CANCELLED,
-                    rejected_reason="Agent Chat turn ended before approval",
+                    rejected_reason=REASON_AGENT_CHAT_ENDED,
                 )
         if resolved is not None and resolved.status == STATUS_CANCELLED:
             dismiss_approval_notification(hass, approval_id)
@@ -2043,10 +2069,17 @@ async def _stream_turn_resilient(
                 retry = True
                 break
             if etype == EV_ERROR and attempt > 1:
-                ev = {**ev, "message": (
-                    f"Could not reach the provider after retrying for about "
-                    f"{int(_CONNECT_RETRY_WINDOW_SECONDS)}s. {ev.get('message', '')}"
-                ).strip()}
+                detail = str(ev.get("message") or "").strip()
+                seconds = int(_CONNECT_RETRY_WINDOW_SECONDS)
+                ev = {
+                    **ev,
+                    "code": "provider_retry_exhausted",
+                    "message": (
+                        f"Could not reach the provider after retrying for about "
+                        f"{seconds}s. {detail}"
+                    ).strip(),
+                    "message_params": {"seconds": seconds, "detail": detail},
+                }
             if etype in (EV_TEXT, EV_THINKING, EV_TOOL, EV_DONE):
                 produced = True
             yield ev
@@ -2126,6 +2159,8 @@ async def _consume_model_stream(
         elif etype == EV_ERROR:
             await emit("error", {"code": ev.get("code"), "message": ev.get("message"),
                                  "retryable": ev.get("retryable", False),
+                                 **({"message_params": ev["message_params"]}
+                                    if ev.get("message_params") else {}),
                                  # Which of Phoenix's own request keys the provider
                                  # refused, when it named one. The layer holding the
                                  # store records it; nothing down here can.
@@ -2252,7 +2287,6 @@ async def _run_tool_batch(
                 "index": index,
                 "mime_type": image["mime_type"],
                 "data": image["data"],
-                "alt": f"Image returned by {name}",
             })
         await emit("tool_result", {"id": tc.get("id"), "name": name,
                                    "is_error": is_error, "summary": _clip_display(text)})
@@ -2854,28 +2888,46 @@ class PhoenixAgentCliChatView(PhoenixView):
             return body
         data = self.hass.data.get(DOMAIN)
         if data is None:
-            return _err("not_found", "Phoenix MCP is not set up.", 404, rid)
+            return _err(
+                "not_found", "Phoenix MCP is not set up.", 404, rid,
+                key="setupMissing",
+            )
 
         # Agent Chat bypasses async_get_authenticated_token (it is admin-authed, not
         # bearer-authed), so it must enforce the same invariants that gate every
         # MCP request: shutdown, the runtime kill switch, and token validity.
         if not data.ready or data.shutting_down or data.store.get_settings().kill_switch:
-            return _err("service_unavailable", "Phoenix MCP is disabled (kill switch).", 503, rid)
+            return _err(
+                "service_unavailable", "Phoenix MCP is disabled (kill switch).", 503, rid,
+                key="serviceDisabled",
+            )
 
         token_id = str(body.get("token_id") or "")
         token = data.store.get_token_by_id(token_id)
         if token is None:
-            return _err("not_found", "Token not found.", 404, rid)
+            return _err(
+                "not_found", "Token not found.", 404, rid,
+                key="tokenNotFound",
+            )
         if not token.is_valid():
-            return _err("invalid_request", "This token is revoked or expired.", 400, rid)
+            return _err(
+                "invalid_request", "This token is revoked or expired.", 400, rid,
+                key="tokenInactive",
+            )
 
         instance_id = str(body.get("instance_id") or "")
         store = await _get_secret_store(self.hass)
         cfg = store.resolve(instance_id, body.get("model") or None)
         if cfg is None:
-            return _err("invalid_request", "Provider account is not configured.", 400, rid)
+            return _err(
+                "invalid_request", "Provider account is not configured.", 400, rid,
+                key="providerNotConfigured",
+            )
         if not cfg.model:
-            return _err("invalid_request", "No model selected for this provider.", 400, rid)
+            return _err(
+                "invalid_request", "No model selected for this provider.", 400, rid,
+                key="providerModelMissing",
+            )
 
         messages = body.get("messages")
         if not isinstance(messages, list):
@@ -2885,11 +2937,17 @@ class PhoenixAgentCliChatView(PhoenixView):
             # message is appended; the model continues from the tool results the
             # prior turn left behind. Requires an existing conversation.
             if not messages:
-                return _err("invalid_request", "Nothing to continue.", 400, rid)
+                return _err(
+                    "invalid_request", "Nothing to continue.", 400, rid,
+                    key="nothingToContinue",
+                )
         else:
             user_text = str(body.get("user") or "")
             if not user_text.strip():
-                return _err("invalid_request", "Empty message.", 400, rid)
+                return _err(
+                    "invalid_request", "Empty message.", 400, rid,
+                    key="emptyMessage",
+                )
             messages = [*messages, {"role": "user", "content": user_text}]
         options = body.get("options") if isinstance(body.get("options"), dict) else {}
 
@@ -2969,7 +3027,7 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return ip.is_link_local or ip.is_multicast or ip.is_reserved
 
 
-async def _validate_base_url(url: str) -> str | None:
+async def _validate_base_url(url: str) -> ProbeConfigError | None:
     """Validate an admin-supplied provider base URL (the local Ollama server).
 
     Phoenix MCP makes server-side requests to this URL, so an admin with a stolen session
@@ -2982,27 +3040,41 @@ async def _validate_base_url(url: str) -> str | None:
     redirects disabled, so an accepted host cannot 302 to metadata. This is a
     validation-time check, not connection-time, so it does not defeat DNS
     rebinding, which is out of scope for an admin-only config surface. Returns an
-    error message, or None when acceptable.
+    localized error contract, or None when acceptable.
     """
     try:
         parts = urlparse(url)
     except ValueError:
-        return "Enter a valid server URL."
+        return ProbeConfigError("Enter a valid server URL.", "providerUrlInvalid")
     if parts.scheme not in ("http", "https"):
-        return "The server URL must start with http:// or https://."
+        return ProbeConfigError(
+            "The server URL must start with http:// or https://.",
+            "providerUrlScheme",
+        )
     if not parts.hostname:
-        return "Enter a valid server URL including a host."
+        return ProbeConfigError(
+            "Enter a valid server URL including a host.", "providerUrlHostRequired",
+        )
     if parts.username or parts.password:
-        return "The server URL must not contain embedded credentials."
+        return ProbeConfigError(
+            "The server URL must not contain embedded credentials.",
+            "providerUrlCredentialsForbidden",
+        )
     if parts.fragment:
-        return "The server URL must not contain a '#' fragment."
+        return ProbeConfigError(
+            "The server URL must not contain a '#' fragment.",
+            "providerUrlFragmentForbidden",
+        )
     try:
         literal = ipaddress.ip_address(parts.hostname)
     except ValueError:
         literal = None
     if literal is not None:
         if _ip_is_blocked(literal):
-            return "The server URL must not point at a link-local or metadata address."
+            return ProbeConfigError(
+                "The server URL must not point at a link-local or metadata address.",
+                "providerUrlAddressForbidden",
+            )
         return None
     # A hostname: resolve it and reject if ANY address is link-local/metadata.
     try:
@@ -3015,17 +3087,21 @@ async def _validate_base_url(url: str) -> str | None:
         except (ValueError, IndexError):
             continue
         if _ip_is_blocked(ip):
-            return "The server URL resolves to a link-local or metadata address."
+            return ProbeConfigError(
+                "The server URL resolves to a link-local or metadata address.",
+                "providerUrlResolutionForbidden",
+            )
     return None
 
 
-async def _probe_config(kind: str, body: dict) -> ProviderConfig | str:
-    """Build a throwaway ProviderConfig from submitted credentials, or an error
-    string. Shared by create (POST) and probe."""
+async def _probe_config(kind: str, body: dict) -> ProviderConfig | ProbeConfigError:
+    """Build a throwaway config or a localized setup error contract."""
     if _KINDS.get(kind, {}).get("keyless"):
         base_url = str(body.get("base_url") or "").strip().rstrip("/")
         if not base_url:
-            return "Enter the Ollama server URL."
+            return ProbeConfigError(
+                "Enter the Ollama server URL.", "ollamaUrlRequired",
+            )
         err = await _validate_base_url(base_url)
         if err:
             return err
@@ -3034,7 +3110,7 @@ async def _probe_config(kind: str, body: dict) -> ProviderConfig | str:
         base_url = _default_base_url(kind)
         api_key = str(body.get("api_key") or "").strip()
         if not api_key:
-            return "Enter your API key."
+            return ProbeConfigError("Enter your API key.", "providerApiKeyRequired")
     model = str(body.get("model") or "").strip()
     return ProviderConfig(kind=kind, model=model or _default_model(kind),
                           base_url=base_url.rstrip("/"), api_key=api_key)
@@ -3061,11 +3137,17 @@ class PhoenixAgentCliProvidersView(PhoenixView):
             return body
         kind = str(body.get("kind") or "")
         if kind not in AGENTCLI_PROVIDERS:
-            return _err("invalid_request", "Unknown provider.", 400, rid)
+            return _err(
+                "invalid_request", "Unknown provider.", 400, rid,
+                key="providerUnknown",
+            )
 
         probe = await _probe_config(kind, body)
-        if isinstance(probe, str):
-            return _err("invalid_request", probe, 400, rid)
+        if isinstance(probe, ProbeConfigError):
+            return _err(
+                "invalid_request", probe.message, 400, rid,
+                key=probe.key, params=probe.params,
+            )
 
         cfg: dict = {}
         if _KINDS[kind]["keyless"]:
@@ -3087,7 +3169,10 @@ class PhoenixAgentCliProvidersView(PhoenixView):
         provider = build_provider(probe)
         ok, reason = await provider.validate(session)
         if not ok:
-            return _err("invalid_request", f"Connection failed: {reason}", 400, rid)
+            return _err(
+                "invalid_request", f"Connection failed: {reason}", 400, rid,
+                key="providerConnectionFailed", params={"detail": reason},
+            )
 
         try:
             instance_id = await store.add(kind, cfg)
@@ -3135,10 +3220,16 @@ class PhoenixAgentCliProviderView(PhoenixView):
             return body
         model = str(body.get("model") or "").strip()
         if not model:
-            return _err("invalid_request", "A model is required.", 400, rid)
+            return _err(
+                "invalid_request", "A model is required.", 400, rid,
+                key="providerModelRequired",
+            )
         store = await _get_secret_store(self.hass)
         if not await store.set_model(instance_id, model):
-            return _err("not_found", "Provider account not found.", 404, rid)
+            return _err(
+                "not_found", "Provider account not found.", 404, rid,
+                key="providerAccountNotFound",
+            )
         return _ok({"instance": {"id": instance_id, "model": model}}, request_id=rid)
 
     @require_admin
@@ -3181,7 +3272,10 @@ class PhoenixAgentCliModelsView(PhoenixView):
         store = await _get_secret_store(self.hass)
         cfg = store.resolve(instance_id)
         if cfg is None:
-            return _err("invalid_request", "Provider account is not configured.", 400, rid)
+            return _err(
+                "invalid_request", "Provider account is not configured.", 400, rid,
+                key="providerNotConfigured",
+            )
         session = async_get_clientsession(self.hass)
         models = await build_provider(cfg).list_models(session)
         return _ok({"models": models}, request_id=rid)
@@ -3211,14 +3305,20 @@ class PhoenixAgentCliRefreshView(PhoenixView):
         store = await _get_secret_store(self.hass)
         cfg = store.resolve(instance_id)
         if cfg is None:
-            return _err("invalid_request", "Provider account is not configured.", 400, rid)
+            return _err(
+                "invalid_request", "Provider account is not configured.", 400, rid,
+                key="providerNotConfigured",
+            )
         session = async_get_clientsession(self.hass)
         provider = build_provider(cfg)
         models = await provider.list_models(session)
         capabilities = await provider.list_model_capabilities(session, models)
         checked_at = utcnow().isoformat()
         if not await store.set_capabilities(instance_id, capabilities, checked_at):
-            return _err("not_found", "Provider account not found.", 404, rid)
+            return _err(
+                "not_found", "Provider account not found.", 404, rid,
+                key="providerAccountNotFound",
+            )
         # `declared` tells the panel whether this provider reports capabilities at
         # all, so it can say "this provider does not publish them" instead of
         # showing an empty result that reads like a failed refresh.
@@ -3256,9 +3356,15 @@ class PhoenixAgentCliProbeCapsView(PhoenixView):
         store = await _get_secret_store(self.hass)
         cfg = store.resolve(instance_id)
         if cfg is None:
-            return _err("invalid_request", "Provider account is not configured.", 400, rid)
+            return _err(
+                "invalid_request", "Provider account is not configured.", 400, rid,
+                key="providerNotConfigured",
+            )
         if not cfg.model:
-            return _err("invalid_request", "Choose a model for this account first.", 400, rid)
+            return _err(
+                "invalid_request", "Choose a model for this account first.", 400, rid,
+                key="providerChooseModel",
+            )
         session = async_get_clientsession(self.hass)
         probed, calls, answered = await async_probe_capabilities(session, cfg)
 
@@ -3272,7 +3378,10 @@ class PhoenixAgentCliProbeCapsView(PhoenixView):
         existing[cfg.model] = merged
         checked_at = utcnow().isoformat()
         if not await store.set_capabilities(instance_id, existing, checked_at):
-            return _err("not_found", "Provider account not found.", 404, rid)
+            return _err(
+                "not_found", "Provider account not found.", 404, rid,
+                key="providerAccountNotFound",
+            )
         return _ok({
             "model": cfg.model,
             "probed": probed,
@@ -3311,11 +3420,14 @@ class PhoenixAgentCliProbeView(PhoenixView):
             return body
         kind = str(body.get("kind") or "")
         if kind not in AGENTCLI_PROVIDERS:
-            return _err("invalid_request", "Unknown provider.", 400, rid)
+            return _err(
+                "invalid_request", "Unknown provider.", 400, rid,
+                key="providerUnknown",
+            )
 
         probe = await _probe_config(kind, body)
-        if isinstance(probe, str):
-            return _ok({"ok": False, "error": probe, "models": []}, request_id=rid)
+        if isinstance(probe, ProbeConfigError):
+            return _ok(probe.payload(), request_id=rid)
         cfg = (
             {"base_url": probe.base_url}
             if _KINDS[kind]["keyless"]
@@ -3331,7 +3443,22 @@ class PhoenixAgentCliProbeView(PhoenixView):
         provider = build_provider(probe)
         ok, reason = await provider.validate(session)
         if not ok:
-            return _ok({"ok": False, "error": reason or "Connection failed.", "models": []}, request_id=rid)
+            if reason:
+                return _ok(
+                    {
+                        "ok": False,
+                        "error": reason,
+                        "message_passthrough": True,
+                        "models": [],
+                    },
+                    request_id=rid,
+                )
+            return _ok(
+                ProbeConfigError(
+                    "Connection failed.", "providerConnectionFailedNoDetail",
+                ).payload(),
+                request_id=rid,
+            )
         models = await provider.list_models(session)
         return _ok({"ok": True, "models": models}, request_id=rid)
 

@@ -2349,7 +2349,22 @@ async def _tool_wait_for_esphome_job(
                 continue
 
             _set_progress_status(
-                _esphome_progress_message(watching, rel, phase), total=float(timeout)
+                _esphome_progress_message(watching, rel, phase), total=float(timeout),
+                key=(
+                    "agentchat.progress.esphomeFlashing"
+                    if phase == "Flashing"
+                    else "agentchat.progress.esphomeCompiling"
+                ),
+                params={
+                    "file": rel,
+                    "progress": (
+                        f": {watching['progress']}%"
+                        if isinstance(watching.get("progress"), int)
+                        and not isinstance(watching.get("progress"), bool)
+                        and 0 <= watching["progress"] <= 100
+                        else ""
+                    ),
+                },
             )
             await asyncio.sleep(ESPHOME_BUILDER_JOB_POLL_SECONDS)
             elapsed += ESPHOME_BUILDER_JOB_POLL_SECONDS
@@ -2444,7 +2459,10 @@ async def _tool_get_esphome_device_logs(
 
     seconds = _esphome_capture_seconds(args)
     values = await hass.async_add_executor_job(_esphome_scrub_values, hass, path)
-    _set_progress_status(f"Capturing {rel} device logs", total=float(seconds))
+    _set_progress_status(
+        f"Capturing {rel} device logs", total=float(seconds),
+        key="agentchat.progress.esphomeLogs", params={"file": rel},
+    )
     try:
         res = await async_builder_capture(
             hass, url, "devices/logs", {"configuration": rel},

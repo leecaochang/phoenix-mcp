@@ -72,24 +72,26 @@ def _err(
     request_id: str = "",
     key: str | None = None,
     params: dict | None = None,
+    *,
+    passthrough: bool = False,
 ) -> web.Response:
     """Return a JSON error response. Uses request_id if supplied, else generates one.
 
-    `message` is the English an operator sees and stays authoritative: the panel
-    shows it whenever there is no key, which covers every un-migrated call site
-    and any older bundle. `key` names a panel catalog entry (`adminError.<key>`)
-    so the message can be localized; `params` fills its {placeholders}.
-
-    Not every message wants a key. Many are field-name echoes ("pass_through
-    must be a boolean") whose whole content is a wire identifier, and those read
-    better untranslated than half-translated.
+    Phoenix-authored operator text must carry `key` and optional `params`.
+    `passthrough=True` is reserved for diagnostic text authored by an upstream
+    provider, tool, or mesa-core. Requiring one classification at runtime keeps
+    a newly added bare English message from silently bypassing localization.
     """
+    if bool(key) == passthrough:
+        raise ValueError("_err requires exactly one of key or passthrough=True")
     rid = request_id or str(uuid.uuid4())
     body: dict[str, Any] = {"error": code, "message": message}
     if key:
         body["message_key"] = f"adminError.{key}"
         if params:
             body["message_params"] = params
+    else:
+        body["message_passthrough"] = True
     return web.Response(
         status=status,
         content_type="application/json",
@@ -136,6 +138,7 @@ def require_admin(method: Callable) -> Callable:
                 "Phoenix MCP setup is not complete.",
                 503,
                 request_id,
+                key="setupIncomplete",
             )
         # Logs user.id (UUID) rather than user.name. UUID is stable and non-spoofable;
         # user.name can be changed by the admin. Intentional.
@@ -242,7 +245,10 @@ One helper, so the paged endpoints cannot disagree. A negative limit is a
     except (TypeError, ValueError):
         return _err("invalid_request", "Invalid pagination parameters.", 400, rid, key="badPagination")
     if limit < 0 or offset < 0:
-        return _err("invalid_request", "limit and offset must be non-negative.", 400, rid)
+        return _err(
+            "invalid_request", "limit and offset must be non-negative.", 400, rid,
+            key="paginationNonNegative",
+        )
     return min(limit, max_limit), offset
 
 
@@ -259,6 +265,8 @@ def _validate_permission_tree_body(body: dict, rid: str) -> web.Response | None:
                 f"{section!r} must be an object keyed by node ID.",
                 400,
                 rid,
+                key="permissionSectionObject",
+                params={"section": section},
             )
         for key, value in raw_section.items():
             err = _validate_node_id(node_type, key, rid)
@@ -270,6 +278,8 @@ def _validate_permission_tree_body(body: dict, rid: str) -> web.Response | None:
                     f"Node {key!r} value must be an object with a 'state' key.",
                     400,
                     rid,
+                    key="permissionNodeObject",
+                    params={"node": key},
                 )
             state = value.get("state", "GREY")
             if state not in VALID_NODE_STATES:
@@ -279,13 +289,26 @@ def _validate_permission_tree_body(body: dict, rid: str) -> web.Response | None:
                     f"Valid states: {sorted(VALID_NODE_STATES)}.",
                     400,
                     rid,
+                    key="permissionStateInvalid",
+                    params={
+                        "state": state,
+                        "node_type": node_type[:-1],
+                        "node": key,
+                        "states": ", ".join(sorted(VALID_NODE_STATES)),
+                    },
                 )
             hint = value.get("hint")
             if hint is not None:
                 if not isinstance(hint, str):
-                    return _err("invalid_request", f"hint for {key!r} must be a string.", 400, rid)
+                    return _err(
+                        "invalid_request", f"hint for {key!r} must be a string.", 400, rid,
+                        key="permissionHintString", params={"node": key},
+                    )
                 if len(hint) > 200:
-                    return _err("invalid_request", f"hint for {key!r} exceeds 200 characters.", 400, rid)
+                    return _err(
+                        "invalid_request", f"hint for {key!r} exceeds 200 characters.", 400, rid,
+                        key="permissionHintTooLong", params={"node": key, "max": 200},
+                    )
     return None
 
 
@@ -562,6 +585,7 @@ class PhoenixAdminCatalogView(PhoenixView):
             return _err(
                 "not_found", "Catalog not found.", 404,
                 request_id=request["phoenix_mcp_rid"],
+                key="catalogNotFound",
             )
         return _ok(
             {"language": language, "resources": resources},
@@ -642,17 +666,30 @@ class PhoenixAdminTokensView(PhoenixView):
         if not name or not isinstance(name, str):
             return _err("invalid_request", "name is required.", 400, rid, key="nameRequired")
         if not TOKEN_NAME_REGEX.match(name):
-            return _err("invalid_request", "name does not match required pattern.", 400, rid)
+            return _err(
+                "invalid_request", "name does not match required pattern.", 400, rid,
+                key="tokenNamePattern",
+            )
         pass_through = body.get("pass_through", False)
         if not isinstance(pass_through, bool):
-            return _err("invalid_request", "pass_through must be a boolean.", 400, rid)
+            return _err(
+                "invalid_request", "pass_through must be a boolean.", 400, rid,
+                key="booleanRequired", params={"field": "pass_through"},
+            )
         # Require a real JSON true, not just a truthy value: bool("false") is
         # True, so a string would otherwise satisfy this acknowledgment gate.
         if pass_through and body.get("confirm_pass_through") is not True:
-            return _err("invalid_request", "confirm_pass_through: true is required when enabling pass_through.", 400, rid)
+            return _err(
+                "invalid_request",
+                "confirm_pass_through: true is required when enabling pass_through.",
+                400, rid, key="passThroughConfirmationRequired",
+            )
         use_assist_exposure = body.get("use_assist_exposure", False)
         if not isinstance(use_assist_exposure, bool):
-            return _err("invalid_request", "use_assist_exposure must be a boolean.", 400, rid)
+            return _err(
+                "invalid_request", "use_assist_exposure must be a boolean.", 400, rid,
+                key="booleanRequired", params={"field": "use_assist_exposure"},
+            )
         if not pass_through:
             use_assist_exposure = False
 
@@ -678,12 +715,24 @@ class PhoenixAdminTokensView(PhoenixView):
             isinstance(v, int) and not isinstance(v, bool)
             for v in (rate_limit_requests, rate_limit_burst)
         ):
-            return _err("invalid_request", "rate_limit_requests and rate_limit_burst must be integers.", 400, rid)
+            return _err(
+                "invalid_request",
+                "rate_limit_requests and rate_limit_burst must be integers.",
+                400, rid, key="rateLimitsInteger",
+            )
 
         if rate_limit_requests < 0 or rate_limit_burst < 0:
-            return _err("invalid_request", "rate_limit_requests and rate_limit_burst must be non-negative.", 400, rid)
+            return _err(
+                "invalid_request",
+                "rate_limit_requests and rate_limit_burst must be non-negative.",
+                400, rid, key="rateLimitsNonNegative",
+            )
         if rate_limit_requests > 100_000 or rate_limit_burst > 100_000:
-            return _err("invalid_request", "rate_limit_requests and rate_limit_burst must not exceed 100000.", 400, rid)
+            return _err(
+                "invalid_request",
+                "rate_limit_requests and rate_limit_burst must not exceed 100000.",
+                400, rid, key="rateLimitsMaximum", params={"max": 100_000},
+            )
 
         async with data.store.async_lock:
             if data.store.name_slug_exists(name):
@@ -746,24 +795,41 @@ def _validated_token_patch(
         if not new_name or not isinstance(new_name, str):
             return {}, _err("invalid_request", "name is required.", 400, rid, key="nameRequired")
         if not TOKEN_NAME_REGEX.match(new_name):
-            return {}, _err("invalid_request", "name must be 3-32 characters: letters, numbers, hyphens, or underscores.", 400, rid)
+            return {}, _err(
+                "invalid_request",
+                "name must be 3-32 characters: letters, numbers, hyphens, or underscores.",
+                400, rid, key="tokenNameLengthPattern", params={"min": 3, "max": 32},
+            )
         if data.store.name_slug_exists(new_name, exclude_token_id=token_id):
-            return {}, _err("invalid_request", "A token with this name already exists.", 400, rid)
+            return {}, _err(
+                "invalid_request", "A token with this name already exists.", 400, rid,
+                key="tokenNameTaken",
+            )
 
     if "pass_through" in body:
         if not isinstance(body["pass_through"], bool):
-            return {}, _err("invalid_request", "pass_through must be a boolean.", 400, rid)
+            return {}, _err(
+                "invalid_request", "pass_through must be a boolean.", 400, rid,
+                key="booleanRequired", params={"field": "pass_through"},
+            )
         enabling = body["pass_through"]
         # Real JSON true only: bool("false") is True, so a truthy string
         # must not satisfy this acknowledgment gate.
         if enabling and not token.pass_through and body.get("confirm_pass_through") is not True:
-            return {}, _err("invalid_request", "confirm_pass_through: true is required when enabling pass_through.", 400, rid)
+            return {}, _err(
+                "invalid_request",
+                "confirm_pass_through: true is required when enabling pass_through.",
+                400, rid, key="passThroughConfirmationRequired",
+            )
 
     patchable = {k: v for k, v in body.items() if k in _PATCHABLE_TOKEN_FIELDS}
 
     for bool_field in ("announce_all_tools", "use_assist_exposure"):
         if bool_field in patchable and not isinstance(patchable[bool_field], bool):
-            return {}, _err("invalid_request", f"{bool_field} must be a boolean.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{bool_field} must be a boolean.", 400, rid,
+                key="booleanRequired", params={"field": bool_field},
+            )
 
     if "confirm_inline_wait_seconds" in patchable:
         # 0 disables the inline wait (the unattended-agent mode, API-only);
@@ -778,14 +844,25 @@ def _validated_token_patch(
                 f"{MIN_CONFIRM_INLINE_WAIT_SECONDS} to {MAX_CONFIRM_INLINE_WAIT_SECONDS}.",
                 400,
                 rid,
+                key="inlineWaitRange",
+                params={
+                    "min": MIN_CONFIRM_INLINE_WAIT_SECONDS,
+                    "max": MAX_CONFIRM_INLINE_WAIT_SECONDS,
+                },
             )
 
     for cap_name in set(CAPABILITY_NAMES) & patchable.keys():
         value = patchable[cap_name]
         if value not in CAP_MODES:
-            return {}, _err("invalid_request", f"{cap_name} must be one of: deny, allow, confirm.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{cap_name} must be one of: deny, allow, confirm.",
+                400, rid, key="capabilityModeInvalid", params={"capability": cap_name},
+            )
         if value == CAP_CONFIRM and cap_name not in CONFIRM_AVAILABLE_CAPS:
-            return {}, _err("invalid_request", f"{cap_name} does not support 'confirm' mode.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{cap_name} does not support 'confirm' mode.",
+                400, rid, key="capabilityConfirmUnsupported", params={"capability": cap_name},
+            )
 
     if "persona" in patchable and patchable["persona"] not in PERSONA_NAMES:
         return {}, _err("invalid_request", "Unknown persona.", 400, rid, key="unknownPersona")
@@ -794,7 +871,10 @@ def _validated_token_patch(
         # Keyed on the RESULTING pass_through, so enabling both in one PATCH works.
         resulting_pass_through = bool(patchable.get("pass_through", token.pass_through))
         if not resulting_pass_through:
-            return {}, _err("invalid_request", "use_assist_exposure is only valid for pass_through tokens.", 400, rid)
+            return {}, _err(
+                "invalid_request", "use_assist_exposure is only valid for pass_through tokens.",
+                400, rid, key="assistExposurePassThroughOnly",
+            )
 
     for rl_field in ("rate_limit_requests", "rate_limit_burst"):
         if rl_field not in patchable:
@@ -803,11 +883,21 @@ def _validated_token_patch(
         # and numeric strings into a stored value the caller never asked for.
         value = patchable[rl_field]
         if not (isinstance(value, int) and not isinstance(value, bool)):
-            return {}, _err("invalid_request", f"{rl_field} must be an integer.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{rl_field} must be an integer.", 400, rid,
+                key="integerRequired", params={"field": rl_field},
+            )
         if value < 0:
-            return {}, _err("invalid_request", f"{rl_field} must be non-negative.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{rl_field} must be non-negative.", 400, rid,
+                key="nonNegativeRequired", params={"field": rl_field},
+            )
         if value > _RATE_LIMIT_MAX:
-            return {}, _err("invalid_request", f"{rl_field} must not exceed {_RATE_LIMIT_MAX}.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{rl_field} must not exceed {_RATE_LIMIT_MAX}.",
+                400, rid, key="maximumRequired",
+                params={"field": rl_field, "max": _RATE_LIMIT_MAX},
+            )
 
     return patchable, None
 
@@ -1014,9 +1104,15 @@ def _validate_preset_name(raw: object, rid: str) -> str | web.Response:
         return _err("invalid_request", "name is required.", 400, rid, key="nameRequired")
     name = raw.strip()
     if len(name) > PRESET_NAME_MAX_LENGTH:
-        return _err("invalid_request", f"name must be at most {PRESET_NAME_MAX_LENGTH} characters.", 400, rid)
+        return _err(
+            "invalid_request", f"name must be at most {PRESET_NAME_MAX_LENGTH} characters.",
+            400, rid, key="presetNameTooLong", params={"max": PRESET_NAME_MAX_LENGTH},
+        )
     if any(c in name for c in _INJECTION_CHARS):
-        return _err("invalid_request", "name contains invalid characters.", 400, rid)
+        return _err(
+            "invalid_request", "name contains invalid characters.", 400, rid,
+            key="presetNameInvalidCharacters",
+        )
     return name
 
 
@@ -1044,7 +1140,10 @@ class PhoenixAdminTokenPresetsView(PhoenixView):
             try:
                 updated = await data.store.async_add_preset(token_id, name)
             except ValueError as exc:
-                return _err("invalid_request", str(exc), 400, rid)
+                return _err(
+                    "invalid_request", str(exc), 400, rid,
+                    key="presetSaveRejected",
+                )
             if updated is None:
                 return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
 
@@ -1078,7 +1177,10 @@ class PhoenixAdminTokenPresetView(PhoenixView):
             except LookupError:
                 return _err("not_found", "Preset not found.", 404, rid, key="presetNotFound")
             except ValueError as exc:
-                return _err("invalid_request", str(exc), 400, rid)
+                return _err(
+                    "invalid_request", str(exc), 400, rid,
+                    key="presetRenameRejected",
+                )
             if updated is None:
                 return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
 
@@ -1098,7 +1200,10 @@ class PhoenixAdminTokenPresetView(PhoenixView):
             except LookupError:
                 return _err("not_found", "Preset not found.", 404, rid, key="presetNotFound")
             except ValueError as exc:
-                return _err("invalid_request", str(exc), 400, rid)
+                return _err(
+                    "invalid_request", str(exc), 400, rid,
+                    key="presetDeleteRejected",
+                )
             if updated is None:
                 return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
 
@@ -1138,7 +1243,11 @@ class PhoenixAdminTokenPresetApplyView(PhoenixView):
             if preset is None:
                 return _err("not_found", "Preset not found.", 404, rid, key="presetNotFound")
             if preset.pass_through and not token.pass_through and not body.get("confirm_pass_through"):
-                return _err("invalid_request", "confirm_pass_through: true is required when the preset enables pass_through.", 400, rid)
+                return _err(
+                    "invalid_request",
+                    "confirm_pass_through: true is required when the preset enables pass_through.",
+                    400, rid, key="presetPassThroughConfirmationRequired",
+                )
 
             # SWITCH: the outgoing preset absorbs the live state first, so
             # nothing the admin changed since the last switch is ever lost.
@@ -1202,7 +1311,10 @@ class PhoenixAdminPermissionsView(PhoenixView):
         try:
             new_tree = PermissionTree.from_dict(body)
         except Exception:
-            return _err("invalid_request", "Invalid permission tree structure.", 400, rid)
+            return _err(
+                "invalid_request", "Invalid permission tree structure.", 400, rid,
+                key="permissionTreeInvalid",
+            )
 
         async with data.store.async_lock:
             token = data.store.get_token_by_id(token_id)
@@ -1291,22 +1403,31 @@ class PhoenixAdminPermissionBulkSelectView(PhoenixView):
                 "selector_type must be area, label, or integration.",
                 400,
                 rid,
+                key="selectorTypeInvalid",
             )
         if not isinstance(selector_id, str) or not selector_id:
-            return _err("invalid_request", "selector_id is required.", 400, rid)
+            return _err(
+                "invalid_request", "selector_id is required.", 400, rid,
+                key="selectorIdRequired",
+            )
         if state not in VALID_NODE_STATES:
             return _err(
                 "invalid_request",
                 f"state must be one of: {', '.join(sorted(VALID_NODE_STATES))}.",
                 400,
                 rid,
+                key="stateAllowed",
+                params={"states": ", ".join(sorted(VALID_NODE_STATES))},
             )
 
         selection = _bulk_permission_selection(
             self.hass, selector_type, selector_id
         )
         if selection is None:
-            return _err("not_found", "Permission selection not found.", 404, rid)
+            return _err(
+                "not_found", "Permission selection not found.", 404, rid,
+                key="permissionSelectionNotFound",
+            )
 
         data: PhoenixData = self.hass.data[DOMAIN]
         async with data.store.async_lock:
@@ -1405,13 +1526,24 @@ async def _patch_permission_node(
 
     state = body.get("state")
     if state not in VALID_NODE_STATES:
-        return _err("invalid_request", f"state must be one of: {', '.join(sorted(VALID_NODE_STATES))}.", 400, rid)
+        return _err(
+            "invalid_request",
+            f"state must be one of: {', '.join(sorted(VALID_NODE_STATES))}.",
+            400, rid, key="stateAllowed",
+            params={"states": ", ".join(sorted(VALID_NODE_STATES))},
+        )
 
     hint = body.get("hint")
     if hint is not None and not isinstance(hint, str):
-        return _err("invalid_request", "hint must be a string.", 400, rid)
+        return _err(
+            "invalid_request", "hint must be a string.", 400, rid,
+            key="hintString",
+        )
     if hint is not None and len(hint) > 200:
-        return _err("invalid_request", "hint must be 200 characters or fewer.", 400, rid)
+        return _err(
+            "invalid_request", "hint must be 200 characters or fewer.", 400, rid,
+            key="hintTooLong", params={"max": 200},
+        )
 
     async with data.store.async_lock:
         token = data.store.get_token_by_id(token_id)
@@ -1608,10 +1740,16 @@ class PhoenixAdminEntityHintView(PhoenixView):
         hint = body.get("hint")
         if hint is not None:
             if not isinstance(hint, str):
-                return _err("invalid_request", "hint must be a string.", 400, rid)
+                return _err(
+                    "invalid_request", "hint must be a string.", 400, rid,
+                    key="hintString",
+                )
             hint = hint.strip()
             if len(hint) > 200:
-                return _err("invalid_request", "hint must be 200 characters or fewer.", 400, rid)
+                return _err(
+                    "invalid_request", "hint must be 200 characters or fewer.", 400, rid,
+                    key="hintTooLong", params={"max": 200},
+                )
 
         async with data.store.async_lock:
             await data.store.async_set_entity_hint(entity_id, hint or None)
@@ -1727,7 +1865,11 @@ class PhoenixAdminTokenAuditView(PhoenixView):
             offset=offset,
         )
         if entries is None:
-            return _err("invalid_request", f"Unknown outcome filter: {outcome_filter!r}.", 400, rid)
+            return _err(
+                "invalid_request", f"Unknown outcome filter: {outcome_filter!r}.",
+                400, rid, key="outcomeFilterUnknown",
+                params={"value": outcome_filter or ""},
+            )
         return _ok([e.to_dict() for e in entries], request_id=rid)
 
 
@@ -1756,7 +1898,10 @@ class PhoenixAdminAuditView(PhoenixView):
         since_raw = request.query.get("since")
         since_filter = parse_datetime(since_raw) if since_raw else None
         if since_raw and since_filter is None:
-            return _err("invalid_request", "Invalid since timestamp.", 400, rid)
+            return _err(
+                "invalid_request", "Invalid since timestamp.", 400, rid,
+                key="sinceTimestampInvalid",
+            )
         if since_filter is not None:
             # Audit timestamps are aware UTC; a timezone-less since would raise
             # TypeError inside the filter. Naive input is treated as local time.
@@ -1772,7 +1917,11 @@ class PhoenixAdminAuditView(PhoenixView):
         }
         total = data.audit.count(**filter_kwargs)
         if total is None:
-            return _err("invalid_request", f"Unknown outcome filter: {outcome_filter!r}.", 400, rid)
+            return _err(
+                "invalid_request", f"Unknown outcome filter: {outcome_filter!r}.",
+                400, rid, key="outcomeFilterUnknown",
+                params={"value": outcome_filter or ""},
+            )
         entries = data.audit.query(**filter_kwargs, limit=limit, offset=offset) or []
         return _ok({
             "entries": [e.to_dict() for e in entries],
@@ -1871,9 +2020,16 @@ def _coerce_int_setting(
     try:
         value = int(patchable[key])
     except (TypeError, ValueError):
-        return _err("invalid_request", f"{key} must be an integer.", 400, rid)
+        return _err(
+            "invalid_request", f"{key} must be an integer.", 400, rid,
+            key="integerRequired", params={"field": key},
+        )
     if allowed is not None and value not in allowed:
-        return _err("invalid_request", f"{key} must be one of: {sorted(allowed)}.", 400, rid)
+        return _err(
+            "invalid_request", f"{key} must be one of: {sorted(allowed)}.",
+            400, rid, key="valueAllowed",
+            params={"field": key, "values": ", ".join(str(v) for v in sorted(allowed))},
+        )
     if bounds is not None:
         value = max(bounds[0], min(bounds[1], value))
     patchable[key] = value
@@ -1893,10 +2049,17 @@ async def _validated_settings_patch(
 
     for key in _BOOL_SETTINGS & patchable.keys():
         if not isinstance(patchable[key], bool):
-            return {}, _err("invalid_request", f"{key!r} must be a boolean (true or false).", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{key!r} must be a boolean (true or false).",
+                400, rid, key="booleanRequired", params={"field": key},
+            )
 
     if "mesa_mode" in patchable and patchable["mesa_mode"] not in MESA_MODES:
-        return {}, _err("invalid_request", f"mesa_mode must be one of: {sorted(MESA_MODES)}.", 400, rid)
+        return {}, _err(
+            "invalid_request", f"mesa_mode must be one of: {sorted(MESA_MODES)}.",
+            400, rid, key="valueAllowed",
+            params={"field": "mesa_mode", "values": ", ".join(sorted(MESA_MODES))},
+        )
 
     int_checks = (
         ("audit_flush_interval", {"allowed": _VALID_FLUSH_INTERVALS}),
@@ -1919,11 +2082,18 @@ async def _validated_settings_patch(
         if val in (None, ""):
             patchable["assist_bound_token_id"] = None
         elif not isinstance(val, str):
-            return {}, _err("invalid_request", "assist_bound_token_id must be a token id string or null.", 400, rid)
+            return {}, _err(
+                "invalid_request", "assist_bound_token_id must be a token id string or null.",
+                400, rid, key="tokenIdOrNull", params={"field": "assist_bound_token_id"},
+            )
         else:
             bound = data.store.get_token_by_id(val)
             if bound is None or not bound.is_valid():
-                return {}, _err("invalid_request", "assist_bound_token_id must reference an active token.", 400, rid)
+                return {}, _err(
+                    "invalid_request", "assist_bound_token_id must reference an active token.",
+                    400, rid, key="activeTokenRequired",
+                    params={"field": "assist_bound_token_id"},
+                )
 
     # Voice-agent and AI-Task string fields: each is None/"" (clear) or must
     # reference a live target, so the panel cannot point either surface at a dead
@@ -1935,20 +2105,29 @@ async def _validated_settings_patch(
         if patchable[vkey] in (None, ""):
             patchable[vkey] = None
         elif not isinstance(patchable[vkey], str):
-            return {}, _err("invalid_request", f"{vkey} must be a string or null.", 400, rid)
+            return {}, _err(
+                "invalid_request", f"{vkey} must be a string or null.", 400, rid,
+                key="stringOrNull", params={"field": vkey},
+            )
 
     provider_store = None
     for tkey, pkey in _SURFACE_TOKEN_PROVIDER_PAIRS:
         if patchable.get(tkey):
             vtok = data.store.get_token_by_id(patchable[tkey])
             if vtok is None or not vtok.is_valid():
-                return {}, _err("invalid_request", f"{tkey} must reference an active token.", 400, rid)
+                return {}, _err(
+                    "invalid_request", f"{tkey} must reference an active token.",
+                    400, rid, key="activeTokenRequired", params={"field": tkey},
+                )
         if patchable.get(pkey):
             if provider_store is None:
                 from .agentcli import _get_secret_store  # noqa: PLC0415
                 provider_store = await _get_secret_store(hass)
             if provider_store.get(patchable[pkey]) is None:
-                return {}, _err("invalid_request", f"{pkey} must reference a configured provider account.", 400, rid)
+                return {}, _err(
+                    "invalid_request", f"{pkey} must reference a configured provider account.",
+                    400, rid, key="configuredProviderRequired", params={"field": pkey},
+                )
 
     return patchable, None
 
@@ -2106,11 +2285,17 @@ class PhoenixAdminVoiceAgentPipelineView(PhoenixView):
             return body
         preferred = body.get("preferred", True)
         if not isinstance(preferred, bool):
-            return _err("invalid_request", "preferred must be a boolean.", 400, rid)
+            return _err(
+                "invalid_request", "preferred must be a boolean.", 400, rid,
+                key="booleanRequired", params={"field": "preferred"},
+            )
 
         entries = self.hass.config_entries.async_entries(DOMAIN)
         if not entries:
-            return _err("invalid_request", "Phoenix MCP is not set up.", 400, rid)
+            return _err(
+                "invalid_request", "Phoenix MCP is not set up.", 400, rid,
+                key="setupMissing",
+            )
 
         from .voice_agent import async_create_assist_pipeline, VoicePipelineError  # noqa: PLC0415
         try:
@@ -2118,7 +2303,11 @@ class PhoenixAdminVoiceAgentPipelineView(PhoenixView):
                 self.hass, entries[0], data, preferred=preferred
             )
         except VoicePipelineError as err:
-            return _err("invalid_request", str(err), 400, rid)
+            _LOGGER.warning("Assist pipeline setup failed", exc_info=True)
+            return _err(
+                "invalid_request", str(err), 400, rid,
+                key="assistPipelineFailed",
+            )
         return _ok(result, request_id=rid)
 
     @require_admin
@@ -2151,7 +2340,10 @@ class PhoenixAdminAiTaskPreferredView(PhoenixView):
         from .ai_task import ai_task_preferred_status  # noqa: PLC0415
         entry = self._entry()
         if entry is None:
-            return _err("invalid_request", "Phoenix MCP is not set up.", 400, rid)
+            return _err(
+                "invalid_request", "Phoenix MCP is not set up.", 400, rid,
+                key="setupMissing",
+            )
         return _ok(ai_task_preferred_status(self.hass, entry), request_id=rid)
 
     @require_admin
@@ -2160,11 +2352,18 @@ class PhoenixAdminAiTaskPreferredView(PhoenixView):
         from .ai_task import set_ai_task_preferred, AiTaskSetupError  # noqa: PLC0415
         entry = self._entry()
         if entry is None:
-            return _err("invalid_request", "Phoenix MCP is not set up.", 400, rid)
+            return _err(
+                "invalid_request", "Phoenix MCP is not set up.", 400, rid,
+                key="setupMissing",
+            )
         try:
             return _ok(set_ai_task_preferred(self.hass, entry), request_id=rid)
         except AiTaskSetupError as err:
-            return _err("invalid_request", str(err), 400, rid)
+            _LOGGER.warning("AI Task preferred setup failed", exc_info=True)
+            return _err(
+                "invalid_request", str(err),
+                400, rid, key="aiTaskPreferredFailed",
+            )
 
     @require_admin
     async def delete(self, request: web.Request) -> web.Response:
@@ -2172,7 +2371,10 @@ class PhoenixAdminAiTaskPreferredView(PhoenixView):
         from .ai_task import clear_ai_task_preferred  # noqa: PLC0415
         entry = self._entry()
         if entry is None:
-            return _err("invalid_request", "Phoenix MCP is not set up.", 400, rid)
+            return _err(
+                "invalid_request", "Phoenix MCP is not set up.", 400, rid,
+                key="setupMissing",
+            )
         return _ok(clear_ai_task_preferred(self.hass, entry), request_id=rid)
 
 
@@ -2201,7 +2403,10 @@ class PhoenixAdminWipeView(PhoenixView):
             return body
 
         if body.get("confirm") != "WIPE":
-            return _err("invalid_request", 'confirm must be "WIPE".', 400, rid)
+            return _err(
+                "invalid_request", 'confirm must be "WIPE".', 400, rid,
+                key="wipeConfirmationRequired",
+            )
 
         hass = self.hass
         data: PhoenixData = hass.data[DOMAIN]
@@ -2489,17 +2694,22 @@ class PhoenixAdminApprovalBatchApproveView(PhoenixView):
         if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
             return _err(
                 "invalid_request", "approval_ids must be a non-empty array of strings.", 400, rid,
+                key="approvalIdsNonEmpty",
             )
         if len(ids) != len(set(ids)):
             # Not pedantry: the second attempt at a duplicate would hit the
             # in-progress claim or the already-terminal branch and be reported as
             # a failure, halting the batch on the caller's own typo.
-            return _err("invalid_request", "approval_ids must not repeat an id.", 400, rid)
+            return _err(
+                "invalid_request", "approval_ids must not repeat an id.", 400, rid,
+                key="approvalIdsUnique",
+            )
         if len(ids) > MAX_BATCH_APPROVALS:
             return _err(
                 "invalid_request",
                 f"A batch may hold at most {MAX_BATCH_APPROVALS} approvals.",
                 400, rid,
+                key="approvalBatchMaximum", params={"max": MAX_BATCH_APPROVALS},
             )
 
         applied: list[dict] = []
@@ -2571,7 +2781,10 @@ class PhoenixAdminApprovalRejectView(PhoenixView):
             return body
         reason = body.get("reason") if isinstance(body, dict) else None
         if reason is not None and not isinstance(reason, str):
-            return _err("invalid_request", "reason must be a string.", 400, rid)
+            return _err(
+                "invalid_request", "reason must be a string.", 400, rid,
+                key="approvalReasonString",
+            )
         return await _resolve_approval(
             self.hass, request, approval_id,
             terminal_status="rejected",
@@ -2605,7 +2818,10 @@ async def _resolve_approval(
         if record.is_terminal():
             return _ok(record.to_dict(), request_id=rid)
         if approval_id in data.approvals_in_progress:
-            return _err("conflict", "Approval is already being processed.", 409, rid)
+            return _err(
+                "conflict", "Approval is already being processed.", 409, rid,
+                key="approvalProcessing",
+            )
         updated = await async_update_approval_status(
             data.store,
             approval_id,
@@ -2675,7 +2891,10 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             if updated:
                 dismiss_approval_notification(hass, approval_id)
                 fire_approval_resolved_event(hass, updated)
-            return _err("not_found", "Token no longer active.", 409, rid)
+            return _err(
+                "not_found", "Token no longer active.", 409, rid,
+                key="approvalTokenInactive",
+            )
 
         # The MESA sentinel cap is not a real token capability, so effective_cap
         # would auto-deny it. The MESA re-evaluation happens inside the executor
@@ -2691,7 +2910,10 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             if updated:
                 dismiss_approval_notification(hass, approval_id)
                 fire_approval_resolved_event(hass, updated)
-            return _err("forbidden", "Capability is now denied for this token.", 409, rid)
+            return _err(
+                "forbidden", "Capability is now denied for this token.", 409, rid,
+                key="approvalCapabilityDenied",
+            )
 
         settings = data.store.get_settings()
         if settings.kill_switch:
@@ -2705,13 +2927,19 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             if updated:
                 dismiss_approval_notification(hass, approval_id)
                 fire_approval_resolved_event(hass, updated)
-            return _err("service_unavailable", "Kill switch engaged.", 503, rid)
+            return _err(
+                "service_unavailable", "Kill switch engaged.", 503, rid,
+                key="killSwitchEngaged",
+            )
 
         # Atomic claim before releasing the lock: a second concurrent approve
         # that finds this id already claimed is rejected, so the saved side
         # effect runs exactly once even under a double-click / double POST.
         if approval_id in data.approvals_in_progress:
-            return _err("conflict", "Approval is already being processed.", 409, rid)
+            return _err(
+                "conflict", "Approval is already being processed.", 409, rid,
+                key="approvalProcessing",
+            )
         data.approvals_in_progress.add(approval_id)
         # The claim above dies with the process. Record the same fact on disk,
         # still under the lock, so a stop or crash during the execution below
@@ -2737,6 +2965,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 "may already have applied. It will be resolved on the next restart; "
                 "check the result rather than running it again.",
                 409, rid,
+                key="approvalExecutionInterrupted",
             )
         if not await async_mark_execution_started(data.store, approval_id):
             data.approvals_in_progress.discard(approval_id)
@@ -2744,6 +2973,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 "service_unavailable",
                 "Could not record this approval before running it. Nothing was run; try again.",
                 503, rid,
+                key="approvalRecordFailed",
             )
 
     # Tell every surface the claim landed, BEFORE the execution rather than after
@@ -2773,7 +3003,10 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             # from the lookup failing, so a side effect that HAD begun was
             # re-offered as retryable.
             await async_clear_execution_marker(data.store, approval_id)
-            return _err("invalid_request", "No executor registered for this tool.", 400, rid)
+            return _err(
+                "invalid_request", "No executor registered for this tool.", 400, rid,
+                key="approvalExecutorMissing",
+            )
         except BaseException as exc:
             # BaseException, not Exception, because asyncio.CancelledError does
             # not inherit from Exception: a cancelled task skipped this handler
@@ -2832,6 +3065,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 "Execution failed and may have partly applied. This approval was "
                 "closed rather than offered again; check the result before retrying.",
                 500, rid,
+                key="approvalExecutionUncertain",
             )
 
         is_error = bool(tool_result.get("isError"))
@@ -2873,7 +3107,10 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 "stored_status": updated.status,
                 "executor_outcome": outcome,
             })
-            return _err("conflict", "Approval was already resolved.", 409, rid)
+            return _err(
+                "conflict", "Approval was already resolved.", 409, rid,
+                key="approvalAlreadyResolved",
+            )
         dismiss_approval_notification(hass, approval_id)
         resolved = True
         fire_approval_resolved_event(hass, updated)
@@ -2902,7 +3139,10 @@ def _mesa_runtime(hass: HomeAssistant, rid: str) -> tuple[Any, web.Response | No
     """Return the MESA runtime, or an error response when MESA is unavailable."""
     data: PhoenixData = hass.data[DOMAIN]
     if data.mesa is None:
-        return None, _err("service_unavailable", "MESA is not available.", 503, rid)
+        return None, _err(
+            "service_unavailable", "MESA is not available.", 503, rid,
+            key="mesaUnavailable",
+        )
     return data.mesa, None
 
 
@@ -2986,7 +3226,10 @@ class PhoenixAdminMesaProfilesView(PhoenixView):
         try:
             limit = int(q.get("limit", 50))
         except (TypeError, ValueError):
-            return _err("invalid_request", "limit must be an integer.", 400, rid)
+            return _err(
+                "invalid_request", "limit must be an integer.", 400, rid,
+                key="integerRequired", params={"field": "limit"},
+            )
         try:
             domain = q.get("domain")
             result = runtime.store.query(
@@ -2999,9 +3242,9 @@ class PhoenixAdminMesaProfilesView(PhoenixView):
                 cursor=q.get("cursor"),
             )
         except InvalidCursorError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
         except ValueError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
 
         return _ok(
             {
@@ -3066,7 +3309,7 @@ class PhoenixAdminMesaProfileView(PhoenixView):
                 entity_id, _mesa_migrated_doc(body), default_origin=MetadataOrigin.USER
             )
         except MesaValidationError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
 
         async with runtime.lock:
             runtime.store.set(entity_id, profile)
@@ -3178,7 +3421,7 @@ class PhoenixAdminMesaDomainView(PhoenixView):
         try:
             profile = SemanticProfile.from_dict(domain, _mesa_migrated_doc(body), default_origin=MetadataOrigin.USER)
         except MesaValidationError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
 
         async with runtime.lock:
             runtime.store.set_domain_profile(domain, profile)
@@ -3252,7 +3495,10 @@ class PhoenixAdminMesaIntegrationView(PhoenixView):
             return err
         # Integration/component names share HA's domain character set.
         if not _DOMAIN_RE.match(integration):
-            return _err("invalid_request", "Invalid integration name.", 400, rid)
+            return _err(
+                "invalid_request", "Invalid integration name.", 400, rid,
+                key="integrationNameInvalid",
+            )
         body = await _read_body(request, rid)
         if isinstance(body, web.Response):
             return body
@@ -3263,7 +3509,7 @@ class PhoenixAdminMesaIntegrationView(PhoenixView):
         try:
             profile = SemanticProfile.from_dict(integration, _mesa_migrated_doc(body), default_origin=MetadataOrigin.USER)
         except MesaValidationError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
 
         async with runtime.lock:
             runtime.store.set_integration_profile(integration, profile)
@@ -3355,7 +3601,7 @@ class PhoenixAdminMesaAreaView(PhoenixView):
         try:
             profile = SemanticProfile.from_dict(area_id, _mesa_migrated_doc(body), default_origin=MetadataOrigin.USER)
         except MesaValidationError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
 
         async with runtime.lock:
             runtime.store.set_area_profile(area_id, profile)
@@ -3460,7 +3706,7 @@ class PhoenixAdminMesaDeviceView(PhoenixView):
         try:
             profile = SemanticProfile.from_dict(device_id, _mesa_migrated_doc(body), default_origin=MetadataOrigin.USER)
         except MesaValidationError as exc:
-            return _err("invalid_request", str(exc), 400, rid)
+            return _err("invalid_request", str(exc), 400, rid, passthrough=True)
 
         async with runtime.lock:
             runtime.store.set_device_profile(device_id, profile)
@@ -3538,7 +3784,10 @@ class PhoenixAdminMesaDefaultsView(PhoenixView):
                 runtime.store.set_deployment_defaults(body)
                 await runtime.async_save()
         except (ValueError, KeyError) as exc:
-            return _err("invalid_request", f"Invalid deployment defaults: {exc}", 400, rid)
+            return _err(
+                "invalid_request", f"Invalid deployment defaults: {exc}", 400, rid,
+                key="deploymentDefaultsInvalid", params={"detail": str(exc)},
+            )
         _audit_admin(self.hass, request, rid, request.path)
         stored = runtime.store.get_deployment_defaults()
         return _ok(
@@ -3645,7 +3894,11 @@ class PhoenixAdminVersionsView(PhoenixView):
             records = data.versions.list_recent(limit, offset)
             total = data.versions.count_recent()
         else:
-            return _err("invalid_request", "Provide both resource_type and resource_id, or neither for the recent feed.", 400, rid)
+            return _err(
+                "invalid_request",
+                "Provide both resource_type and resource_id, or neither for the recent feed.",
+                400, rid, key="versionResourcePairRequired",
+            )
         return _ok({
             "resource_type": resource_type,
             "resource_id": resource_id,
@@ -3718,7 +3971,10 @@ class PhoenixAdminVersionView(PhoenixView):
         data: PhoenixData = self.hass.data[DOMAIN]
         record = data.versions.get(version_id)
         if record is None:
-            return _err("not_found", "Version not found.", 404, rid)
+            return _err(
+                "not_found", "Version not found.", 404, rid,
+                key="versionNotFound",
+            )
         body = record.to_dict()
         if record.resource_type == "esphome_yaml":
             body = await _mask_esphome_version(self.hass, body)
@@ -3745,7 +4001,10 @@ class PhoenixAdminVersionRestoreView(PhoenixView):
         data: PhoenixData = self.hass.data[DOMAIN]
         record = data.versions.get(version_id)
         if record is None:
-            return _err("not_found", "Version not found.", 404, rid)
+            return _err(
+                "not_found", "Version not found.", 404, rid,
+                key="versionNotFound",
+            )
         # The panel sends no body for a default restore; _read_body returns {}
         # for an empty body, 400 for malformed/non-object JSON (which must not
         # silently restore the default side), and 413 over the size cap.
@@ -3754,12 +4013,18 @@ class PhoenixAdminVersionRestoreView(PhoenixView):
             return body
         side = body.get("side")
         if side not in (None, "before", "after"):
-            return _err("invalid_request", "side must be 'before' or 'after'.", 400, rid)
+            return _err(
+                "invalid_request", "side must be 'before' or 'after'.", 400, rid,
+                key="restoreSideInvalid",
+            )
         try:
             tool_result, _outcome, _resource = await async_restore_version(record, user.id, self.hass, data, side)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Version restore failed for %s", version_id)
-            return _err("internal_error", "Restore failed.", 500, rid)
+            return _err(
+                "internal_error", "Restore failed.", 500, rid,
+                key="restoreFailed",
+            )
         is_error = bool(tool_result.get("isError"))
         data.audit.record(
             request_id=rid,
@@ -3783,10 +4048,14 @@ class PhoenixAdminVersionRestoreView(PhoenixView):
                 for item in tool_result.get("content", [])
                 if isinstance(item, dict) and item.get("type") == "text"
             ).strip()
+            if detail:
+                return _err(
+                    "invalid_request", detail, 400, rid, passthrough=True,
+                )
             return _err(
                 "invalid_request",
-                detail or "Restore could not be applied to the current configuration.",
-                400, rid,
+                "Restore could not be applied to the current configuration.",
+                400, rid, key="restoreNotApplicable",
             )
         return _ok({
             "restored": True,
@@ -3902,11 +4171,15 @@ class PhoenixAdminMesaImportView(PhoenixView):
             return body
         archive = body.get("archive")
         if not isinstance(archive, dict):
-            return _err("invalid_request", "archive is required.", 400, rid)
+            return _err(
+                "invalid_request", "archive is required.", 400, rid,
+                key="mesaArchiveRequired",
+            )
         on_conflict = body.get("on_conflict", "skip")
         if on_conflict not in ("skip", "overwrite"):
             return _err(
-                "invalid_request", "on_conflict must be 'skip' or 'overwrite'.", 400, rid
+                "invalid_request", "on_conflict must be 'skip' or 'overwrite'.", 400, rid,
+                key="mesaConflictModeInvalid",
             )
 
         from .mesa import refresh_orphans  # noqa: PLC0415
@@ -3918,7 +4191,7 @@ class PhoenixAdminMesaImportView(PhoenixView):
             try:
                 result = import_profiles(runtime.store, archive, on_conflict=on_conflict)
             except MesaValidationError as exc:
-                return _err("invalid_request", str(exc), 400, rid)
+                return _err("invalid_request", str(exc), 400, rid, passthrough=True)
             if result.imported or result.overwritten:
                 await runtime.async_save()
             # An archive from another deployment can carry profiles for targets
@@ -3991,7 +4264,10 @@ class PhoenixAdminCardCatalogView(PhoenixView):
         if isinstance(body, web.Response):
             return body
         if not isinstance(body.get("entries"), list):
-            return _err("invalid_request", "entries must be a list.", 400, rid)
+            return _err(
+                "invalid_request", "entries must be a list.", 400, rid,
+                key="entriesListRequired",
+            )
         catalog = await data.card_catalog.async_replace(
             entries=body.get("entries"),
             resource_count=body.get("resource_count"),
@@ -4030,14 +4306,20 @@ class PhoenixAdminMesaSuggestionDismissView(PhoenixView):
             return body
         key = body.get("key")
         if not isinstance(key, str) or not key:
-            return _err("invalid_request", "key is required.", 400, rid)
+            return _err(
+                "invalid_request", "key is required.", 400, rid,
+                key="suggestionKeyRequired",
+            )
 
         from .mesa_suggestions import refresh_suggestions  # noqa: PLC0415
 
         async with runtime.lock:
             refresh_suggestions(self.hass, runtime)
             if key not in {s.key for s in runtime.suggestions}:
-                return _err("not_found", "No current suggestion with that key.", 404, rid)
+                return _err(
+                    "not_found", "No current suggestion with that key.", 404, rid,
+                    key="suggestionNotCurrent",
+                )
             runtime.dismissed_suggestions.add(key)
             await runtime.async_save()
             refresh_suggestions(self.hass, runtime)
@@ -4067,7 +4349,10 @@ class PhoenixAdminMesaSuggestionRestoreView(PhoenixView):
         key = body.get("key")
         restore_all = body.get("all") is True
         if not restore_all and (not isinstance(key, str) or not key):
-            return _err("invalid_request", "Provide key or all: true.", 400, rid)
+            return _err(
+                "invalid_request", "Provide key or all: true.", 400, rid,
+                key="suggestionRestoreTargetRequired",
+            )
 
         from .mesa_suggestions import refresh_suggestions  # noqa: PLC0415
 
@@ -4077,7 +4362,10 @@ class PhoenixAdminMesaSuggestionRestoreView(PhoenixView):
                 runtime.dismissed_suggestions.clear()
             else:
                 if key not in runtime.dismissed_suggestions:
-                    return _err("not_found", "That key is not dismissed.", 404, rid)
+                    return _err(
+                        "not_found", "That key is not dismissed.", 404, rid,
+                        key="suggestionNotDismissed",
+                    )
                 runtime.dismissed_suggestions.discard(key)
                 restored = str(key)
             await runtime.async_save()

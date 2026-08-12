@@ -75,6 +75,14 @@ export function currentHass(): unknown {
   return authHass();
 }
 
+export function localizedApiMessage(
+  message: string,
+  messageKey?: string,
+  messageParams?: Record<string, string | number>,
+): string {
+  return messageKey && hasMessage(messageKey) ? t(messageKey, messageParams) : message;
+}
+
 class ApiError extends Error {
   status: number;
   code: string;
@@ -82,7 +90,7 @@ class ApiError extends Error {
     // `message` is the English the backend sent and stays the fallback: it is
     // what every un-migrated endpoint returns, and what an older backend
     // returns to a newer panel. A key, when present, localizes it.
-    super(messageKey && hasMessage(messageKey) ? t(messageKey, messageParams) : message);
+    super(localizedApiMessage(message, messageKey, messageParams));
     this.status = status;
     this.code = code;
   }
@@ -375,7 +383,14 @@ export const api = {
   probeAgentCliProvider: (
     kind: AgentCliProviderKind,
     body: { api_key?: string; base_url?: string },
-  ) => req<{ ok: boolean; models: string[]; error?: string }>(
+  ) => req<{
+    ok: boolean;
+    models: string[];
+    error?: string;
+    message_key?: string;
+    message_params?: Record<string, string | number>;
+    message_passthrough?: boolean;
+  }>(
     "POST", "/agentcli/probe", { kind, ...body }),
 };
 

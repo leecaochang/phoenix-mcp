@@ -967,7 +967,7 @@ class TestWaiting:
         # "no progress was emitted" assertions pass without testing anything.
         monkeypatch.setattr(
             esphome, "_set_progress_status",
-            lambda status, total=None: seen.append(status),
+            lambda status, total=None, **_metadata: seen.append(status),
         )
         return seen
 

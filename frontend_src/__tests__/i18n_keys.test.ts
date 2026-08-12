@@ -68,7 +68,10 @@ function collectLiterals(): Set<string> {
 
 // Sections whose keys the BACKEND names at runtime (an approval's
 // summary_key, a chat event's code). No literal for them exists here.
-const BACKEND_NAMED = ["diff.", "version.", "mesaSuggestion.", "agentchat.notice.", "adminError."];
+const BACKEND_NAMED = [
+  "diff.", "version.", "mesaSuggestion.", "agentchat.notice.",
+  "agentchat.progress.", "adminError.",
+];
 
 const catalog = flattenCatalog(en.panel);
 const uses = collectUses();
@@ -123,6 +126,7 @@ describe("i18n keys", () => {
     expect(count("diff.")).toBeGreaterThan(50);
     expect(count("version.")).toBeGreaterThan(10);
     expect(count("mesaSuggestion.")).toBeGreaterThan(10);
+    expect(count("agentchat.progress.")).toBeGreaterThan(4);
     expect(count("agentchat.notice.")).toBeGreaterThan(3);
     expect(count("adminError.")).toBeGreaterThan(15);
   });

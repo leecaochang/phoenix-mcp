@@ -8,6 +8,7 @@ import { collectPreviewViews, DashboardPreview, rememberPreviewMode, SegmentedTo
 import { YamlView, toYaml } from "../components/YamlView";
 import { approvalStatusLabel, formatDateTime, friendlyToolName } from "../utils";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
+import { localizedApprovalReason } from "../utils/approval_reason";
 import { useLatestRequest } from "../utils/latest_request";
 import { hasMessage, t, tn } from "../i18n";
 
@@ -43,22 +44,6 @@ const FILTER_LABEL_KEYS: Record<string, string> = {
   rejected: "approvals.filterRejected",
   expired: "approvals.filterExpired",
   cancelled: "approvals.filterCancelled",
-};
-
-// Human-readable text for the backend's rejected_reason slugs. A free-text admin
-// rejection reason is not in this map and is shown verbatim.
-const REASON_LABEL_KEYS: Record<string, string> = {
-  token_inactive: "approvals.reason.token_inactive",
-  capability_denied: "approvals.reason.capability_denied",
-  target_out_of_scope: "approvals.reason.target_out_of_scope",
-  target_missing: "approvals.reason.target_missing",
-  rate_limited_at_execution: "approvals.reason.rate_limited_at_execution",
-  kill_switch: "approvals.reason.kill_switch",
-  admin_cancelled: "approvals.reason.admin_cancelled",
-  token_revoked: "approvals.reason.token_revoked",
-  token_expired: "approvals.reason.token_expired",
-  execution_failed: "approvals.reason.execution_failed",
-  execution_interrupted: "approvals.reason.execution_interrupted",
 };
 
 /** The approval's summary in the operator's language.
@@ -100,8 +85,7 @@ export function friendlyReason(record: ApprovalRecord): string {
     const detail = extractResultErrorText(record.result);
     if (detail) return t("approvals.reasonExecutionFailedDetail", { detail });
   }
-  const key = REASON_LABEL_KEYS[reason];
-  return key ? t(key) : reason;
+  return localizedApprovalReason(reason);
 }
 
 export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal = 0, claimedApprovals, openApprovalId, onConsumedDeepLink }: Props) {

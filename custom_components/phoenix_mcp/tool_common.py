@@ -191,6 +191,8 @@ class _ProgressBus:
     token: str | int | None = None
     total: float | None = None
     status: str | None = None
+    status_key: str | None = None
+    status_params: dict[str, Any] | None = None
 
 
 # Set by the SSE writer before the dispatch task is created, so the task's copied
@@ -199,7 +201,13 @@ class _ProgressBus:
 _progress_ctx: ContextVar[_ProgressBus | None] = ContextVar("phoenix_mcp_progress", default=None)
 
 
-def _set_progress_status(status: str | None, total: float | None = None) -> None:
+def _set_progress_status(
+    status: str | None,
+    total: float | None = None,
+    *,
+    key: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> None:
     """Describe what the current request is waiting on, for the next SSE tick.
 
     A no-op unless this request is SSE-framed and the client supplied a
@@ -209,6 +217,8 @@ def _set_progress_status(status: str | None, total: float | None = None) -> None
     if bus is not None:
         bus.status = status
         bus.total = total
+        bus.status_key = key
+        bus.status_params = params
 
 
 # Uniform message for a capability-denied tool call. A denied call must look the
@@ -322,7 +332,10 @@ async def _await_inline_confirm(
     # keepalive ticks now carry the reason, so the client shows "waiting for the
     # operator" instead of an unexplained silence.
     _set_progress_status(
-        f"Waiting for operator approval: {approval.tool_name}", total=float(wait))
+        f"Waiting for operator approval: {approval.tool_name}", total=float(wait),
+        key="agentchat.progress.waitingApproval",
+        params={"name": approval.tool_name},
+    )
     try:
         await asyncio.wait_for(future, wait)
     except TimeoutError:

@@ -48,6 +48,7 @@ REASON_WIPED = "phoenix_mcp_data_wiped"
 # was persisted, so whether the side effect landed is genuinely UNKNOWN. See
 # async_reconcile_interrupted_approvals for why that resolves to a rejection.
 REASON_EXECUTION_INTERRUPTED = "execution_interrupted"
+REASON_AGENT_CHAT_ENDED = "agent_chat_ended"
 # There is deliberately no constant for target_out_of_scope / target_missing /
 # rate_limited_at_execution. The approve path re-validates only the three things
 # it owns (token active, capability permits, kill switch off); target scope and

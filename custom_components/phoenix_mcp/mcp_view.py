@@ -4712,7 +4712,10 @@ async def _wait_for_many_approvals(
 
         unsub = hass.bus.async_listen(f"{DOMAIN}_approval_resolved", _on_resolved)
         _set_progress_status(
-            f"Waiting for operator approval: {len(outstanding)} pending", total=float(timeout))
+            f"Waiting for operator approval: {len(outstanding)} pending", total=float(timeout),
+            key="agentchat.progress.waitingApprovals",
+            params={"count": len(outstanding)},
+        )
         try:
             await asyncio.wait_for(future, timeout)
         except TimeoutError:

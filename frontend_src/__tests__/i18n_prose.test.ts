@@ -20,7 +20,7 @@ const SKIP_DIRS = new Set(["__tests__", "i18n"]);
 // Attributes a user or a screen reader reads out.
 const VISIBLE_ATTRS = new Set(["aria-label", "title", "placeholder", "alt"]);
 // Object properties that carry UI copy rather than data.
-const UI_PROPS = new Set(["label", "title", "hint", "message", "intro", "sub", "note", "text"]);
+const UI_PROPS = new Set(["label", "title", "hint", "message", "intro", "sub", "note", "text", "alt"]);
 
 /**
  * Values that are legitimately bare English.
@@ -134,13 +134,19 @@ function scan(file: string): Finding[] {
     ts.forEachChild(node, visit);
   };
 
-  /** String and no-substitution template literals reachable without a call. */
+  /** String and no-substitution template literals reachable outside i18n calls. */
   function literalsIn(node: ts.Node): ts.StringLiteralLike[] {
     const found: ts.StringLiteralLike[] = [];
     const walk = (n: ts.Node) => {
-      // Anything already routed through a function (t(), tRich(), String(), ...)
-      // is somebody else's problem; the key check covers those.
-      if (ts.isCallExpression(n)) return;
+      // Localization calls are covered by the key guard. Other calls still
+      // carry visible fallbacks, such as String(value ?? "Camera image"), and
+      // must be inspected rather than becoming an escape hatch.
+      if (ts.isCallExpression(n)) {
+        const called = ts.isIdentifier(n.expression) ? n.expression.text : "";
+        if (["t", "tn", "tRich"].includes(called)) return;
+        n.arguments.forEach(walk);
+        return;
+      }
       // Stop at nested JSX: its own attributes and children are visited by the
       // main walk, and descending here reported every className in a
       // conditionally-rendered element as if it were the rendered text.
@@ -191,6 +197,7 @@ describe("no bare user-visible English in source", () => {
     expect(sf.statements.length).toBeGreaterThan(0);
     expect(isProse("This card could not be rendered.")).toBe(true);
     expect(isProse("Other things entirely")).toBe(true);
+    expect(isProse("Camera image", 1)).toBe(true);
     // ...and does not fire on the shapes it must tolerate.
     expect(isProse("badge badge-green")).toBe(false);
     expect(isProse("light.kitchen")).toBe(false);

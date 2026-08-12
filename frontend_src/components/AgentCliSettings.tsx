@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, localizedApiMessage } from "../api";
 import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
 import { effortLevelLabel, formatDateTime } from "../utils";
@@ -411,7 +411,9 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
       const r = await api.probeAgentCliProvider(adding, meta(adding)?.keyless ? { base_url: value } : { api_key: value });
       // Read off the response HERE, not inside the updaters below: see probedCard.
       if (!r || typeof r !== "object" || !r.ok || !Array.isArray(r.models)) {
-        const error = (r && typeof r === "object" && r.error) || t("settings.agentcliConnectionFailed");
+        const error = r && typeof r === "object" && r.error
+          ? localizedApiMessage(r.error, r.message_key, r.message_params)
+          : t("settings.agentcliConnectionFailed");
         setForm((f) => ({ ...f, validating: false, validated: false, models: [], error }));
         return;
       }

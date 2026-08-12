@@ -57,6 +57,7 @@ describe("friendlyReason", () => {
   it("maps known reason slugs to readable labels", () => {
     expect(friendlyReason(rec({ rejected_reason: "capability_denied" }))).toBe("Capability was denied");
     expect(friendlyReason(rec({ rejected_reason: "kill_switch" }))).toBe("Kill switch engaged");
+    expect(friendlyReason(rec({ rejected_reason: "agent_chat_ended" }))).toBe("Agent Chat ended before approval");
   });
 
   it("passes a free-text admin reason through verbatim", () => {

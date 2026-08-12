@@ -9,8 +9,14 @@ const getAgentCliModels = vi.fn();
 const setAgentCliProviderModel = vi.fn();
 const probeAgentCliCapabilities = vi.fn();
 const refreshAgentCliProvider = vi.fn();
+const localizedApiMessage = vi.fn((
+  message: string,
+  key?: string,
+  _params?: Record<string, string | number>,
+) => key ? "本地化连接错误" : message);
 
 vi.mock("../api", () => ({
+  localizedApiMessage: (...a: [string, string?, Record<string, string | number>?]) => localizedApiMessage(...a),
   api: {
     getAgentCliProviders: (...a: unknown[]) => getAgentCliProviders(...a),
     probeAgentCliProvider: (...a: unknown[]) => probeAgentCliProvider(...a),
@@ -88,6 +94,27 @@ describe("AgentCliSettings", () => {
     await waitFor(() => expect(screen.getByText("This provider account is already configured.")).toBeInTheDocument());
     expect(screen.queryByText(/Select default model/i)).toBeNull();
     expect(createAgentCliProvider).not.toHaveBeenCalled();
+  });
+
+  it("localizes an HTTP-200 validation failure before rendering it", async () => {
+    probeAgentCliProvider.mockResolvedValueOnce({
+      ok: false,
+      models: [],
+      error: "Enter your API key.",
+      message_key: "adminError.providerApiKeyRequired",
+    });
+    renderCard();
+    await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
+    fireEvent.click(screen.getByText("Add new provider…"));
+    fireEvent.change(screen.getByPlaceholderText("API key"), { target: { value: "sk-invalid" } });
+    fireEvent.click(screen.getByText("Validate"));
+
+    expect(await screen.findByText("本地化连接错误")).toBeInTheDocument();
+    expect(localizedApiMessage).toHaveBeenCalledWith(
+      "Enter your API key.",
+      "adminError.providerApiKeyRequired",
+      undefined,
+    );
   });
 
   it("Cancel abandons the add without creating", async () => {

@@ -151,7 +151,6 @@ function sanitizeForPersistence(value: unknown): unknown {
       id: record.id,
       name: record.name,
       mimeType: record.mimeType,
-      alt: record.alt,
       unavailable: true,
     };
   }

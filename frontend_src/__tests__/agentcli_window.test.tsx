@@ -751,7 +751,7 @@ describe("AgentCliWindow streaming", () => {
     await waitFor(() => expect(screen.getByText("Approved")).toBeInTheDocument());
     // Verbose is off by default: the tool-result detail is hidden.
     expect(screen.queryByText(/applied/)).toBeNull();
-    const image = screen.getByRole("img", { name: "Front door camera" });
+    const image = screen.getByRole("img", { name: "Image returned by get_camera_image" });
     expect(image).toHaveAttribute("src", "data:image/jpeg;base64,aW1hZ2U=");
     expect(image.closest("figure")).toHaveClass("agentcli-tool-image");
   });
@@ -808,6 +808,8 @@ describe("AgentCliWindow streaming", () => {
       onEvent("approval_resolved", { approval_id: "ap1", status: "rejected", reason: "wrong sensor, use the outdoor one" });
       onEvent("approval_required", { approval_id: "ap2", tool_name: "edit_dashboard_card", review_url: "/x" });
       onEvent("approval_resolved", { approval_id: "ap2", status: "execution_failed", reason: "This configuration changed since you last read it" });
+      onEvent("approval_required", { approval_id: "ap3", tool_name: "call_service", review_url: "/x" });
+      onEvent("approval_resolved", { approval_id: "ap3", status: "cancelled", reason: "agent_chat_ended" });
       onEvent("messages", { messages: [] });
       onEvent("done", { stop_reason: "end_turn" });
     });
@@ -828,6 +830,33 @@ describe("AgentCliWindow streaming", () => {
     const statuses = Array.from(document.querySelectorAll(".agentcli-approval-status"));
     expect(statuses.map((n) => n.textContent).join(" ")).toContain("approved, but execution failed");
     expect(screen.getByText(/changed since you last read it/)).toBeInTheDocument();
+    expect(screen.getByText(/Agent Chat ended before approval/)).toBeInTheDocument();
+  });
+
+  it("localizes a keyed server error in both the transcript and live announcement", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("error", {
+        code: "provider_retry_exhausted",
+        message: "Could not reach the provider after retrying. raw upstream detail",
+        message_params: { seconds: 12, detail: "raw upstream detail" },
+      });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "retry" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    const localized = "Could not reach the provider after retrying for about 12s. raw upstream detail";
+    expect(await screen.findByText(localized)).toBeInTheDocument();
+    const announcer = document.querySelector(".agentcli-window .sr-only[role='status']");
+    expect(announcer?.textContent).toBe(`Error: ${localized}`);
   });
 
   it("shows tool activity only when verbose output is enabled", async () => {
