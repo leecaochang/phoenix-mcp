@@ -11,13 +11,14 @@ import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
 from custom_components.phoenix_mcp import mcp_view
 from custom_components.phoenix_mcp.tools import lovelace as lovelace_tools
 from custom_components.phoenix_mcp.mcp_view import _EXECUTOR_REGISTRY, _call_tool
 from custom_components.phoenix_mcp.token_store import PermissionTree, TokenRecord
-from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError
+from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError, async_ws_command
 
 
 def _token(**caps) -> TokenRecord:
@@ -212,6 +213,29 @@ class TestDashboard:
         assert outcome == "allowed"
         assert m.await_args.args[1] == "lovelace/dashboards/update"
         assert m.await_args.args[2] == {"dashboard_id": "d1", "title": "Renamed"}
+
+    async def test_edit_existing_hyphenless_dashboard(self, hass, hass_admin_user):
+        """An existing single-word dashboard remains updateable."""
+        assert await async_setup_component(hass, "lovelace", {"lovelace": {}})
+        seeded = await async_ws_command(
+            hass,
+            "lovelace/dashboards/create",
+            {"url_path": "map", "title": "Map", "allow_single_word": True},
+        )
+        assert seeded["url_path"] == "map"
+
+        content, outcome, _ = await _call(
+            "edit_dashboard",
+            {"dashboard_id": seeded["id"], "config": {"title": "Updated map"}},
+            _token(),
+            hass,
+        )
+
+        assert outcome == "allowed"
+        assert "Updated map" in content["content"][0]["text"]
+        dashboards = await async_ws_command(hass, "lovelace/dashboards/list", {})
+        updated = next(item for item in dashboards if item["url_path"] == "map")
+        assert updated["title"] == "Updated map"
 
     async def test_edit_missing_id(self, hass):
         _, outcome, _ = await _call("edit_dashboard", {"dashboard_id": "", "config": {"title": "x"}}, _token(), hass)
