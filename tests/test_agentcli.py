@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1248,6 +1249,7 @@ class _ScriptedProvider:
     def __init__(self, turns: list[list[dict]]) -> None:
         self.turns = turns
         self.i = 0
+        self.system_prompts: list[str] = []
 
     def format_tools(self, tools):
         return tools
@@ -1259,6 +1261,7 @@ class _ScriptedProvider:
         messages.append({"role": "user", "tool_results": results})
 
     async def stream_turn(self, session, *, system_prompt, messages, tools, options):
+        self.system_prompts.append(system_prompt)
         turn = self.turns[self.i]
         self.i += 1
         for ev in turn:
@@ -1280,6 +1283,29 @@ def _loop_data():
     live.is_valid.return_value = True
     data.store.get_token_by_id.return_value = live
     return data
+
+
+@pytest.mark.asyncio
+async def test_run_agent_turn_includes_home_assistant_timezone(hass, monkeypatch):
+    """UTC entity timestamps must be interpreted in the HA-configured zone."""
+    provider = _ScriptedProvider([[_done("end_turn")]])
+    data = _loop_data()
+    monkeypatch.setattr(hass.config, "time_zone", "Asia/Bangkok")
+    local_now = datetime(2026, 8, 13, 11, 26, tzinfo=timezone(timedelta(hours=7)))
+
+    with patch("custom_components.phoenix_mcp.agentcli.build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="sys"), \
+         patch("custom_components.phoenix_mcp.agentcli.dt_util.now", return_value=local_now):
+        await async_run_agent_turn(
+            hass=hass, data=data, token=MagicMock(), provider=provider,
+            session=MagicMock(), messages=[], options={}, client_ip="agentcli",
+            base_url="http://h", emit=AsyncMock(), cancel=asyncio.Event(),
+        )
+
+    assert "Asia/Bangkok" in provider.system_prompts[0]
+    assert "UTC+07:00" in provider.system_prompts[0]
+    assert "convert" in provider.system_prompts[0].lower()
+    assert "last_changed" in provider.system_prompts[0]
 
 
 @pytest.mark.asyncio

@@ -107,7 +107,10 @@ class TestServerDiscover:
         # are approval-gated.
         resp, _m, _r, _o = await _dispatch(
             "server/discover", cap_automation_write="confirm")
-        assert "cap_automation_write" in resp["result"]["instructions"]
+        instructions = resp["result"]["instructions"]
+        assert "cap_automation_write" in instructions
+        assert "GetDateTime" in instructions
+        assert "timestamps returned in UTC" in instructions
 
     async def test_capabilities_are_the_same_claim_as_initialize(self):
         # One definition, so a client reading only one of the two never learns

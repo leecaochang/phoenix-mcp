@@ -902,6 +902,9 @@ async def test_initialize_includes_token_aware_instructions():
     assert "get_capability_summary" in instr
     assert "pending_approval" in instr
     assert "cap_automation_write" in instr  # confirm-gated cap is surfaced
+    assert "GetDateTime" in instr
+    assert "timestamps returned in UTC" in instr
+    assert "convert them to Home Assistant's local time" in instr
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,7 @@ from .view_base import PhoenixView
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 from homeassistant.util.dt import parse_datetime, utcnow
 
 from .admin_view import _err, _ok, _read_body, require_admin
@@ -2035,6 +2036,19 @@ _AGENTCLI_ADDENDUM = (
 )
 
 
+def _agentcli_time_context(hass: HomeAssistant) -> str:
+    """Tell Agent Chat how to present Home Assistant timestamps locally."""
+    offset = dt_util.now().strftime("%z")
+    offset_label = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else "UTC"
+    return (
+        "\n\nHome Assistant's configured local time zone is "
+        f"{hass.config.time_zone} ({offset_label}). Entity last_changed, last_updated, "
+        "history, and other ISO 8601 timestamps may be returned in UTC. Convert them to "
+        "this Home Assistant time zone before telling the operator a clock time or date. "
+        "Use GetDateTime when the current local date, time, or UTC offset matters."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # The agent loop
 # --------------------------------------------------------------------------- #
@@ -2318,7 +2332,11 @@ async def async_run_agent_turn(
     """
     from .mcp_view import _build_instructions  # noqa: PLC0415
 
-    system = _build_instructions(token, data, base_url) + _AGENTCLI_ADDENDUM
+    system = (
+        _build_instructions(token, data, base_url)
+        + _agentcli_time_context(hass)
+        + _AGENTCLI_ADDENDUM
+    )
     tools = provider.format_tools(build_mcp_tool_list(token, data))
     # The token is re-resolved per dispatch (see _current_dispatch_token), so a
     # mid-turn revoke/expire/cap-change/kill-switch is honored before any side
