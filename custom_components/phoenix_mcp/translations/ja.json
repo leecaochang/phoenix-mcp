@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "送信をクリックして Phoenix MCP インテグレーションをインストールします。一度に設定できるインスタンスは一つだけです。"
+      }
+    },
+    "abort": {
+      "already_configured": "Phoenix MCP はすでに設定されています。"
+    },
+    "create_entry": {
+      "default": "Phoenix MCP パネルでトークンを管理してください"
+    }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "MESA セーフティーランタイムを利用できません",
+      "description": "Phoenix MCP は MESA セーフティーランタイムを初期化できませんでした。読み取りと管理者による復旧は引き続き利用できますが、MESA モードがアドバイザリまたは強制の場合、保護対象の状態変更操作は拒否されます。Home Assistant のログを確認してから Phoenix MCP インテグレーションを再読み込みしてください。MESA の保護なしで動作させる意図がある場合に限り、明示的にオフモードを選択してください。"
+    }
+  }
+}

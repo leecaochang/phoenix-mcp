@@ -1,0 +1,121 @@
+{
+  "_comment": "Fingerprints of each English README block and its localized counterpart. Written by scripts/readme_i18n_stamp.py and checked by tests/test_readme_i18n.py. A source mismatch means English changed after translation.",
+  "locales": {
+    "README.ja.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "db1b1d52b453"
+      },
+      "intro.block.2": {
+        "source": "851e0fe3b011",
+        "translation": "0a8932b91c78"
+      },
+      "section.1.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "40fa349ba9e1"
+      },
+      "section.1.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "89a69cdddee3"
+      },
+      "section.1.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "1cf0364e58e1"
+      },
+      "section.2.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "000f9a191a24"
+      },
+      "section.2.heading": {
+        "source": "98c33b0a0714",
+        "translation": "be0673d51822"
+      },
+      "section.3.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "70b2fe943e85"
+      },
+      "section.3.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "f903982308fa"
+      },
+      "section.3.heading": {
+        "source": "7f8ee2187914",
+        "translation": "e5f7d3724b7f"
+      },
+      "section.3.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "3a43692e7528"
+      },
+      "section.3.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "83a87df815fc"
+      },
+      "section.4.block.1": {
+        "source": "741c5df4b978",
+        "translation": "265406e14050"
+      },
+      "section.4.heading": {
+        "source": "9713f695ad92",
+        "translation": "d81b11613a25"
+      }
+    },
+    "README.zh-CN.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "f23b92bd0988"
+      },
+      "intro.block.2": {
+        "source": "851e0fe3b011",
+        "translation": "48c28c964220"
+      },
+      "section.1.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "eadc14d0865f"
+      },
+      "section.1.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "34e00942ad2c"
+      },
+      "section.1.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "4068dc7285be"
+      },
+      "section.2.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "dfe44536f197"
+      },
+      "section.2.heading": {
+        "source": "98c33b0a0714",
+        "translation": "1e5770380f7d"
+      },
+      "section.3.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "cee447b26341"
+      },
+      "section.3.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "8ed31b16b631"
+      },
+      "section.3.heading": {
+        "source": "7f8ee2187914",
+        "translation": "ab365f0cf679"
+      },
+      "section.3.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "a590aae16f2e"
+      },
+      "section.3.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "214522ab0f05"
+      },
+      "section.4.block.1": {
+        "source": "741c5df4b978",
+        "translation": "dbefa06dd528"
+      },
+      "section.4.heading": {
+        "source": "9713f695ad92",
+        "translation": "d67ad5e3138a"
+      }
+    }
+  }
+}

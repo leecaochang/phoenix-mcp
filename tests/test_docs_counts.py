@@ -11,9 +11,9 @@ The counts themselves come from mcp_view.tool_catalog_counts(), the single
 source of truth (also served by the admin info endpoint and printed by
 scripts/count_tools.py). Nothing here re-derives them from the def lists.
 
-The README's Simplified Chinese section restates the same headline counts and is
-scanned by its own pattern, because the English one cannot match a CJK noun (see
-NUMBER_ZH). A translated count that nothing checks is the original defect in a
+The localized READMEs restate the same headline counts and are scanned by their
+own patterns, because the English one cannot match a CJK noun (see NUMBER_ZH and
+NUMBER_JA). A translated count that nothing checks is the original defect in a
 second language.
 
 Word-numbers below nine are deliberately unchecked: prose legitimately counts
@@ -107,11 +107,15 @@ NUMBER_ZH = re.compile(r"(?<![\w.-])(\d{1,3})\s*[个种项]?\s*" + _NOUNS_ZH)
 # Maps each Chinese noun onto the English key its allowed values are filed under.
 _ZH_KIND = {"工具": "tool", "能力": "capabilit", "角色": "persona", "服务商": "provider"}
 
+_NOUNS_JA = r"(ツール|機能|ペルソナ|プロバイダー)"
+NUMBER_JA = re.compile(r"(?<![\w.-])(\d{1,3})\s*個?の?\s*" + _NOUNS_JA)
+_JA_KIND = {"ツール": "tool", "機能": "capabilit", "ペルソナ": "persona", "プロバイダー": "provider"}
+
 
 def _pages() -> list[pathlib.Path]:
     # README carries the same headline counts as the docs site and drifted the
     # same way, so it is scanned with them.
-    return sorted(DOCS.glob("*.html")) + [DOCS.parent / "README.md"]
+    return sorted(DOCS.glob("*.html")) + sorted(DOCS.parent.glob("README*.md"))
 
 
 def test_docs_directory_is_present() -> None:
@@ -173,6 +177,13 @@ def test_no_stale_counts_in_prose(page: pathlib.Path) -> None:
                 )
         for match in NUMBER_ZH.finditer(line):
             kind = _ZH_KIND[match.group(2)]
+            if int(match.group(1)) not in allowed[kind]:
+                stale.append(
+                    f"{page.name}:{lineno} says {match.group(0)!r};"
+                    f" {kind} should be one of {sorted(allowed[kind])}"
+                )
+        for match in NUMBER_JA.finditer(line):
+            kind = _JA_KIND[match.group(2)]
             if int(match.group(1)) not in allowed[kind]:
                 stale.append(
                     f"{page.name}:{lineno} says {match.group(0)!r};"

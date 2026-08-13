@@ -8,7 +8,7 @@ escape hatch is deliberate and auditable: a commit message containing
 conscious, recorded decision instead of a silent omission.
 
 Source = custom_components/phoenix_mcp/ Python and frontend_src/. Docs = docs/,
-README.md, the project's own specification and instruction files, or the
+README files, the project's own specification and instruction files, or the
 translation catalogs. tests/, scripts/, and build output count as neither: they
 never trigger the guard and never satisfy it.
 """
@@ -36,7 +36,9 @@ _NO_DOCS = re.compile(r"\[no-docs\]\s+[A-Za-z0-9]")
 
 
 def _classify(path: str) -> str:
-    if path.startswith("docs/") or path in ("README.md", "SPEC.md", "CLAUDE.md"):
+    if path.startswith("docs/") or re.fullmatch(r"README(?:\.[A-Za-z-]+)?\.md", path):
+        return "docs"
+    if path in ("SPEC.md", "CLAUDE.md"):
         return "docs"
     if path == "custom_components/phoenix_mcp/CLAUDE.md":
         return "docs"
@@ -84,7 +86,7 @@ def main() -> None:
                     "Docs guard: this commit stages source changes ("
                     + ", ".join(srcs[:5])
                     + (" and more" if len(srcs) > 5 else "")
-                    + ") but no documentation file (docs/, README.md, SPEC.md,"
+                    + ") but no documentation file (docs/, README*.md, SPEC.md,"
                     " CLAUDE.md, translations). Per the strict docs rule, update"
                     " the docs in the SAME commit and run the /docs-verify pass,"
                     " or, if this change genuinely needs no docs, add"

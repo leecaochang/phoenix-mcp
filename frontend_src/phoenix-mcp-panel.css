@@ -629,6 +629,7 @@ select.input {
 /* Theme toggle segmented control */
 .theme-toggle {
   display: flex;
+  flex-shrink: 0;
   border: 1.5px solid var(--phx-border);
   border-radius: var(--phx-radius-sm);
   overflow: hidden;
@@ -646,6 +647,7 @@ select.input {
   color: var(--phx-text-2);
   transition: all 0.15s;
   font-family: inherit;
+  white-space: nowrap;
 }
 .theme-toggle-btn:last-child { border-right: none; }
 .theme-toggle-btn:hover { background: var(--phx-hover); color: var(--phx-accent); }

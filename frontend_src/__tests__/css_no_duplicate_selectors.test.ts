@@ -61,6 +61,11 @@ describe("panel stylesheet", () => {
     expect(CSS).toMatch(/\.phx-shell\s*\{[^}]*min-height:\s*100vh;[^}]*min-height:\s*100dvh;/s);
   });
 
+  it("keeps localized theme choices on one line", () => {
+    expect(CSS).toMatch(/\.theme-toggle\s*\{[^}]*flex-shrink:\s*0;/s);
+    expect(CSS).toMatch(/\.theme-toggle-btn\s*\{[^}]*white-space:\s*nowrap;/s);
+  });
+
   it("never defines the same class in two separate blocks", () => {
     const seen = new Map<string, number>();
     for (const cls of definedClasses(CSS)) seen.set(cls, (seen.get(cls) ?? 0) + 1);

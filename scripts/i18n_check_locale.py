@@ -19,6 +19,7 @@ import pathlib
 import re
 import string
 import sys
+from collections import Counter
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PACKAGE = REPO / "custom_components" / "phoenix_mcp"
@@ -136,7 +137,6 @@ LITERALS: dict[str, tuple[str, ...]] = {
 # else that matches English exactly is almost certainly a copy that was never
 # translated, which nothing at runtime would ever report.
 ALLOW_IDENTICAL = frozenset({
-    "panel.audit.rowIp",              # "IP"
     "panel.perms.colId",              # "ID"
     "panel.tokens.namePlaceholder",   # "my_token", a literal example value
     "panel.changes.typeEsphomeYaml",  # "ESPHome YAML": a product name plus a format name
@@ -150,7 +150,6 @@ WHITESPACE_EXEMPT = frozenset({
     "panel.common.listSeparator",   # ", " becomes the ideographic comma
     "panel.mesa.currentFilter",     # "Current filter: " becomes a full-width colon
     "panel.perms.simResult",        # "Result: " likewise
-    "panel.mesa.effEnforcement",    # leading ", " becomes a full-width comma
     "panel.agentchat.approvalReason",  # leading " - " becomes a full-width comma
     # Appended after a sentence: English needs the separating space, Chinese
     # does not, because the preceding full stop is already full-width.
@@ -164,6 +163,170 @@ FORBIDDEN = re.compile(r"[—–→]|[\U0001F300-\U0001FAFF☀-➿]")
 
 TAG = re.compile(r"<(/?)(\w+)>")
 CODE_SPAN = re.compile(r"<code>(.*?)</code>", re.DOTALL)
+
+# Machine-readable content a reader must be able to type, search for, or find
+# on disk. Bare words stay out because a translated UI label can legitimately
+# replace one. Files come first so `tool_policy.json` is not split into a
+# snake_case token plus an extension. Absolute paths require more than one
+# segment, which keeps prose units such as `/min` out; relative directories are
+# recognized by their trailing slash.
+FILE_PATTERN = r"[A-Za-z0-9_.~*/-]+\.(?:yaml|yml|json|py|md|txt)"
+TECH_LITERAL = re.compile(
+    rf"(?:"
+    rf"{FILE_PATTERN}"
+    r"|[a-z][a-z0-9]*(?:_[a-z0-9]+)+"
+    r"|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+"
+    r"|(?<![\w.])[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+(?![\w])"
+    r"|[a-z][a-z0-9+.-]*://[^\s<]*"
+    r"|(?<!\w)~?/[^\s<]+/[^\s<]*"
+    r"|(?<![\w/])[A-Za-z_.-][A-Za-z0-9_.-]*/(?![A-Za-z0-9/])"
+    r")"
+)
+FILE = re.compile(FILE_PATTERN)
+NUMBER = re.compile(r"(?<![A-Za-z0-9])\d+(?:[.,\u00a0\u202f ]\d+)*")
+NUMBER_SEPARATOR = re.compile(r"[.,\u00a0\u202f ]")
+PERCENT = re.compile(r"(?<![A-Za-z0-9])(\d+)\s?[%％]")
+MAGNITUDE = re.compile(r"(?<![A-Za-z0-9])(\d+)([KMGT])(?![A-Za-z])")
+STORAGE_UNIT = re.compile(r"(?<![A-Za-z0-9])(\d+)\s*([KMGT]B)(?![A-Za-z])", re.I)
+COMPARISON = re.compile(r"([A-Za-z_]\w*)\s*([<>]=?)\s*(\d+)")
+ORDERED_PAIR = re.compile(
+    rf"({NUMBER.pattern})\s*([-\u2010-\u2015:\uff1a])\s*({NUMBER.pattern})(?![A-Za-z0-9])"
+)
+SENTENCE_PUNCTUATION = ".,;:!?)]}\"'\u00bb\u201d"
+PROSE_ABBREVIATIONS = frozenset({"e.g", "i.e"})
+
+
+def _canonical_number(token: str) -> tuple[str, ...]:
+    """Normalize locale punctuation without flattening decimals or versions."""
+    groups = NUMBER_SEPARATOR.split(token)
+    if (
+        len(groups) > 1
+        and len(groups[0]) <= 3
+        and all(len(group) == 3 for group in groups[1:])
+    ):
+        return ("".join(groups),)
+    return tuple(groups)
+
+
+def _numbers(value: str) -> Counter[tuple[str, ...]]:
+    """Numeric claims as a multiset, so dropped duplicates remain visible."""
+    return Counter(_canonical_number(token) for token in NUMBER.findall(value))
+
+
+def _literal_counts(value: str) -> Counter[str]:
+    """Conservative machine-readable tokens with sentence punctuation removed."""
+    tokens: list[str] = []
+    for match in TECH_LITERAL.findall(value):
+        token = match if match.endswith("...") else match.rstrip(SENTENCE_PUNCTUATION)
+        if token and token not in PROSE_ABBREVIATIONS:
+            tokens.append(token)
+    return Counter(tokens)
+
+
+def _ordered_pairs(value: str) -> set[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """Ordered numeric pairs, independent of dash or colon punctuation."""
+    return {
+        (_canonical_number(low), _canonical_number(high))
+        for low, _, high in ORDERED_PAIR.findall(value)
+    }
+
+
+def machine_parity_problems(source: str, value: str) -> list[str]:
+    """Language-independent contradictions between English and a translation."""
+    problems: list[str] = []
+    source_numbers, value_numbers = _numbers(source), _numbers(value)
+    lost_numbers = source_numbers - value_numbers
+    added_numbers = value_numbers - source_numbers
+    if lost_numbers:
+        problems.append(f"numbers lost {sorted('.'.join(n) for n in lost_numbers.elements())}")
+    if added_numbers:
+        problems.append(f"numbers added {sorted('.'.join(n) for n in added_numbers.elements())}")
+
+    source_literals, value_literals = _literal_counts(source), _literal_counts(value)
+    lost_literals = source_literals - value_literals
+    added_literals = value_literals - source_literals
+    if lost_literals:
+        problems.append(f"technical content dropped {sorted(lost_literals.elements())}")
+    if added_literals:
+        problems.append(f"technical content invented {sorted(added_literals.elements())}")
+
+    for digits in PERCENT.findall(source):
+        if not re.search(rf"(?<![A-Za-z0-9]){re.escape(digits)}\s?[%％]", value):
+            problems.append(f"percentage sign dropped from {digits}%")
+    for digits, suffix in MAGNITUDE.findall(source):
+        attached = {
+            match.group(1).upper()
+            for match in re.finditer(
+                rf"(?<![A-Za-z0-9]){re.escape(digits)}([A-Za-z]+)", value
+            )
+        }
+        if attached and suffix.upper() not in attached:
+            problems.append(f"magnitude changed from {digits}{suffix}")
+    for digits, unit in STORAGE_UNIT.findall(source):
+        attached = {
+            match.group(1).upper()
+            for match in re.finditer(
+                rf"(?<![A-Za-z0-9]){re.escape(digits)}\s*([KMGT]B)(?![A-Za-z])",
+                value,
+                re.I,
+            )
+        }
+        # A spelled-out localized unit is valid. Only contradict an English
+        # abbreviation when the translation also chose an abbreviation.
+        if attached and unit.upper() not in attached:
+            problems.append(f"storage unit changed from {digits} {unit.upper()}")
+    for name, operator, digits in COMPARISON.findall(source):
+        if not re.search(
+            rf"(?<!\w){re.escape(name)}\s*{re.escape(operator)}\s*{re.escape(digits)}(?!\d)",
+            value,
+        ):
+            problems.append(f"comparison changed from {name} {operator} {digits}")
+
+    translated_pairs = _ordered_pairs(value)
+    for low, separator, high in ORDERED_PAIR.findall(source):
+        pair = (_canonical_number(low), _canonical_number(high))
+        if pair[::-1] in translated_pairs and pair not in translated_pairs:
+            joiner = ":" if separator in ":\uff1a" else "-"
+            problems.append(f"ordered pair reversed from {low}{joiner}{high}")
+    return problems
+
+
+def exception_manifest_problems(
+    en_flat: dict[str, str], locale_flats: list[dict[str, str]]
+) -> list[str]:
+    """Stale or no-longer-needed entries in every exception manifest."""
+    problems: list[str] = []
+    for key in sorted(KEEP_ENGLISH_KEYS):
+        if key not in en_flat:
+            problems.append(f"KEEP_ENGLISH references missing key {key}")
+    for key, literals in sorted(LITERALS.items()):
+        if key not in en_flat:
+            problems.append(f"LITERALS references missing key {key}")
+            continue
+        for literal in literals:
+            if literal not in en_flat[key]:
+                problems.append(f"LITERALS {key} references absent English literal {literal!r}")
+    for key in sorted(ALLOW_IDENTICAL):
+        if key not in en_flat:
+            problems.append(f"ALLOW_IDENTICAL references missing key {key}")
+        elif not any(
+            key in locale and locale[key].strip() == en_flat[key].strip()
+            for locale in locale_flats
+        ):
+            problems.append(f"ALLOW_IDENTICAL {key} is no longer used by any locale")
+    for key in sorted(WHITESPACE_EXEMPT):
+        if key not in en_flat:
+            problems.append(f"WHITESPACE_EXEMPT references missing key {key}")
+        elif not any(
+            key in locale
+            and (
+                locale[key].startswith(" ") != en_flat[key].startswith(" ")
+                or locale[key].endswith(" ") != en_flat[key].endswith(" ")
+            )
+            for locale in locale_flats
+        ):
+            problems.append(f"WHITESPACE_EXEMPT {key} is no longer used by any locale")
+    return problems
 
 
 def flatten(node: object, prefix: str = "") -> dict[str, str]:
@@ -209,6 +372,15 @@ def check(language: str) -> int:
     for section in other:
         tr_flat.update(flatten(other[section], f"{section}."))
 
+    locale_flats = []
+    for shipped_language in languages():
+        shipped = load(shipped_language)
+        locale_flat: dict[str, str] = {}
+        for section in shipped:
+            locale_flat.update(flatten(shipped[section], f"{section}."))
+        locale_flats.append(locale_flat)
+    problems.extend(exception_manifest_problems(en_flat, locale_flats))
+
     for section in KEEP_ENGLISH_SECTIONS:
         if section in other:
             problems.append(
@@ -253,6 +425,9 @@ def check(language: str) -> int:
         for literal in LITERALS.get(key, ()):
             if literal not in value:
                 problems.append(f"{key}: must contain {literal!r} verbatim")
+
+        for problem in machine_parity_problems(source, value):
+            problems.append(f"{key}: {problem}")
 
         bad = set(FORBIDDEN.findall(value))
         if bad:
