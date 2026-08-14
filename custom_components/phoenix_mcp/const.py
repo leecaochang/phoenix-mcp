@@ -112,7 +112,7 @@ AGENTCLI_SECRETS_STORAGE_KEY = "phoenix_mcp_agentcli_secrets"
 AGENTCLI_SECRETS_STORAGE_VERSION = 1
 AGENTCLI_PROVIDERS = frozenset({
     "claude", "deepseek", "chatgpt", "gemini", "grok", "kimi", "meta",
-    "minimax", "openrouter", "nvidia", "ollama", "ollama_cloud"})
+    "minimax", "mistral", "openrouter", "nvidia", "ollama", "ollama_cloud"})
 # Default endpoints/models; the panel may override the model per conversation.
 AGENTCLI_CLAUDE_BASE_URL = "https://api.anthropic.com"
 AGENTCLI_CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
@@ -143,6 +143,10 @@ AGENTCLI_MINIMAX_DEFAULT_MODEL = "MiniMax-M2"
 # MiniMax does not document a models-list endpoint; this curated set backs the
 # model dropdown when the live probe finds none.
 AGENTCLI_MINIMAX_MODELS = ("MiniMax-M2", "MiniMax-M1")
+# Mistral's hosted API is OpenAI-compatible for chat and publishes live model
+# capabilities. Base includes /v1 so chat/models append cleanly. There is no
+# shipped default because the account-scoped list is authoritative.
+AGENTCLI_MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
 # Kimi (Moonshot) via its OpenAI-compatible API (Authorization: Bearer); base
 # includes /v1 so chat/models append cleanly. It also fronts an
 # Anthropic-compatible path at /anthropic, but the OpenAI path is the documented

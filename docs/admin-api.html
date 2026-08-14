@@ -215,7 +215,7 @@ DELETE  /api/phoenix-mcp/admin/agentcli/providers/{instance_id}         Remove a
 GET     /api/phoenix-mcp/admin/agentcli/providers/{instance_id}/models  List that account's available models
 POST    /api/phoenix-mcp/admin/agentcli/probe                           Validate credentials and list models, without storing anything
 POST    /api/phoenix-mcp/agentcli/chat                                  Run one streaming agent turn (Server-Sent Events)</code></pre>
-        <p>A provider account holds a <code>kind</code> (one of <code>claude</code>, <code>deepseek</code>, <code>chatgpt</code>, <code>gemini</code>, <code>grok</code>, <code>kimi</code>, <code>meta</code>, <code>minimax</code>, <code>openrouter</code>, <code>nvidia</code>, <code>ollama</code>, <code>ollama_cloud</code>) plus either an <code>api_key</code> or, for the keyless local <code>ollama</code> kind, a <code>base_url</code>. Create validates the credential against the provider before saving it; list never returns the key.</p>
+        <p>A provider account holds a <code>kind</code> (one of <code>claude</code>, <code>deepseek</code>, <code>chatgpt</code>, <code>gemini</code>, <code>grok</code>, <code>kimi</code>, <code>meta</code>, <code>minimax</code>, <code>mistral</code>, <code>openrouter</code>, <code>nvidia</code>, <code>ollama</code>, <code>ollama_cloud</code>) plus either an <code>api_key</code> or, for the keyless local <code>ollama</code> kind, a <code>base_url</code>. Create validates the credential against the provider before saving it; list never returns the key.</p>
         <pre class="code" data-lang="json" data-label="Create provider account body"><code>{
   "kind": "claude",
   "api_key": "sk-ant-...",              // required for every kind except ollama

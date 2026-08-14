@@ -20,6 +20,7 @@ export const KINDS: { kind: AgentCliProviderKind; label: string; labelKey?: stri
   { kind: "kimi", label: "Kimi", keyless: false },
   { kind: "meta", label: "Meta", keyless: false },
   { kind: "minimax", label: "MiniMax", keyless: false },
+  { kind: "mistral", label: "Mistral AI", keyless: false },
   { kind: "nvidia", label: "NVIDIA", keyless: false },
   { kind: "ollama_cloud", label: "Ollama (cloud)", labelKey: "settings.providerOllamaCloud", keyless: false },
   { kind: "ollama", label: "Ollama (local)", labelKey: "settings.providerOllamaLocal", keyless: true },

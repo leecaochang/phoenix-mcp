@@ -1,6 +1,6 @@
 """agentCLI: the in-panel LLM chat that runs an agentic loop server-side.
 
-Phoenix MCP itself drives an LLM (Claude API, DeepSeek API, or a local Ollama) on behalf
+Phoenix MCP itself drives an LLM from a configured provider account on behalf
 of a chosen Phoenix MCP token, calling that token's scoped Home Assistant tools through
 the same in-process dispatch a real MCP client uses, so every capability gate,
 MESA check, approval, and audit entry fires identically. The loop streams its
@@ -8,7 +8,7 @@ progress to the panel over Server-Sent Events; the browser owns the (ephemeral)
 transcript and re-sends it each turn, so this module keeps no conversation state.
 
 Constrained to no external Python dependency, so both the Anthropic
-Messages API and the OpenAI-compatible APIs (DeepSeek, Ollama) are spoken over
+Messages API and the OpenAI-compatible provider APIs are spoken over
 raw aiohttp via HA's shared client session, parsing streaming SSE by hand. The
 provider API key is loaded from a dedicated secrets Store and is never logged,
 persisted into a transcript, or echoed in an error payload.
@@ -77,6 +77,7 @@ from .const import (
     AGENTCLI_MINIMAX_BASE_URL,
     AGENTCLI_MINIMAX_DEFAULT_MODEL,
     AGENTCLI_MINIMAX_MODELS,
+    AGENTCLI_MISTRAL_BASE_URL,
     AGENTCLI_NVIDIA_BASE_URL,
     AGENTCLI_NVIDIA_DEFAULT_MODEL,
     AGENTCLI_OLLAMA_CLOUD_BASE_URL,
@@ -192,6 +193,7 @@ _KINDS: dict[str, dict] = {
     "kimi":     {"label": "Kimi",     "keyless": False, "base_url": AGENTCLI_KIMI_BASE_URL,     "model": AGENTCLI_KIMI_DEFAULT_MODEL},
     "meta":     {"label": "Meta",     "keyless": False, "base_url": AGENTCLI_META_BASE_URL,     "model": AGENTCLI_META_DEFAULT_MODEL},
     "minimax":  {"label": "MiniMax",  "keyless": False, "base_url": AGENTCLI_MINIMAX_BASE_URL,  "model": AGENTCLI_MINIMAX_DEFAULT_MODEL},
+    "mistral":  {"label": "Mistral AI", "keyless": False, "base_url": AGENTCLI_MISTRAL_BASE_URL, "model": ""},
     "openrouter": {"label": "OpenRouter", "keyless": False, "base_url": AGENTCLI_OPENROUTER_BASE_URL, "model": ""},
     "nvidia":   {"label": "NVIDIA",   "keyless": False, "base_url": AGENTCLI_NVIDIA_BASE_URL,   "model": AGENTCLI_NVIDIA_DEFAULT_MODEL},
     "ollama":   {"label": "Ollama (local)", "keyless": True,  "base_url": "",                         "model": ""},
@@ -520,6 +522,51 @@ def _parse_provider_error(text: str) -> tuple[str, str | None]:
     if isinstance(obj.get("message"), str):
         return obj["message"].strip() or raw, None
     return raw, None
+
+
+# Mistral documents a remaining-quota response header and currently publishes
+# more granular numeric headers for token/request windows. Keep this an explicit
+# allowlist: response headers are provider-controlled input, and no unrelated
+# header should ever reach the operator or logs through an error event.
+_MISTRAL_RATE_LIMIT_HEADER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("x-ratelimit-limit-tokens-minute", "tokens_minute_limit"),
+    ("x-ratelimit-remaining-tokens-minute", "tokens_minute_remaining"),
+    ("x-ratelimit-limit-tokens-5-minute", "tokens_five_minute_limit"),
+    ("x-ratelimit-remaining-tokens-5-minute", "tokens_five_minute_remaining"),
+    ("x-ratelimit-limit-tokens-month", "tokens_month_limit"),
+    ("x-ratelimit-remaining-tokens-month", "tokens_month_remaining"),
+    ("x-ratelimit-limit-req-minute", "requests_minute_limit"),
+    ("x-ratelimit-limit-requests-minute", "requests_minute_limit"),
+    ("x-ratelimit-remaining-req-minute", "requests_minute_remaining"),
+    ("x-ratelimit-remaining-requests-minute", "requests_minute_remaining"),
+    ("x-ratelimit-limit-req-second", "requests_second_limit"),
+    ("x-ratelimit-limit-requests-second", "requests_second_limit"),
+    ("x-ratelimit-remaining-req-second", "requests_second_remaining"),
+    ("x-ratelimit-remaining-requests-second", "requests_second_remaining"),
+    ("x-ratelimit-limit", "generic_limit"),
+    ("x-ratelimit-remaining", "generic_remaining"),
+    ("x-ratelimit-tokens-query-cost", "query_cost"),
+    ("retry-after", "retry_after_seconds"),
+)
+
+
+def _mistral_rate_limit_headers(headers: Any) -> dict[str, int]:
+    """Safe numeric Mistral quota diagnostics from one HTTP response."""
+    try:
+        raw = {str(name).lower(): str(value).strip() for name, value in headers.items()}
+    except (AttributeError, TypeError, ValueError):
+        return {}
+    out: dict[str, int] = {}
+    for header, field in _MISTRAL_RATE_LIMIT_HEADER_FIELDS:
+        value = raw.get(header)
+        if value is None or not value.isascii() or not value.isdecimal():
+            continue
+        parsed = int(value)
+        # Preserve exact integers in the browser rather than silently rounding
+        # an absurd/malformed provider value during JSON -> JavaScript parsing.
+        if parsed <= 9_007_199_254_740_991:
+            out.setdefault(field, parsed)
+    return out
 
 
 # Codes returned as HTTP 429/4xx that are NOT transient: a billing/quota/account
@@ -983,6 +1030,46 @@ def _filter_openrouter_models(data: list[dict]) -> list[str]:
     return tool_ids or sorted(m["id"] for m in data if m.get("id"))
 
 
+def _filter_mistral_models(data: list[dict]) -> list[str]:
+    """Keep active Mistral models declared fit for tool-driven chat.
+
+    Mistral publishes completion_chat and function_calling booleans per model.
+    When that schema is present it is authoritative, so a model must declare
+    both. If the schema disappears entirely, fall back to active ids rather than
+    turning a provider response change into an empty account.
+    """
+    active = [m for m in data if m.get("id") and m.get("archived") is not True]
+    if not any(isinstance(m.get("capabilities"), dict) for m in active):
+        return [m["id"] for m in active]
+    return [
+        m["id"] for m in active
+        if m.get("capabilities", {}).get("completion_chat") is True
+        and m.get("capabilities", {}).get("function_calling") is True
+    ]
+
+
+def _mistral_capabilities(data: list[dict], models: list[str]) -> dict[str, dict]:
+    """Translate Mistral's declared model capabilities into Phoenix fields."""
+    wanted = set(models)
+    out: dict[str, dict] = {}
+    for row in data:
+        model_id = row.get("id")
+        declared = row.get("capabilities")
+        if model_id not in wanted or not isinstance(declared, dict):
+            continue
+        caps: dict[str, bool] = {}
+        chat = declared.get("completion_chat")
+        tools = declared.get("function_calling")
+        vision = declared.get("vision")
+        if isinstance(chat, bool) and isinstance(tools, bool):
+            caps["tools"] = chat and tools
+        if isinstance(vision, bool):
+            caps["vision"] = vision
+        if caps:
+            out[model_id] = caps
+    return out
+
+
 def _refused_option(status: int, message: str, sent: dict) -> str | None:
     """The request key a provider just refused, when it named one of ours.
 
@@ -1025,8 +1112,8 @@ def _effort_probe_body(kind: str, level: str) -> dict | None:
     if kind == "deepseek":
         return {"thinking": {"type": "enabled"}, "reasoning_effort": level}
     if kind in (
-        "chatgpt", "grok", "gemini", "kimi", "meta", "openrouter", "nvidia",
-        "ollama", "ollama_cloud",
+        "chatgpt", "grok", "gemini", "kimi", "meta", "mistral", "openrouter",
+        "nvidia", "ollama", "ollama_cloud",
     ):
         return {"reasoning_effort": level}
     return None
@@ -1213,7 +1300,8 @@ _USAGE_INCLUDE_KINDS = ("chatgpt", "deepseek", "kimi", "openrouter")
 
 class OpenAICompatProvider:
     """OpenAI-compatible chat/completions, streaming. Backs DeepSeek, ChatGPT,
-    Gemini, Grok, Kimi, Meta, OpenRouter, NVIDIA, and both Ollama flavours.
+    Gemini, Grok, Kimi, Meta, Mistral, OpenRouter, NVIDIA, and both Ollama
+    flavours.
 
     Ollama uses a slightly different shape (the OpenAI path lives under /v1 and
     models come from /api/tags). Its current OpenAI-compatible endpoint accepts
@@ -1278,12 +1366,14 @@ class OpenAICompatProvider:
                     "type": "text",
                     "text": "The tool returned the following image for visual inspection.",
                 }]
-                parts.extend({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{image['mime_type']};base64,{image['data']}",
-                    },
-                } for image in r["images"])
+                for image in r["images"]:
+                    data_uri = f"data:{image['mime_type']};base64,{image['data']}"
+                    parts.append({
+                        "type": "image_url",
+                        # Mistral takes the URL itself here; OpenAI and the other
+                        # compatible APIs take an object containing `url`.
+                        "image_url": data_uri if self.kind == "mistral" else {"url": data_uri},
+                    })
                 messages.append({"role": "user", "content": parts})
 
     async def validate(self, session: ClientSession) -> tuple[bool, str]:
@@ -1344,6 +1434,8 @@ class OpenAICompatProvider:
             data = body.get("data", [])
             if self.cfg.kind == "openrouter":
                 return _filter_openrouter_models(data) or ([self.cfg.model] if self.cfg.model else [])
+            if self.cfg.kind == "mistral":
+                return _filter_mistral_models(data)
             models = [m["id"] for m in data if m.get("id")]
             if self.cfg.kind == "chatgpt":
                 models = _filter_chatgpt_models(models)
@@ -1375,10 +1467,10 @@ class OpenAICompatProvider:
     ) -> dict[str, dict]:
         """What each model DECLARES it accepts; empty when the provider says nothing.
 
-        Only OpenRouter and Ollama report this at all. Every other backend's
-        models endpoint returns an id and an owner, which is why the shipped
-        capability table cannot simply be replaced by discovery and why probing
-        the knobs is a separate step rather than part of this one.
+        OpenRouter, Mistral, and Ollama report this. Every other backend's models
+        endpoint returns an id and an owner, which is why the shipped capability
+        table cannot simply be replaced by discovery and why probing the knobs is
+        a separate step rather than part of this one.
 
         Empty means "the provider declared nothing", never "the model supports
         nothing": a caller reading it the second way would strip a working
@@ -1397,6 +1489,15 @@ class OpenAICompatProvider:
                         return {}
                     body = await resp.json(content_type=None)
                 return _openrouter_capabilities(body.get("data", []))
+            if self.cfg.kind == "mistral":
+                async with session.get(
+                    f"{self.cfg.base_url}/models", headers=self._headers(),
+                    timeout=_PROBE_TIMEOUT, allow_redirects=False,
+                ) as resp:
+                    if resp.status != 200:
+                        return {}
+                    body = await resp.json(content_type=None)
+                return _mistral_capabilities(body.get("data", []), models)
         except (ClientError, asyncio.TimeoutError, ValueError):
             return {}
         return {}
@@ -1500,6 +1601,11 @@ class OpenAICompatProvider:
             # for its default temperature, so Phoenix MCP does not send one.
             if effort:
                 body["reasoning_effort"] = effort
+        elif self.cfg.kind == "mistral":
+            # Mistral Small latest and Medium 3.5 accept `none` and `high`.
+            # The panel only offers this control for those documented models.
+            if effort:
+                body["reasoning_effort"] = effort
         elif self._is_ollama:
             if effort:
                 body["reasoning_effort"] = effort
@@ -1538,9 +1644,14 @@ class OpenAICompatProvider:
                         retryable = False
                         if err_code == "insufficient_quota":
                             code = "quota"
+                    rate_limit = (
+                        _mistral_rate_limit_headers(resp.headers)
+                        if self.kind == "mistral" and resp.status == 429 else {}
+                    )
                     yield _norm(EV_ERROR, status=resp.status, code=code,
                                 message=msg[:600], retryable=retryable,
-                                refused=_refused_option(resp.status, msg, body))
+                                refused=_refused_option(resp.status, msg, body),
+                                **({"rate_limit": rate_limit} if rate_limit else {}))
                     return
                 async for ev in self._parse(resp, show_thinking):
                     yield ev
@@ -1549,6 +1660,11 @@ class OpenAICompatProvider:
 
     async def _parse(self, resp: Any, show_thinking: bool) -> AsyncIterator[dict]:
         text_parts: list[str] = []
+        # Mistral emits reasoning as structured ThinkChunk content. Unlike the
+        # display-only reasoning fields used by other compatible APIs, Mistral
+        # requires these chunks to be replayed in the assistant message on the
+        # next turn, even when verbose output is hidden in Phoenix.
+        mistral_content_parts: list[dict] = []
         # tool calls accumulated by index: {index: {"id","name","args"}}
         calls: dict[int, dict] = {}
         finish = "stop"
@@ -1599,8 +1715,42 @@ class OpenAICompatProvider:
             reasoning = delta.get("reasoning_content") or delta.get("reasoning")
             if reasoning and show_thinking:
                 yield _norm(EV_THINKING, text=reasoning)
-            if delta.get("content"):
-                for kind, seg in think.feed(delta["content"]):
+            content = delta.get("content")
+            if self.kind == "mistral" and isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    # Retain each structured block in its original order and
+                    # shape. Mistral explicitly requires the full assistant
+                    # content, including ThinkChunk, on subsequent turns.
+                    mistral_content_parts.append(block)
+                    if block.get("type") == "thinking":
+                        thinking_text = "".join(
+                            str(item.get("text", ""))
+                            for item in block.get("thinking", [])
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        )
+                        if thinking_text:
+                            if show_thinking:
+                                yield _norm(EV_THINKING, text=thinking_text)
+                    elif block.get("type") == "text" and block.get("text"):
+                        seg = str(block["text"])
+                        text_parts.append(seg)
+                        yield _norm(EV_TEXT, text=seg)
+            elif self.kind == "mistral" and isinstance(content, str) \
+                    and content and mistral_content_parts:
+                # Mistral may switch from structured ThinkChunk content to
+                # ordinary string deltas for the answer. Materialize those as
+                # TextChunk content after the retained thinking blocks.
+                text_parts.append(content)
+                if mistral_content_parts[-1].get("type") == "text":
+                    old_text = str(mistral_content_parts[-1].get("text", ""))
+                    mistral_content_parts[-1]["text"] = old_text + content
+                else:
+                    mistral_content_parts.append({"type": "text", "text": content})
+                yield _norm(EV_TEXT, text=content)
+            elif isinstance(content, str) and content:
+                for kind, seg in think.feed(content):
                     if kind == "text":
                         text_parts.append(seg)
                         yield _norm(EV_TEXT, text=seg)
@@ -1654,7 +1804,12 @@ class OpenAICompatProvider:
         # JSON null, which Ollama's OpenAI-compatible endpoint rejects on the next
         # turn ("invalid message content type: <nil>"). An empty string is valid
         # for OpenAI/DeepSeek/Gemini too, so this is safe across all of them.
-        assistant_msg: dict = {"role": "assistant", "content": "".join(text_parts)}
+        answer_text = "".join(text_parts)
+        if self.kind == "mistral" and mistral_content_parts:
+            assistant_content: str | list[dict] = mistral_content_parts
+        else:
+            assistant_content = answer_text
+        assistant_msg: dict = {"role": "assistant", "content": assistant_content}
         if assistant_tool_calls:
             assistant_msg["tool_calls"] = assistant_tool_calls
         if bad:
@@ -2189,13 +2344,25 @@ async def _stream_turn_resilient(
             if etype == EV_ERROR and attempt > 1:
                 detail = str(ev.get("message") or "").strip()
                 seconds = int(_CONNECT_RETRY_WINDOW_SECONDS)
-                ev = {
-                    **ev,
-                    "code": "provider_retry_exhausted",
-                    "message": (
+                explicit_rate_limit = (
+                    ev.get("status") == 429 and ev.get("code") == "rate_limit"
+                )
+                if explicit_rate_limit:
+                    code = "provider_rate_limit_exhausted"
+                    message = (
+                        f"The provider's rate limit remained exceeded after retrying for about "
+                        f"{seconds}s. Provider detail: {detail}"
+                    )
+                else:
+                    code = "provider_retry_exhausted"
+                    message = (
                         f"Could not reach the provider after retrying for about "
                         f"{seconds}s. {detail}"
-                    ).strip(),
+                    )
+                ev = {
+                    **ev,
+                    "code": code,
+                    "message": message.strip(),
                     "message_params": {"seconds": seconds, "detail": detail},
                 }
             if etype in (EV_TEXT, EV_THINKING, EV_TOOL, EV_DONE):
@@ -2279,6 +2446,12 @@ async def _consume_model_stream(
                                  "retryable": ev.get("retryable", False),
                                  **({"message_params": ev["message_params"]}
                                     if ev.get("message_params") else {}),
+                                 # Mistral's adapter has already reduced response
+                                 # headers to a strict allowlist of safe numeric
+                                 # quota fields. Preserve that structured snapshot
+                                 # through the provider -> SSE translation.
+                                 **({"rate_limit": ev["rate_limit"]}
+                                    if ev.get("rate_limit") else {}),
                                  # Which of Phoenix's own request keys the provider
                                  # refused, when it named one. The layer holding the
                                  # store records it; nothing down here can.

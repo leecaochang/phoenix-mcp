@@ -39,11 +39,15 @@ class _FakeContent:
 
 
 class _FakeResp:
-    def __init__(self, status: int = 200, body: bytes = b"", json_data=None, text_data: str = "") -> None:
+    def __init__(
+        self, status: int = 200, body: bytes = b"", json_data=None,
+        text_data: str = "", headers: dict | None = None,
+    ) -> None:
         self.status = status
         self.content = _FakeContent(body)
         self._json = json_data
         self._text = text_data
+        self.headers = headers or {}
 
     async def text(self):
         return self._text
@@ -174,6 +178,53 @@ async def test_openai_plain_rate_limit_stays_retryable():
 
 
 @pytest.mark.asyncio
+async def test_mistral_rate_limit_exposes_only_safe_numeric_quota_headers():
+    cfg = ProviderConfig(
+        kind="mistral", model="mistral-small-latest",
+        base_url="https://api.mistral.ai/v1", api_key="k")
+    response = _FakeResp(429, text_data="Rate limit exceeded", headers={
+        "X-RateLimit-Limit-Tokens-Minute": "50000",
+        "X-RateLimit-Remaining-Tokens-Minute": "0",
+        "X-RateLimit-Limit-Tokens-Month": "4000000",
+        "X-RateLimit-Remaining-Tokens-Month": "3991234",
+        "X-RateLimit-Limit-Req-Second": "1",
+        "X-RateLimit-Remaining-Req-Second": "0",
+        "Retry-After": "48",
+        "X-RateLimit-Tokens-Query-Cost": "not-a-number",
+        "Authorization": "must never escape",
+    })
+
+    events = await _collect(OpenAICompatProvider(cfg).stream_turn(
+        _FakeSession(response), system_prompt="s", messages=[], tools=[], options={}))
+
+    assert events[0]["rate_limit"] == {
+        "tokens_minute_limit": 50000,
+        "tokens_minute_remaining": 0,
+        "tokens_month_limit": 4000000,
+        "tokens_month_remaining": 3991234,
+        "requests_second_limit": 1,
+        "requests_second_remaining": 0,
+        "retry_after_seconds": 48,
+    }
+    assert "Authorization" not in json.dumps(events[0])
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_headers_are_not_forwarded_for_another_provider():
+    cfg = ProviderConfig(
+        kind="chatgpt", model="gpt-5", base_url="https://api.openai.com/v1", api_key="k")
+    response = _FakeResp(429, text_data="Rate limit exceeded", headers={
+        "X-RateLimit-Limit-Tokens-Minute": "50000",
+        "X-RateLimit-Remaining-Tokens-Minute": "0",
+    })
+
+    events = await _collect(OpenAICompatProvider(cfg).stream_turn(
+        _FakeSession(response), system_prompt="s", messages=[], tools=[], options={}))
+
+    assert "rate_limit" not in events[0]
+
+
+@pytest.mark.asyncio
 async def test_openai_stream_accumulates_split_tool_args():
     body = _sse(
         'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
@@ -238,7 +289,7 @@ async def test_openai_usage_chunk_with_empty_choices_reports_usage():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("kind", "expects_flag"), [
     ("chatgpt", True), ("deepseek", True), ("openrouter", True), ("kimi", True),
-    ("gemini", False), ("grok", False), ("nvidia", False), ("meta", False),
+    ("gemini", False), ("grok", False), ("mistral", False), ("nvidia", False), ("meta", False),
     ("ollama", False), ("ollama_cloud", False),
 ])
 async def test_stream_options_include_usage_only_for_curated_kinds(kind, expects_flag):
@@ -256,6 +307,58 @@ async def test_stream_options_include_usage_only_for_curated_kinds(kind, expects
         assert sent["stream_options"] == {"include_usage": True}
     else:
         assert "stream_options" not in sent
+
+
+@pytest.mark.asyncio
+async def test_mistral_reasoning_stream_is_displayed_and_preserved_in_history():
+    chunks = [
+        {"type": "thinking", "thinking": [{"type": "text", "text": "Work it out."}]},
+        {"type": "text", "text": "The answer is "},
+    ]
+    body = _sse(
+        f'data: {json.dumps({"choices": [{"delta": {"content": chunks}, "finish_reason": None}]})}',
+        f'data: {json.dumps({"choices": [{"delta": {"content": "42."}, "finish_reason": "stop"}]})}',
+        "data: [DONE]",
+    )
+    cfg = ProviderConfig(
+        kind="mistral", model="mistral-small-latest",
+        base_url="https://api.mistral.ai/v1", api_key="k")
+    provider = OpenAICompatProvider(cfg)
+    session = _FakeSession(_FakeResp(200, body))
+
+    events = await _collect(provider.stream_turn(
+        session, system_prompt="s", messages=[], tools=[],
+        options={"effort": "high", "show_thinking": True, "temperature": 0.2}))
+
+    sent = session.calls[0][1]["json"]
+    assert sent["reasoning_effort"] == "high"
+    assert sent["temperature"] == 0.2
+    assert next(e for e in events if e["type"] == agentcli.EV_THINKING)["text"] == "Work it out."
+    done = next(e for e in events if e["type"] == agentcli.EV_DONE)
+    assert done["assistant_msg"]["content"] == [
+        {"type": "thinking", "thinking": [{"type": "text", "text": "Work it out."}]},
+        {"type": "text", "text": "The answer is 42."},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mistral_reasoning_is_preserved_when_verbose_output_is_hidden():
+    chunks = [{"type": "thinking", "thinking": [{"type": "text", "text": "private trace"}]}]
+    body = _sse(
+        f'data: {json.dumps({"choices": [{"delta": {"content": chunks}, "finish_reason": None}]})}',
+        f'data: {json.dumps({"choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}]})}',
+        "data: [DONE]",
+    )
+    cfg = ProviderConfig(
+        kind="mistral", model="mistral-small-latest",
+        base_url="https://api.mistral.ai/v1", api_key="k")
+    events = await _collect(OpenAICompatProvider(cfg).stream_turn(
+        _FakeSession(_FakeResp(200, body)), system_prompt="s", messages=[], tools=[],
+        options={"effort": "high", "show_thinking": False}))
+
+    assert not any(e["type"] == agentcli.EV_THINKING for e in events)
+    done = next(e for e in events if e["type"] == agentcli.EV_DONE)
+    assert done["assistant_msg"]["content"][0]["type"] == "thinking"
 
 
 @pytest.mark.asyncio
@@ -1034,6 +1137,25 @@ def test_append_tool_results_translates_images_only_for_vision_models():
     )
     assert "not known to support visual input" in text_only[0]["content"][0]["content"][0]["text"]
     assert len(text_only[0]["content"][0]["content"]) == 1
+
+
+def test_mistral_vision_uses_a_base64_data_uri_string():
+    results = [{
+        "tool_use_id": "t1",
+        "tool_name": "get_camera_image",
+        "result_text": "camera metadata",
+        "images": [{"data": "YWJj", "mime_type": "image/jpeg"}],
+        "is_error": False,
+    }]
+    messages: list = []
+    OpenAICompatProvider(ProviderConfig(
+        "mistral", "pixtral", "https://api.mistral.ai/v1", "k", True,
+    )).append_tool_results(messages, results)
+
+    assert messages[1]["content"][1] == {
+        "type": "image_url",
+        "image_url": "data:image/jpeg;base64,YWJj",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -2139,6 +2261,44 @@ async def test_run_agent_turn_retries_transient_connection_error(hass):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("final_error", "expected_code", "expected_text"), [
+    (
+        {"type": agentcli.EV_ERROR, "status": 429, "code": "rate_limit",
+         "message": "Rate limit exceeded", "retryable": False},
+        "provider_rate_limit_exhausted",
+        "The provider's rate limit remained exceeded after retrying for about 12s. "
+        "Provider detail: Rate limit exceeded",
+    ),
+    (
+        {"type": agentcli.EV_ERROR, "status": 503, "code": "upstream",
+         "message": "Temporarily unavailable", "retryable": False},
+        "provider_retry_exhausted",
+        "Could not reach the provider after retrying for about 12s. Temporarily unavailable",
+    ),
+])
+async def test_retry_exhaustion_only_specializes_an_explicit_http_429(
+    final_error, expected_code, expected_text,
+):
+    provider = _ScriptedProvider([
+        [{"type": agentcli.EV_ERROR, "status": 0, "code": "network",
+          "message": "DNS timeout", "retryable": True}],
+        [final_error],
+    ])
+
+    with patch("custom_components.phoenix_mcp.agentcli._CONNECT_RETRY_BACKOFF_SECONDS", 0):
+        events = await _collect(agentcli._stream_turn_resilient(
+            provider, MagicMock(), system_prompt="sys", messages=[], tools=[],
+            options={}, cancel=asyncio.Event(),
+        ))
+
+    assert events[0]["code"] == expected_code
+    assert events[0]["message"] == expected_text
+    assert events[0]["message_params"] == {
+        "seconds": 12, "detail": final_error["message"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_run_agent_turn_does_not_retry_non_retryable_error(hass):
     provider = _ScriptedProvider([
         [{"type": agentcli.EV_ERROR, "code": "auth", "message": "API key rejected.", "retryable": False}],
@@ -2160,6 +2320,37 @@ async def test_run_agent_turn_does_not_retry_non_retryable_error(hass):
     err = next(p for n, p in events if n == "error")
     assert err["code"] == "auth"
     assert provider.i == 1  # no retry for a non-retryable error
+
+
+@pytest.mark.asyncio
+async def test_run_agent_turn_preserves_provider_rate_limit_diagnostics(hass):
+    rate_limit = {
+        "tokens_minute_limit": 50_000,
+        "tokens_minute_remaining": 0,
+        "retry_after_seconds": 48,
+    }
+    provider = _ScriptedProvider([[
+        {"type": agentcli.EV_ERROR, "status": 429, "code": "rate_limit",
+         "message": "Rate limit exceeded", "retryable": False,
+         "rate_limit": rate_limit},
+    ]])
+    data = _loop_data()
+    events: list = []
+
+    async def emit(name, payload):
+        events.append((name, payload))
+
+    with patch("custom_components.phoenix_mcp.agentcli.build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="sys"):
+        await async_run_agent_turn(
+            hass=hass, data=data, token=MagicMock(), provider=provider,
+            session=MagicMock(), messages=[], options={}, client_ip="agentcli",
+            base_url="http://h", emit=emit, cancel=asyncio.Event(),
+        )
+
+    err = next(payload for name, payload in events if name == "error")
+    assert err["code"] == "rate_limit"
+    assert err["rate_limit"] == rate_limit
 
 
 @pytest.mark.asyncio
@@ -2758,14 +2949,75 @@ class TestSetDefaultModel:
         assert resp.status == 404
 
 
-# --- declared model capabilities (only 2 of 12 providers publish any) ---
+# --- declared model capabilities ---
 
 
 class TestDeclaredCapabilities:
     """Most provider APIs return an id and an owner and nothing else, so
-    capability discovery covers OpenRouter and Ollama and stops. The consumer
-    contract that matters is that a MISSING key means "not declared" and can
-    never be read as a limit."""
+    capability discovery is limited to providers with explicit metadata. The
+    consumer contract that matters is that a MISSING key means "not declared"
+    and can never be read as a limit."""
+
+    def test_mistral_filters_to_active_chat_models_with_function_calling(self):
+        data = [
+            {"id": "mistral-large-latest", "capabilities": {
+                "completion_chat": True, "function_calling": True, "vision": True}},
+            {"id": "codestral-embed", "capabilities": {
+                "completion_chat": False, "function_calling": False, "vision": False}},
+            {"id": "old-model", "archived": True, "capabilities": {
+                "completion_chat": True, "function_calling": True, "vision": False}},
+        ]
+        assert agentcli._filter_mistral_models(data) == ["mistral-large-latest"]
+
+    def test_mistral_filter_falls_back_when_capability_schema_is_absent(self):
+        data = [{"id": "future-model"}, {"id": "archived", "archived": True}]
+        assert agentcli._filter_mistral_models(data) == ["future-model"]
+
+    def test_mistral_declares_tool_and_vision_support(self):
+        caps = agentcli._mistral_capabilities([
+            {"id": "pixtral", "capabilities": {
+                "completion_chat": True, "function_calling": True, "vision": True}},
+            {"id": "plain", "capabilities": {
+                "completion_chat": True, "function_calling": False, "vision": False}},
+        ], ["pixtral", "plain"])
+        assert caps == {
+            "pixtral": {"tools": True, "vision": True},
+            "plain": {"tools": False, "vision": False},
+        }
+
+    @pytest.mark.asyncio
+    async def test_mistral_lists_and_refreshes_declared_capabilities(self):
+        data = [
+            {"id": "mistral-large-latest", "capabilities": {
+                "completion_chat": True, "function_calling": True, "vision": True}},
+            {"id": "embed", "capabilities": {
+                "completion_chat": False, "function_calling": False, "vision": False}},
+        ]
+        cfg = agentcli.ProviderConfig(
+            kind="mistral", model="", base_url="https://api.mistral.ai/v1", api_key="k")
+        provider = agentcli.OpenAICompatProvider(cfg)
+
+        models = await provider.list_models(
+            _FakeSession(_FakeResp(200, b"", json_data={"data": data})))
+        caps = await provider.list_model_capabilities(
+            _FakeSession(_FakeResp(200, b"", json_data={"data": data})), models)
+
+        assert models == ["mistral-large-latest"]
+        assert caps == {"mistral-large-latest": {"tools": True, "vision": True}}
+
+    @pytest.mark.asyncio
+    async def test_mistral_does_not_restore_a_configured_non_tool_model(self):
+        data = [{"id": "plain", "capabilities": {
+            "completion_chat": True, "function_calling": False, "vision": False,
+        }}]
+        cfg = agentcli.ProviderConfig(
+            kind="mistral", model="plain",
+            base_url="https://api.mistral.ai/v1", api_key="k")
+
+        models = await agentcli.OpenAICompatProvider(cfg).list_models(
+            _FakeSession(_FakeResp(200, b"", json_data={"data": data})))
+
+        assert models == []
 
     def test_openrouter_keeps_what_the_tools_filter_threw_away(self):
         caps = agentcli._openrouter_capabilities([

@@ -129,6 +129,7 @@ const PROVIDER_KINDS = {
   kimi: true,
   meta: true,
   minimax: true,
+  mistral: true,
   openrouter: true,
   nvidia: true,
   ollama: true,

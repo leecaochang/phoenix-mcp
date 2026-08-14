@@ -398,6 +398,17 @@ describe("agentCLI model capabilities (real per-provider levels)", () => {
     expect(vals(caps)).toEqual(["off", "on"]);
     expect(caps.temperature).toBe(false);
   });
+
+  it("mistral: supported models expose none/high reasoning plus temperature", () => {
+    for (const model of ["mistral-small-latest", "mistral-medium-3-5"]) {
+      const caps = modelCaps("mistral", model, true);
+      expect(vals(caps)).toEqual(["none", "high"]);
+      expect(caps.temperature).toBe(true);
+    }
+    const plain = modelCaps("mistral", "mistral-large-latest", false);
+    expect(vals(plain)).toEqual([]);
+    expect(plain.temperature).toBe(true);
+  });
   it("ollama cloud starts with the local compatibility fallback", () => {
     const caps = modelCaps("ollama_cloud", "gpt-oss:120b", false);
     expect(caps.style).toBe("boolean");
@@ -857,6 +868,47 @@ describe("AgentCliWindow streaming", () => {
     expect(await screen.findByText(localized)).toBeInTheDocument();
     const announcer = document.querySelector(".agentcli-window .sr-only[role='status']");
     expect(announcer?.textContent).toBe(`Error: ${localized}`);
+  });
+
+  it("localizes an explicitly identified exhausted provider rate limit", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("error", {
+        code: "provider_rate_limit_exhausted",
+        message: "unlocalized fallback",
+        message_params: { seconds: 12, detail: "Rate limit exceeded" },
+        rate_limit: {
+          tokens_minute_limit: 50000,
+          tokens_minute_remaining: 0,
+          tokens_month_limit: 4000000,
+          tokens_month_remaining: 3991234,
+          requests_second_limit: 1,
+          requests_second_remaining: 0,
+          retry_after_seconds: 48,
+          authorization: "must never render",
+        },
+      });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "retry" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    const expected =
+      "The provider's rate limit remained exceeded after retrying for about 12s. " +
+      "Provider detail: Rate limit exceeded\n" +
+      "Tokens this minute: 0 remaining of 50,000.\n" +
+      "Tokens this month: 3,991,234 remaining of 4,000,000.\n" +
+      "Requests this second: 0 remaining of 1.\n" +
+      "Provider retry-after: 48s.";
+    await waitFor(() => expect(document.querySelector(".agentcli-error")?.textContent).toBe(expected));
+    expect(screen.queryByText(/must never render/)).not.toBeInTheDocument();
   });
 
   it("shows tool activity only when verbose output is enabled", async () => {

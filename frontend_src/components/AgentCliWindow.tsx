@@ -35,7 +35,47 @@ type ChatEntry =
   | { kind: "progress"; id: string; message: string; activity?: boolean }
   | { kind: "approval"; approvalId: string; toolName: string; reviewUrl?: string; status: string; reason?: string }
   | { kind: "notice"; code?: string; message: string; messageParams?: Record<string, string | number> }
-  | { kind: "error"; code: string; message: string; messageParams?: Record<string, string | number> };
+  | { kind: "error"; code: string; message: string; messageParams?: Record<string, string | number>;
+      rateLimit?: ProviderRateLimit };
+
+interface ProviderRateLimit {
+  tokens_minute_limit?: number;
+  tokens_minute_remaining?: number;
+  tokens_five_minute_limit?: number;
+  tokens_five_minute_remaining?: number;
+  tokens_month_limit?: number;
+  tokens_month_remaining?: number;
+  requests_minute_limit?: number;
+  requests_minute_remaining?: number;
+  requests_second_limit?: number;
+  requests_second_remaining?: number;
+  generic_limit?: number;
+  generic_remaining?: number;
+  query_cost?: number;
+  retry_after_seconds?: number;
+}
+
+const RATE_LIMIT_FIELDS = [
+  "tokens_minute_limit", "tokens_minute_remaining",
+  "tokens_five_minute_limit", "tokens_five_minute_remaining",
+  "tokens_month_limit", "tokens_month_remaining",
+  "requests_minute_limit", "requests_minute_remaining",
+  "requests_second_limit", "requests_second_remaining",
+  "generic_limit", "generic_remaining", "query_cost", "retry_after_seconds",
+] as const;
+
+function providerRateLimit(value: unknown): ProviderRateLimit | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const out: ProviderRateLimit = {};
+  for (const field of RATE_LIMIT_FIELDS) {
+    const candidate = source[field];
+    if (typeof candidate === "number" && Number.isSafeInteger(candidate) && candidate >= 0) {
+      out[field] = candidate;
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 
 // A completed turn: its entries plus the provider-format messages it produced.
 export interface Turn {
@@ -258,6 +298,14 @@ function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: bool
       // adaptive toggle (no effort levels, no custom temperature). M2 models
       // always reason; turning thinking off there is a no-op on the model side.
       return { thinking: thinkOpts(["off", "on"]), style: "boolean", defaultLevel: "on", temperature: false };
+    case "mistral":
+      // Mistral documents adjustable reasoning on these two aliases, with the
+      // stable `none` and `high` levels. Other Mistral models keep their own
+      // default. Chat Completions supports temperature in either case.
+      if (m === "mistral-small-latest" || m === "mistral-medium-3-5")
+        return { thinking: thinkOpts(["none", "high"]), style: "effort",
+                 defaultLevel: "high", temperature: true };
+      return { thinking: [], style: "effort", defaultLevel: "high", temperature: true };
     case "ollama":
     case "ollama_cloud":
       // Boolean is the compatibility fallback until a per-model probe proves
@@ -950,9 +998,10 @@ export function AgentCliWindow({
                 const message = String(p.message ?? "");
                 const messageParams = p.message_params && typeof p.message_params === "object"
                   ? p.message_params as Record<string, string | number> : undefined;
-                push({ kind: "error", code, message, messageParams });
+                const rateLimit = providerRateLimit(p.rate_limit);
+                push({ kind: "error", code, message, messageParams, rateLimit });
                 setAnnouncement(t("agentchat.announceError", {
-                  message: serverText(code, message, messageParams),
+                  message: serverText(code, message, messageParams, rateLimit),
                 }));
               }
               break;
@@ -1635,9 +1684,53 @@ function serverText(
   code: string | undefined,
   message: string,
   params?: Record<string, string | number>,
+  rateLimit?: ProviderRateLimit,
 ): string {
   const key = code ? `agentchat.notice.${code}` : "";
-  return key && hasMessage(key) ? t(key, params) : message;
+  const base = key && hasMessage(key) ? t(key, params) : message;
+  const diagnostics = rateLimitDiagnostics(rateLimit);
+  return diagnostics ? `${base}\n${diagnostics}` : base;
+}
+
+function rateLimitDiagnostics(info?: ProviderRateLimit): string {
+  if (!info) return "";
+  const lines: string[] = [];
+  const pair = (
+    remaining: number | undefined, limit: number | undefined, key: string,
+  ) => {
+    if (remaining !== undefined && limit !== undefined) {
+      lines.push(t(key, { remaining: localeNumber(remaining), limit: localeNumber(limit) }));
+    }
+  };
+  pair(info.tokens_minute_remaining, info.tokens_minute_limit,
+       "agentchat.rateLimitTokensMinute");
+  pair(info.tokens_five_minute_remaining, info.tokens_five_minute_limit,
+       "agentchat.rateLimitTokensFiveMinute");
+  pair(info.tokens_month_remaining, info.tokens_month_limit,
+       "agentchat.rateLimitTokensMonth");
+  pair(info.requests_minute_remaining, info.requests_minute_limit,
+       "agentchat.rateLimitRequestsMinute");
+  pair(info.requests_second_remaining, info.requests_second_limit,
+       "agentchat.rateLimitRequestsSecond");
+  if (info.generic_remaining !== undefined && info.generic_limit !== undefined) {
+    lines.push(t("agentchat.rateLimitGeneric", {
+      remaining: localeNumber(info.generic_remaining),
+      limit: localeNumber(info.generic_limit),
+    }));
+  } else if (info.generic_remaining !== undefined) {
+    lines.push(t("agentchat.rateLimitGenericRemaining", {
+      remaining: localeNumber(info.generic_remaining),
+    }));
+  }
+  if (info.query_cost !== undefined) {
+    lines.push(t("agentchat.rateLimitQueryCost", { cost: localeNumber(info.query_cost) }));
+  }
+  if (info.retry_after_seconds !== undefined) {
+    lines.push(t("agentchat.rateLimitRetryAfter", {
+      seconds: localeNumber(info.retry_after_seconds),
+    }));
+  }
+  return lines.join("\n");
 }
 
 function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
@@ -1743,7 +1836,9 @@ function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
     case "notice":
       return <div className="agentcli-notice">{serverText(entry.code, entry.message, entry.messageParams)}</div>;
     case "error":
-      return <div className="agentcli-error">{serverText(entry.code, entry.message, entry.messageParams)}</div>;
+      return <div className="agentcli-error">{
+        serverText(entry.code, entry.message, entry.messageParams, entry.rateLimit)
+      }</div>;
     default:
       return null;
   }
