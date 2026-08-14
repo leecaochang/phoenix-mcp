@@ -110,7 +110,8 @@ class TestServerDiscover:
         instructions = resp["result"]["instructions"]
         assert "cap_automation_write" in instructions
         assert "GetDateTime" in instructions
-        assert "timestamps returned in UTC" in instructions
+        assert "timestamps may be returned in UTC" in instructions
+        assert "Present the local date and time directly" in instructions
 
     async def test_capabilities_are_the_same_claim_as_initialize(self):
         # One definition, so a client reading only one of the two never learns

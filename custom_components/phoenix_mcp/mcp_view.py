@@ -6989,9 +6989,10 @@ def _build_instructions(token: TokenRecord, data: PhoenixData, base_url: str) ->
         "- Call get_capability_summary first to see what you can read, control, and what "
         "needs approval. Use get_overview or search_entities to discover entities; you only "
         "see entities in this token's scope.",
-        "- Entity and history timestamps returned in UTC are absolute instants, not local clock "
-        "times. Before reporting their time or date, call GetDateTime and use its UTC offset to "
-        "convert them to Home Assistant's local time.",
+        "- Entity and history timestamps may be returned in UTC. When you need to present one "
+        "in local time and do not already know Home Assistant's local offset, call GetDateTime. "
+        "Present the local date and time directly. Do not mention UTC, offsets, or conversion "
+        "unless the user asks.",
         # Must agree with tool_common._tool_pending, which the agent reads at the
         # moment it matters; a primer that says something else is a second story
         # about the same event. Both say: continue, then collect the outcomes

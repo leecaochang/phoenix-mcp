@@ -19,7 +19,7 @@ import asyncio
 import base64
 import binascii
 import dataclasses
-from datetime import timedelta
+from datetime import datetime, timedelta, tzinfo
 import ipaddress
 import json
 import logging
@@ -1818,6 +1818,103 @@ def _flatten_text(content: list[dict]) -> str:
     )
 
 
+_AGENTCLI_LOCAL_TIME_FIELDS: dict[str, frozenset[str]] = {
+    "get_state": frozenset({"last_changed", "last_updated", "last_reported"}),
+    "get_states": frozenset({"last_changed", "last_updated", "last_reported"}),
+    "get_history": frozenset({
+        "start", "end", "when", "last_changed", "last_updated", "last_reported",
+    }),
+    "get_statistics": frozenset({"start", "end", "last_reset"}),
+    "get_logbook": frozenset({"start_time", "end_time", "when"}),
+    "recent_activity": frozenset({"when"}),
+    "get_automation_traces": frozenset({"start", "finish"}),
+}
+
+
+def _agentcli_local_time(value: Any, local_tz: tzinfo) -> str | None:
+    """Return a local ISO companion for one recognized wire timestamp."""
+    parsed: datetime | None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            parsed = datetime.fromtimestamp(float(value), tz=dt_util.UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    elif isinstance(value, str):
+        parsed = dt_util.parse_datetime(value)
+        if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+    else:
+        return None
+    return parsed.astimezone(local_tz).isoformat()
+
+
+def _agentcli_add_local_time_fields(
+    tool_name: str, text: str, local_tz: tzinfo,
+) -> str:
+    """Add local companions without changing canonical tool-result timestamps.
+
+    This is an Agent Chat-only presentation layer. Cursor values deliberately get
+    no companion because they are opaque protocol inputs for a subsequent call.
+    """
+    fields = _AGENTCLI_LOCAL_TIME_FIELDS.get(tool_name)
+    if fields is None:
+        return text
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+
+    def add_companions(value: Any) -> Any:
+        if isinstance(value, list):
+            return [add_companions(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        augmented: dict[str, Any] = {}
+        for key, item in value.items():
+            augmented[key] = add_companions(item)
+            companion = _agentcli_local_time(item, local_tz) if key in fields else None
+            companion_key = f"{key}_local"
+            if companion is not None and companion_key not in value:
+                augmented[companion_key] = companion
+        return augmented
+
+    return json.dumps(add_companions(payload), separators=(",", ":"), ensure_ascii=False)
+
+
+_AGENTCLI_LOCAL_QUERY_FIELDS: dict[str, frozenset[str]] = {
+    "get_history": frozenset({"start_time", "end_time"}),
+    "get_statistics": frozenset({"start_time", "end_time"}),
+    "get_logbook": frozenset({"start_time", "end_time"}),
+}
+
+
+def _agentcli_prepare_time_args(
+    tool_name: str, args: dict[str, Any], local_tz: tzinfo,
+) -> tuple[dict[str, Any], str | None]:
+    """Apply HA's zone to naive Agent Chat ranges and reject manual shifting."""
+    fields = _AGENTCLI_LOCAL_QUERY_FIELDS.get(tool_name)
+    if fields is None:
+        return args, None
+    prepared = dict(args)
+    for field in fields:
+        value = prepared.get(field)
+        if not isinstance(value, str):
+            continue
+        parsed = dt_util.parse_datetime(value)
+        if parsed is None:
+            continue
+        if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            return args, (
+                f"Agent Chat {field} must be a Home Assistant local wall time without "
+                "a timezone suffix, or a relative time. Pass the operator's intended "
+                "clock time directly; Phoenix applies the configured time zone."
+            )
+        prepared[field] = parsed.replace(tzinfo=local_tz).isoformat()
+    return prepared, None
+
+
 def _parse_pending(result: dict) -> dict | None:
     """Detect a pending_approval CallToolResult, returning its fields or None.
 
@@ -2038,14 +2135,21 @@ _AGENTCLI_ADDENDUM = (
 
 def _agentcli_time_context(hass: HomeAssistant) -> str:
     """Tell Agent Chat how to present Home Assistant timestamps locally."""
-    offset = dt_util.now().strftime("%z")
+    now = dt_util.now()
+    offset = now.strftime("%z")
     offset_label = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else "UTC"
     return (
-        "\n\nHome Assistant's configured local time zone is "
-        f"{hass.config.time_zone} ({offset_label}). Entity last_changed, last_updated, "
-        "history, and other ISO 8601 timestamps may be returned in UTC. Convert them to "
-        "this Home Assistant time zone before telling the operator a clock time or date. "
-        "Use GetDateTime when the current local date, time, or UTC offset matters."
+        "\n\nHome Assistant's local time zone is "
+        f"{hass.config.time_zone} ({offset_label}). The current local date and time at the "
+        f"start of this turn is {now.strftime('%Y-%m-%d %H:%M:%S')}. Common temporal tool "
+        "results preserve their canonical timestamps and add authoritative companion fields "
+        "whose names end in _local. Use the _local value when reasoning or reporting; never "
+        "calculate a local value from its canonical counterpart. For get_history, "
+        "get_statistics, and get_logbook absolute time arguments, send the intended Home "
+        "Assistant wall time without a timezone suffix, for example 2026-08-14T05:00:00. "
+        "Phoenix applies the configured zone; do not shift the window yourself. State dates "
+        "and times matter-of-factly. Do not mention local time, UTC, offsets, or conversion "
+        "unless the operator explicitly asks."
     )
 
 
@@ -2252,6 +2356,22 @@ async def _run_tool_batch(
                             "result_text": "Cancelled by the operator; not run.",
                             "is_error": True})
             continue
+        if isinstance(args, dict):
+            args, time_error = _agentcli_prepare_time_args(
+                name, args, dt_util.now().tzinfo or dt_util.UTC,
+            )
+        else:
+            time_error = None
+        if time_error is not None:
+            await emit("tool_result", {
+                "id": tc.get("id"), "name": name,
+                "is_error": True, "summary": time_error,
+            })
+            results.append({
+                "tool_use_id": tc.get("id"), "tool_name": name,
+                "result_text": time_error, "is_error": True,
+            })
+            continue
         resp_msg, _m, _r, _o = await _dispatch_with_progress(
             emit, tc.get("id"),
             _dispatch_mcp(
@@ -2292,7 +2412,11 @@ async def _run_tool_batch(
                 human_resolved = True
         is_error = bool(result.get("isError"))
         content = result.get("content", [])
-        text = _flatten_text(content)
+        text = _agentcli_add_local_time_fields(
+            name,
+            _flatten_text(content),
+            dt_util.now().tzinfo or dt_util.UTC,
+        )
         images = _extract_image_blocks(content)
         for index, image in enumerate(images):
             await emit("tool_image", {
@@ -2337,7 +2461,14 @@ async def async_run_agent_turn(
         + _agentcli_time_context(hass)
         + _AGENTCLI_ADDENDUM
     )
-    tools = provider.format_tools(build_mcp_tool_list(token, data))
+    # Current local time is supplied above on every user turn. Keeping GetDateTime
+    # out of this one catalog prevents a model from redundantly calling it at the
+    # start of a chat. External MCP catalogs continue to announce the tool.
+    agent_tools = [
+        tool for tool in build_mcp_tool_list(token, data)
+        if tool.get("name") != "GetDateTime"
+    ]
+    tools = provider.format_tools(agent_tools)
     # The token is re-resolved per dispatch (see _current_dispatch_token), so a
     # mid-turn revoke/expire/cap-change/kill-switch is honored before any side
     # effect. Each dispatch gets the inline-confirm wait zeroed so a confirm gate

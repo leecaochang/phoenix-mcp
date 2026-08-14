@@ -964,6 +964,42 @@ describe("AgentCliWindow streaming", () => {
     expect(getDurable().showTimestamps).toBe(true);
   });
 
+  it("does not render orphaned timestamps for hidden thinking-only messages", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("thinking_delta", { text: "Checking history." });
+      onEvent("tool_call", { id: "tool-1", name: "get_history", arguments: {} });
+      onEvent("tool_result", { id: "tool-1", name: "get_history", summary: "Found states." });
+      onEvent("thinking_delta", { text: "Checking the logbook." });
+      onEvent("tool_call", { id: "tool-2", name: "get_logbook", arguments: {} });
+      onEvent("tool_result", { id: "tool-2", name: "get_logbook", summary: "Found events." });
+      onEvent("assistant_delta", { text: "The AC turned off at 05:14." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show timestamps"));
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "why did it turn off?" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(screen.getByText("The AC turned off at 05:14.")).toBeInTheDocument());
+    expect(document.querySelectorAll(".agentcli-msg-assistant").length).toBe(1);
+    expect(document.querySelectorAll(".agentcli-ts").length).toBe(2);
+
+    // Turning verbose output on makes the two thinking-only messages visible,
+    // so their timestamps become visible with them rather than on their own.
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show verbose output"));
+    await waitFor(() => expect(document.querySelectorAll(".agentcli-msg-assistant").length).toBe(3));
+    expect(document.querySelectorAll(".agentcli-ts").length).toBe(4);
+  });
+
   it("token-usage footer says so when a provider reports no usage, and recovers when one does", async () => {
     // A completed turn with no usage events marks the footer (a forever-zero
     // counter would read as broken); a later turn that DOES report replaces it.

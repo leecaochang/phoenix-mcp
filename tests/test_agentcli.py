@@ -1250,6 +1250,7 @@ class _ScriptedProvider:
         self.turns = turns
         self.i = 0
         self.system_prompts: list[str] = []
+        self.tool_catalogs: list[list[dict]] = []
 
     def format_tools(self, tools):
         return tools
@@ -1262,6 +1263,7 @@ class _ScriptedProvider:
 
     async def stream_turn(self, session, *, system_prompt, messages, tools, options):
         self.system_prompts.append(system_prompt)
+        self.tool_catalogs.append(tools)
         turn = self.turns[self.i]
         self.i += 1
         for ev in turn:
@@ -1285,15 +1287,24 @@ def _loop_data():
     return data
 
 
+@pytest.mark.parametrize(("zone", "offset_hours", "offset_label"), [
+    ("Asia/Bangkok", 7, "UTC+07:00"),
+    ("America/New_York", -4, "UTC-04:00"),
+])
 @pytest.mark.asyncio
-async def test_run_agent_turn_includes_home_assistant_timezone(hass, monkeypatch):
+async def test_run_agent_turn_uses_home_assistant_timezone_silently(
+    hass, monkeypatch, zone, offset_hours, offset_label,
+):
     """UTC entity timestamps must be interpreted in the HA-configured zone."""
     provider = _ScriptedProvider([[_done("end_turn")]])
     data = _loop_data()
-    monkeypatch.setattr(hass.config, "time_zone", "Asia/Bangkok")
-    local_now = datetime(2026, 8, 13, 11, 26, tzinfo=timezone(timedelta(hours=7)))
+    monkeypatch.setattr(hass.config, "time_zone", zone)
+    local_now = datetime(
+        2026, 8, 13, 11, 26, tzinfo=timezone(timedelta(hours=offset_hours)),
+    )
 
-    with patch("custom_components.phoenix_mcp.agentcli.build_mcp_tool_list", return_value=[]), \
+    catalog = [{"name": "GetDateTime"}, {"name": "get_logbook"}]
+    with patch("custom_components.phoenix_mcp.agentcli.build_mcp_tool_list", return_value=catalog), \
          patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="sys"), \
          patch("custom_components.phoenix_mcp.agentcli.dt_util.now", return_value=local_now):
         await async_run_agent_turn(
@@ -1302,10 +1313,79 @@ async def test_run_agent_turn_includes_home_assistant_timezone(hass, monkeypatch
             base_url="http://h", emit=AsyncMock(), cancel=asyncio.Event(),
         )
 
-    assert "Asia/Bangkok" in provider.system_prompts[0]
-    assert "UTC+07:00" in provider.system_prompts[0]
-    assert "convert" in provider.system_prompts[0].lower()
-    assert "last_changed" in provider.system_prompts[0]
+    prompt = provider.system_prompts[0]
+    assert zone in prompt
+    assert offset_label in prompt
+    assert "2026-08-13 11:26" in prompt
+    assert "preserve their canonical timestamps" in prompt
+    assert "authoritative companion fields" in prompt
+    assert "Use the _local value" in prompt
+    assert "without a timezone suffix" in prompt
+    assert "State dates and times matter-of-factly" in prompt
+    assert [tool["name"] for tool in provider.tool_catalogs[0]] == ["get_logbook"]
+
+
+def test_agentcli_adds_local_companions_without_changing_canonical_timestamps():
+    payload = {
+        "filters": {
+            "start_time": "2026-08-13T22:00:00+00:00",
+            "end_time": "2026-08-13T23:00:00+00:00",
+        },
+        "entries": [{"when": 1786659257.0, "name": "Bedroom AC"}],
+    }
+
+    augmented = json.loads(agentcli._agentcli_add_local_time_fields(
+        "get_logbook", json.dumps(payload), timezone(timedelta(hours=7)),
+    ))
+
+    assert augmented["filters"]["start_time"] == "2026-08-13T22:00:00+00:00"
+    assert augmented["filters"]["end_time"] == "2026-08-13T23:00:00+00:00"
+    assert augmented["filters"]["start_time_local"] == "2026-08-14T05:00:00+07:00"
+    assert augmented["filters"]["end_time_local"] == "2026-08-14T06:00:00+07:00"
+    assert augmented["entries"][0]["when"] == 1786659257.0
+    assert augmented["entries"][0]["when_local"] == "2026-08-14T05:14:17+07:00"
+
+    history = json.loads(agentcli._agentcli_add_local_time_fields(
+        "get_history",
+        '{"requested_range":{"start":"2026-08-13T22:00:00+00:00"},'
+        '"next_cursor":"2026-08-13T22:30:00+00:00"}',
+        timezone(timedelta(hours=7)),
+    ))
+    # Cursors are protocol values that the model must be able to echo unchanged.
+    assert history["requested_range"]["start"] == "2026-08-13T22:00:00+00:00"
+    assert history["requested_range"]["start_local"] == "2026-08-14T05:00:00+07:00"
+    assert history["next_cursor"] == "2026-08-13T22:30:00+00:00"
+    assert "next_cursor_local" not in history
+
+
+def test_agentcli_leaves_non_temporal_tool_results_unchanged():
+    text = '{"timestamp":"2026-08-13T22:14:17+00:00"}'
+
+    assert agentcli._agentcli_add_local_time_fields(
+        "read_config", text, timezone(timedelta(hours=7)),
+    ) == text
+
+
+def test_agentcli_applies_home_zone_to_naive_query_bounds_and_rejects_shifted_ones():
+    local_tz = timezone(timedelta(hours=7))
+
+    prepared, error = agentcli._agentcli_prepare_time_args(
+        "get_logbook",
+        {"start_time": "2026-08-14T05:00:00", "end_time": "2h"},
+        local_tz,
+    )
+    assert error is None
+    assert prepared == {
+        "start_time": "2026-08-14T05:00:00+07:00",
+        "end_time": "2h",
+    }
+
+    original = {"start_time": "2026-08-13T22:00:00Z"}
+    prepared, error = agentcli._agentcli_prepare_time_args(
+        "get_logbook", original, local_tz,
+    )
+    assert prepared == original
+    assert "without a timezone suffix" in str(error)
 
 
 @pytest.mark.asyncio
@@ -1338,6 +1418,61 @@ async def test_run_agent_turn_read_tool(hass):
     tr = next(p for n, p in events if n == "tool_result")
     assert tr["is_error"] is False and tr["summary"] == "on"
     fake_dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_turn_adds_logbook_local_companions_before_model_sees_it(hass):
+    provider = _ScriptedProvider([
+        [{"type": agentcli.EV_TOOL, "id": "tu1", "name": "get_logbook", "input": {
+            "start_time": "2026-08-14T05:00:00",
+            "end_time": "2026-08-14T06:00:00",
+        }},
+         _done("tool_use")],
+        [{"type": agentcli.EV_TEXT, "text": "The AC turned off at 05:14."},
+         _done("end_turn")],
+    ])
+    data = _loop_data()
+    wire_text = json.dumps({
+        "filters": {
+            "start_time": "2026-08-13T22:00:00+00:00",
+            "end_time": "2026-08-13T23:00:00+00:00",
+        },
+        "entries": [{"when": 1786659257.0, "name": "Bedroom AC"}],
+    })
+    fake_dispatch = AsyncMock(return_value=(
+        {"result": {"content": [{"type": "text", "text": wire_text}]}},
+        "m", "r", "allowed",
+    ))
+    events: list = []
+
+    async def emit(name, payload):
+        events.append((name, payload))
+
+    local_now = datetime(
+        2026, 8, 14, 11, 26, tzinfo=timezone(timedelta(hours=7)),
+    )
+    with patch("custom_components.phoenix_mcp.agentcli.build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="sys"), \
+         patch("custom_components.phoenix_mcp.mcp_view._dispatch_mcp", fake_dispatch), \
+         patch("custom_components.phoenix_mcp.agentcli.dt_util.now", return_value=local_now):
+        messages = await async_run_agent_turn(
+            hass=hass, data=data, token=MagicMock(), provider=provider,
+            session=MagicMock(), messages=[], options={}, client_ip="agentcli",
+            base_url="http://h", emit=emit, cancel=asyncio.Event(),
+        )
+
+    model_result = next(
+        result["result_text"]
+        for message in messages if "tool_results" in message
+        for result in message["tool_results"]
+    )
+    panel_result = next(payload["summary"] for name, payload in events if name == "tool_result")
+    for result_text in (model_result, panel_result):
+        assert '"when":1786659257.0' in result_text
+        assert '"when_local":"2026-08-14T05:14:17+07:00"' in result_text
+    dispatch_params = fake_dispatch.await_args.args[2]
+    assert dispatch_params["arguments"]["start_time"] == "2026-08-14T05:00:00+07:00"
+    assert dispatch_params["arguments"]["end_time"] == "2026-08-14T06:00:00+07:00"
 
 
 @pytest.mark.asyncio

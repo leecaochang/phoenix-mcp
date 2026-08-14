@@ -1655,10 +1655,16 @@ function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
   switch (entry.kind) {
     case "user":
       return <div className="agentcli-msg agentcli-msg-user">{entry.text}{ts}</div>;
-    case "assistant":
+    case "assistant": {
+      const hasReply = entry.text.trim().length > 0;
+      const hasVisibleThinking = verbose && entry.thinking.trim().length > 0;
+      // A tool-use round can carry reasoning but no reply text. When reasoning
+      // is hidden, suppress the whole bubble so its timestamp cannot survive as
+      // an orphaned row. Turning verbose on reveals both together.
+      if (!hasReply && !hasVisibleThinking) return null;
       return (
         <div className="agentcli-msg agentcli-msg-assistant">
-          {verbose && entry.thinking && (
+          {hasVisibleThinking && (
             <details className="agentcli-thinking">
               <summary>{t("agentchat.reasoning")}</summary>
               {/* Same sanitizing renderer as the reply body: models emit
@@ -1670,13 +1676,16 @@ function ChatItem({ entry, verbose, showTs, onResolve, onReview }: {
               />
             </details>
           )}
-          {flagsUnsafeContent(entry.text) && (
+          {hasReply && flagsUnsafeContent(entry.text) && (
             <div className="agentcli-unsafe">{t("agentchat.unsafeContent")}</div>
           )}
-          <div className="agentcli-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }} />
+          {hasReply && (
+            <div className="agentcli-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }} />
+          )}
           {ts}
         </div>
       );
+    }
     case "tool_call":
       // Tool activity is "verbose" detail; hidden unless the operator opts in.
       return verbose ? <div className="agentcli-tool">{tRich("agentchat.callingTool", { code: (c) => <code>{c}</code> }, { name: entry.name })}</div> : null;
