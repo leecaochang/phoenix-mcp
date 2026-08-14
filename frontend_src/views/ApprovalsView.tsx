@@ -9,6 +9,7 @@ import { YamlView, toYaml } from "../components/YamlView";
 import { approvalStatusLabel, formatDateTime, friendlyToolName } from "../utils";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
 import { localizedApprovalReason } from "../utils/approval_reason";
+import { friendlyApprovalSummary, rememberApprovalView, storedApprovalView, type ApprovalView } from "../utils/approval_summary";
 import { useLatestRequest } from "../utils/latest_request";
 import { hasMessage, t, tn } from "../i18n";
 
@@ -60,19 +61,96 @@ export function diffSummary(diff: ApprovalDiff | undefined): string {
   return diff?.summary ?? "";
 }
 
-/** Pull the tool's own error text out of a resolved approval's saved result. */
+/** Preserve a useful stored title only for records too old to contain any
+ * deterministic friendly context. Current records always use the resolver. */
+function approvalListTitle(diff: ApprovalDiff | undefined, view: ApprovalView): string {
+  const friendly = friendlyApprovalSummary(diff).title;
+  if (view === "details") return diffSummary(diff) || friendly;
+  const unknown = t("approvalSummary.fallback.unknown.title");
+  return friendly === unknown && diffSummary(diff) ? diffSummary(diff) : friendly;
+}
+
+const FRIENDLY_DETAIL_MAX_CHARS = 280;
+
+function boundedFriendlyDetail(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= FRIENDLY_DETAIL_MAX_CHARS) return compact;
+  return `${compact.slice(0, FRIENDLY_DETAIL_MAX_CHARS - 3).trimEnd()}...`;
+}
+
+function structuredErrorText(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ["error", "message", "reason"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+    if (candidate && typeof candidate === "object") {
+      const nested = (candidate as Record<string, unknown>).message;
+      if (typeof nested === "string" && nested.trim()) return nested;
+    }
+  }
+  return null;
+}
+
+/** Pull one concise tool error out of a resolved approval's saved result.
+ *
+ * Older integration failures stored a JSON document containing the short
+ * `error` plus complete MESA explanations. Summary must extract the sentence,
+ * never render that diagnostic document as prose. Details retains it verbatim.
+ */
 export function extractResultErrorText(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const toolResult = (result as Record<string, unknown>).tool_result;
   if (!toolResult || typeof toolResult !== "object") return null;
+  const direct = structuredErrorText(toolResult);
+  if (direct) return boundedFriendlyDetail(direct);
   const content = (toolResult as Record<string, unknown>).content;
   if (!Array.isArray(content)) return null;
-  const texts = content
-    .map((c) => (c && typeof c === "object" ? (c as Record<string, unknown>).text : null))
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => t.trim())
-    .filter(Boolean);
-  return texts.length ? texts.join(" ") : null;
+  for (const item of content) {
+    const text = item && typeof item === "object" ? (item as Record<string, unknown>).text : null;
+    if (typeof text !== "string" || !text.trim()) continue;
+    try {
+      const parsed = JSON.parse(text);
+      const structured = structuredErrorText(parsed);
+      if (structured) return boundedFriendlyDetail(structured);
+    } catch {
+      // Plain-text executor errors are the normal shape.
+    }
+    return boundedFriendlyDetail(text);
+  }
+  return null;
+}
+
+const LOCALIZED_EXECUTOR_ERRORS: Readonly<Record<string, string>> = {
+  "The integration's state, resource membership, permissions, or effective MESA profile changed after approval. Review it again.":
+    "approvalSummary.history.error.integrationChanged",
+  "The integration logger set, override, or visibility changed after approval. Review it again.":
+    "approvalSummary.history.error.integrationLoggerChanged",
+  "Disabled integrations cannot be reloaded.":
+    "approvalSummary.history.error.integrationDisabled",
+  "This integration does not currently support reload.":
+    "approvalSummary.history.error.integrationReloadUnsupported",
+  "Integration not found.":
+    "approvalSummary.history.error.integrationNotFound",
+  "Failed to reload integration.":
+    "approvalSummary.history.error.integrationReloadFailed",
+};
+
+const INTEGRATION_STATE_NOT_RELOADABLE = /^Integration state (.+) is not reloadable\.$/;
+
+/** Keep Summary fully localized; raw diagnostics remain available in Details. */
+export function localizedResultErrorText(result: unknown): string | null {
+  const detail = extractResultErrorText(result);
+  if (!detail) return null;
+  const key = LOCALIZED_EXECUTOR_ERRORS[detail];
+  if (key) return t(key);
+  const stateMatch = detail.match(INTEGRATION_STATE_NOT_RELOADABLE);
+  if (stateMatch) {
+    return t("approvalSummary.history.error.integrationStateNotReloadable", {
+      state: stateMatch[1],
+    });
+  }
+  return t("approvalSummary.history.error.generic");
 }
 
 /** Readable rejection/cancellation reason: slug -> label, and for an
@@ -82,7 +160,7 @@ export function friendlyReason(record: ApprovalRecord): string {
   const reason = record.rejected_reason;
   if (!reason) return "";
   if (reason === "execution_failed") {
-    const detail = extractResultErrorText(record.result);
+    const detail = localizedResultErrorText(record.result);
     if (detail) return t("approvals.reasonExecutionFailedDetail", { detail });
   }
   return localizedApprovalReason(reason);
@@ -119,6 +197,12 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchApproveResult | null>(null);
+  const [defaultView, setDefaultView] = useState<ApprovalView>(() => storedApprovalView());
+
+  const changeDefaultView = (view: ApprovalView) => {
+    setDefaultView(view);
+    rememberApprovalView(view);
+  };
 
   // Closing forgets the deep-link, so reopening the SAME approval from the list
   // is treated as what it is: an operator who is looking at the queue.
@@ -281,9 +365,19 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
     const q = search.trim().toLowerCase();
     if (!q || tab === "pending") return records;
     return records.filter((r) =>
-      `${r.token_name} ${r.tool_name} ${friendlyToolName(r.tool_name)} ${diffSummary(r.diff)} ${r.rejected_reason ?? ""}`.toLowerCase().includes(q),
+      `${r.token_name} ${r.tool_name} ${friendlyToolName(r.tool_name)} ${friendlyApprovalSummary(r.diff).title} ${diffSummary(r.diff)} ${r.rejected_reason ?? ""}`.toLowerCase().includes(q),
     );
   }, [records, search, tab]);
+
+  const selectedIndex = selected ? shown.findIndex((record) => record.id === selected.id) : -1;
+  const navigateSelected = useCallback((offset: -1 | 1) => {
+    if (!selected) return;
+    const index = shown.findIndex((record) => record.id === selected.id);
+    const next = shown[index + offset];
+    if (!next) return;
+    setDeepLinkedId(null);
+    setSelected(next);
+  }, [selected, shown]);
 
   // An approval already being executed cannot be batched: the server would answer
   // 409 on its claim and halt the run on something the operator never chose.
@@ -351,6 +445,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
 
   return (
     <div className="approvals-view">
+      <div className="approvals-toolbar">
       <div className="approvals-tabs" role="tablist" aria-label={t("approvals.tablist")} onKeyDown={handleTopTabKeyDown}>
         {/* No aria-controls on these two: only the active panel is mounted. */}
         <button
@@ -375,6 +470,16 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
         >
           {t("approvals.tabHistory")}
         </button>
+      </div>
+      <SegmentedToggle
+        value={defaultView}
+        options={[
+          { value: "summary", label: t("approvalSummary.view.summary") },
+          { value: "details", label: t("approvalSummary.view.details") },
+        ]}
+        onChange={changeDefaultView}
+        ariaLabel={t("approvalSummary.view.defaultAria")}
+      />
       </div>
 
       <div
@@ -438,6 +543,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
               <ApprovalCard
                 key={r.id}
                 record={r}
+                view={defaultView}
                 claimed={isClaimed(r)}
                 checked={picked.has(r.id)}
                 selectable={!isClaimed(r)}
@@ -451,7 +557,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
         shown.length > 0 && (
           <div className="card approval-history">
             {shown.map((r) => (
-              <HistoryRow key={r.id} record={r} onClick={() => setSelected(r)} />
+              <HistoryRow key={r.id} record={r} view={defaultView} onClick={() => setSelected(r)} />
             ))}
           </div>
         )
@@ -468,9 +574,13 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
 
       {selected && (
         <ApprovalDetailModal
+          key={selected.id}
           record={selected}
+          defaultView={defaultView}
           claimed={isClaimed(selected)}
           onClose={closeRecord}
+          onNavigatePrevious={selectedIndex > 0 ? () => navigateSelected(-1) : undefined}
+          onNavigateNext={selectedIndex >= 0 && selectedIndex < shown.length - 1 ? () => navigateSelected(1) : undefined}
           onResolved={handleResolved}
           // Only from a notification, and only for a pending record: that is the
           // path on which the queue is invisible. Gating on `tab === "pending"`
@@ -490,11 +600,8 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   );
 }
 
-function HistoryRow({ record, onClick }: { record: ApprovalRecord; onClick: () => void }) {
-  const note = diffSummary(record.diff)
-    || (record.rejected_reason
-      ? t("approvals.reasonPrefix", { reason: friendlyReason(record) })
-      : friendlyToolName(record.tool_name));
+function HistoryRow({ record, view, onClick }: { record: ApprovalRecord; view: ApprovalView; onClick: () => void }) {
+  const note = approvalListTitle(record.diff, view);
   return (
     <button type="button" className="approval-history-row" onClick={onClick}>
       <StatusBadge status={record.status} />
@@ -554,8 +661,9 @@ function BatchResultMsg({ result, onDismiss }: { result: BatchApproveResult; onD
   );
 }
 
-function ApprovalCard({ record, claimed, checked, selectable, onToggle, onClick }: {
+function ApprovalCard({ record, view, claimed, checked, selectable, onToggle, onClick }: {
   record: ApprovalRecord;
+  view: ApprovalView;
   claimed?: boolean;
   checked?: boolean;
   selectable?: boolean;
@@ -578,7 +686,7 @@ function ApprovalCard({ record, claimed, checked, selectable, onToggle, onClick 
         </div>
       </div>
       <div className="approval-card-summary">
-        {diffSummary(record.diff) || friendlyToolName(record.tool_name)}
+        {approvalListTitle(record.diff, view)}
       </div>
       {record.rejected_reason && (
         <div className="approval-card-reason">{t("approvals.reasonPrefix", { reason: friendlyReason(record) })}</div>
@@ -624,11 +732,15 @@ function useExpiresLabel(expiresAt: string, status: ApprovalStatus): string | nu
 
 interface DetailProps {
   record: ApprovalRecord;
+  /** Per-browser default captured when this modal opens. */
+  defaultView: ApprovalView;
   /** Its saved action is executing (claimed by an admin's Approve, possibly in
    *  another surface). Locks the actions exactly like this modal's own busy. */
   claimed?: boolean;
   onClose: () => void;
   onResolved: (updated: ApprovalRecord) => void;
+  onNavigatePrevious?: () => void;
+  onNavigateNext?: () => void;
   /** How many OTHER approvals are waiting, when this modal was reached from a
    *  notification. Zero everywhere else, which hides the banner entirely. */
   othersPending?: number;
@@ -636,7 +748,29 @@ interface DetailProps {
   onReviewAll?: () => void;
 }
 
-function ApprovalDetailModal({ record, claimed, onClose, onResolved, othersPending = 0, onReviewAll }: DetailProps) {
+function approvalOutcome(record: ApprovalRecord): string {
+  if (record.rejected_reason === "execution_interrupted") {
+    return t("approvalSummary.history.interrupted.body");
+  }
+  if (record.rejected_reason === "execution_failed") {
+    return t("approvalSummary.history.failed.body", {
+      error: localizedResultErrorText(record.result) || friendlyReason(record),
+    });
+  }
+  if (record.status === "approved") return t("approvalSummary.history.approved.body");
+  if (record.status === "rejected") {
+    return record.rejected_reason
+      ? t("approvalSummary.history.rejectedReason.body", { reason: boundedFriendlyDetail(friendlyReason(record)) })
+      : t("approvalSummary.history.rejected.body");
+  }
+  if (record.status === "expired") return t("approvalSummary.history.expired.body");
+  return record.rejected_reason
+    ? t("approvalSummary.history.cancelledReason.body", { reason: boundedFriendlyDetail(friendlyReason(record)) })
+    : t("approvalSummary.history.cancelled.body");
+}
+
+function ApprovalDetailModal({ record, defaultView, claimed, onClose, onResolved, onNavigatePrevious, onNavigateNext, othersPending = 0, onReviewAll }: DetailProps) {
+  const [view, setView] = useState<ApprovalView>(defaultView);
   const [activeTab, setActiveTab] = useState<"diff" | "args" | "result">("diff");
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -650,12 +784,18 @@ function ApprovalDetailModal({ record, claimed, onClose, onResolved, othersPendi
   // empty on cleanup), but the detected errors are still true statements
   // about the proposed card, so the button stays until the record changes.
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
+  const [summaryRejectOpen, setSummaryRejectOpen] = useState(false);
+  const summaryReasonRef = useRef<HTMLInputElement>(null);
   useEffect(() => { setPreviewErrors([]); setReason(getReasonDraft(record.id)); }, [record.id]);
+  useEffect(() => {
+    if (summaryRejectOpen) summaryReasonRef.current?.focus();
+  }, [summaryRejectOpen]);
   const onConfigErrors = useCallback((messages: string[]) => {
     if (messages.length > 0) setPreviewErrors(messages);
   }, []);
 
   const isPending = record.status === "pending";
+  const summary = friendlyApprovalSummary(record.diff);
   const detailTabs: Array<"diff" | "args" | "result"> = isPending ? ["diff", "args"] : ["diff", "args", "result"];
 
   function switchDetailTab(next: "diff" | "args" | "result", tablist?: EventTarget & HTMLDivElement) {
@@ -724,179 +864,183 @@ function ApprovalDetailModal({ record, claimed, onClose, onResolved, othersPendi
     return rejectWith(text.length > 1200 ? `${text.slice(0, 1200)}...` : text);
   }
 
+  const othersBanner = othersPending > 0 && onReviewAll ? (
+    <div className="banner banner-info approval-others-banner">
+      <span>{tn("approvals.othersPending", othersPending)}</span>
+      <button type="button" className="btn btn-sm" onClick={onReviewAll}>{t("approvals.reviewAll")}</button>
+    </div>
+  ) : null;
+
   return (
-    <Modal titleId="approval-detail-title" onClose={busy ? undefined : onClose} wide>
-      <h3 className="modal-title" id="approval-detail-title">
-        {diffSummary(record.diff) || friendlyToolName(record.tool_name)}
-      </h3>
-      <div className="approval-detail-meta">
-        <span className="stat-label">{t("approvals.metaToken")}</span>
-        <span>{record.token_name}</span>
-        <span className="stat-label">{t("approvals.metaTool")}</span>
-        <span><code>{friendlyToolName(record.tool_name)}</code></span>
-        <span className="stat-label">{t("approvals.metaCapability")}</span>
-        <span><code>{record.cap_name}</code></span>
-        <span className="stat-label">{t("approvals.metaCreated")}</span>
-        <span>{formatDateTime(record.created_at)}</span>
-        <span className="stat-label">{t("approvals.metaExpires")}</span>
-        <span>{formatDateTime(record.expires_at)}</span>
-        <span className="stat-label">{t("approvals.metaStatus")}</span>
-        <span><StatusBadge status={record.status} /></span>
-      </div>
+    <Modal
+      titleId="approval-detail-title"
+      onClose={busy ? undefined : onClose}
+      onNavigatePrevious={busy ? undefined : onNavigatePrevious}
+      onNavigateNext={busy ? undefined : onNavigateNext}
+      recordNavigation
+      wide={view === "details"}
+    >
+      {view === "summary" ? (
+        <div className="approval-summary-timeline">
+          <section className="approval-summary-node approval-summary-proposal">
+            <h3 className="modal-title approval-summary-title" id="approval-detail-title">{summary.title}</h3>
+            <p className="approval-summary-body">{summary.body}</p>
+          </section>
 
-      {/* A notification links to ONE approval, so an operator arriving here has
-          no way to know a queue exists, let alone that it can be cleared in a
-          single action: the tick boxes live on the list this modal covers. It
-          deliberately routes to that list rather than offering approve-all from
-          here, because everything else in the queue is unreviewed and approval
-          is the operator's intent to look at each change. */}
-      {othersPending > 0 && onReviewAll && (
-        <div className="banner banner-info approval-others-banner">
-          <span>{tn("approvals.othersPending", othersPending)}</span>
-          <button type="button" className="btn btn-sm" onClick={onReviewAll}>
-            {t("approvals.reviewAll")}
-          </button>
-        </div>
-      )}
+          {othersBanner}
+          <div className="approval-summary-connector" aria-hidden="true" />
 
-      {!isPending && record.rejected_reason && (
-        <div className="banner banner-error">
-          <strong>
-            {t(record.status === "rejected"
-              ? "approvals.resolvedRejected"
-              : record.status === "cancelled" ? "approvals.resolvedCancelled" : "approvals.resolvedReason")}:
-          </strong>{" "}
-          {friendlyReason(record)}
-        </div>
-      )}
-
-      <div className="approval-detail-tabs" role="tablist" aria-label={t("approvals.detailTablist")} onKeyDown={handleDetailTabKeyDown}>
-        <button
-          id="approval-detail-tab-diff"
-          role="tab"
-          aria-selected={activeTab === "diff"}
-          aria-controls="approval-detail-panel"
-          tabIndex={activeTab === "diff" ? 0 : -1}
-          className={`approval-detail-tab${activeTab === "diff" ? " active" : ""}`}
-          onClick={() => switchDetailTab("diff")}
-        >
-          {t("approvals.detailTabDiff")}
-        </button>
-        <button
-          id="approval-detail-tab-args"
-          role="tab"
-          aria-selected={activeTab === "args"}
-          aria-controls="approval-detail-panel"
-          tabIndex={activeTab === "args" ? 0 : -1}
-          className={`approval-detail-tab${activeTab === "args" ? " active" : ""}`}
-          onClick={() => switchDetailTab("args")}
-        >
-          {t("approvals.detailTabArgs")}
-        </button>
-        {!isPending && (
-          <button
-            id="approval-detail-tab-result"
-            role="tab"
-            aria-selected={activeTab === "result"}
-            aria-controls="approval-detail-panel"
-            tabIndex={activeTab === "result" ? 0 : -1}
-            className={`approval-detail-tab${activeTab === "result" ? " active" : ""}`}
-            onClick={() => switchDetailTab("result")}
-          >
-            {t("approvals.detailTabResult")}
-          </button>
-        )}
-      </div>
-
-      <div
-        id="approval-detail-panel"
-        className="approval-detail-body"
-        role="tabpanel"
-        aria-labelledby={`approval-detail-tab-${activeTab}`}
-      >
-        {activeTab === "diff" && <DiffView record={record} onConfigErrors={onConfigErrors} />}
-        {activeTab === "args" && (
-          <YamlView value={toYaml(record.args as Record<string, unknown>)} />
-        )}
-        {activeTab === "result" && (
-          record.result == null ? (
-            <p className="approvals-empty">
-              {record.rejected_reason
-                ? t("approvals.noResult", {
-                    status: t(record.status === "rejected" ? "approvals.resolvedRejected" : "approvals.resolvedCancelled"),
-                    reason: friendlyReason(record),
-                  })
-                : t("approvals.noResultRecorded", { status: approvalStatusLabel(record.status) })}
-            </p>
+          {isPending ? (
+            <section className="approval-summary-node approval-summary-command">
+              {error && <ErrorMsg msg={error} />}
+              {summaryRejectOpen && (
+                <div className="approval-reject-row">
+                  <label htmlFor="approval-summary-reason" className="approval-reason-label">
+                    {t("approvalSummary.action.optionalReason")}
+                  </label>
+                  <input
+                    ref={summaryReasonRef}
+                    id="approval-summary-reason"
+                    type="text"
+                    value={reason}
+                    onChange={(e) => { setReason(e.target.value); setReasonDraft(record.id, e.target.value); }}
+                    className="approval-reason-input"
+                    placeholder={t("approvalSummary.action.reasonPlaceholder")}
+                    disabled={locked}
+                  />
+                </div>
+              )}
+              <div className="approval-summary-actions">
+                <button className="btn btn-text" onClick={() => setView("details")}>
+                  {t("approvalSummary.view.details")}
+                </button>
+                {summaryRejectOpen ? (
+                  <>
+                    <button className="btn" onClick={() => setSummaryRejectOpen(false)} disabled={locked}>
+                      {t("approvalSummary.action.cancelReject")}
+                    </button>
+                    <button className="btn" onClick={reject} disabled={locked}>
+                      {busy === "reject" ? t("approvalSummary.action.rejecting") : t("approvalSummary.action.reject")}
+                    </button>
+                  </>
+                ) : (
+                  <button className="btn" onClick={() => setSummaryRejectOpen(true)} disabled={locked}>
+                    {t("approvalSummary.action.reject")}
+                  </button>
+                )}
+                {!summaryRejectOpen && (
+                  <button className="btn btn-primary" onClick={approve} disabled={locked}>
+                    {busy === "approve" || claimed
+                      ? t("approvalSummary.action.approving")
+                      : t("approvalSummary.action.approve")}
+                  </button>
+                )}
+              </div>
+            </section>
           ) : (
-            <YamlView value={toYaml(record.result as Record<string, unknown>)} />
-          )
-        )}
-      </div>
-
-      {error && <ErrorMsg msg={error} />}
-
-      {isPending && (
-        <>
-          <div className="approval-reject-row">
-            <label htmlFor="approval-reason" className="approval-reason-label">
-              {t("approvals.reasonLabel")}
-            </label>
-            <input
-              id="approval-reason"
-              type="text"
-              value={reason}
-              onChange={(e) => { setReason(e.target.value); setReasonDraft(record.id, e.target.value); }}
-              className="approval-reason-input"
-              placeholder={t("approvals.reasonPlaceholder")}
-              disabled={locked}
-            />
-          </div>
-          <div className="modal-actions">
-            <button
-              className="btn btn-primary"
-              onClick={approve}
-              disabled={locked}
-            >
-              {busy === "approve" || claimed ? t("approvals.approving") : t("approvals.approve")}
-            </button>
-            {/* Reject is neutral, not danger. Reject-with-reason is the
-                operator's iteration channel and several rounds is the normal
-                authoring workflow, so styling it as destructive discourages the
-                path the design intends; Approve being primary already carries
-                the emphasis. Agent Chat's bubble matches. Genuinely destructive
-                controls (revoke, wipe, delete) keep btn-danger. */}
-            <button
-              className="btn"
-              onClick={reject}
-              disabled={locked}
-            >
-              {busy === "reject" ? t("approvals.rejecting") : t("approvals.reject")}
-            </button>
-            {previewErrors.length > 0 && (
-              <button
-                className="btn btn-outline"
-                onClick={rejectWithConfigErrors}
-                disabled={locked}
-                title={t("approvals.rejectWithErrorTitle")}
-              >
-                {t("approvals.rejectWithError")}
-              </button>
-            )}
-            <button
-              className="btn btn-text"
-              onClick={onClose}
-              disabled={busy !== null}
-            >
-              {t("common.close")}
-            </button>
-          </div>
-        </>
-      )}
-      {!isPending && (
-        <div className="modal-actions">
-          <button className="btn btn-text" onClick={onClose}>{t("common.close")}</button>
+            <>
+              <section className={`approval-summary-node approval-summary-status is-${record.status}`}>
+                <div className="approval-summary-status-text">
+                  <StatusBadge status={record.status} />
+                  <span>{t("approvalSummary.history.resolvedAt", {
+                    time: formatDateTime(record.resolved_at || record.created_at),
+                  })}</span>
+                </div>
+                <button className="btn btn-text" onClick={() => setView("details")}>
+                  {t("approvalSummary.view.details")}
+                </button>
+              </section>
+              <div className="approval-summary-connector" aria-hidden="true" />
+              <section className="approval-summary-node approval-summary-result">
+                <p className="approval-summary-body">{approvalOutcome(record)}</p>
+              </section>
+              <div className="modal-actions approval-summary-close">
+                <button className="btn btn-text" onClick={onClose}>{t("common.close")}</button>
+              </div>
+            </>
+          )}
         </div>
+      ) : (
+        <>
+          <div className="approval-detail-viewbar">
+            <button className="btn btn-text" onClick={() => setView("summary")}>
+              {t("approvalSummary.view.summary")}
+            </button>
+          </div>
+          <h3 className="modal-title" id="approval-detail-title">
+            {diffSummary(record.diff) || friendlyToolName(record.tool_name)}
+          </h3>
+          <div className="approval-detail-meta">
+            <span className="stat-label">{t("approvals.metaToken")}</span><span>{record.token_name}</span>
+            <span className="stat-label">{t("approvals.metaTool")}</span><span><code>{friendlyToolName(record.tool_name)}</code></span>
+            <span className="stat-label">{t("approvals.metaCapability")}</span><span><code>{record.cap_name}</code></span>
+            <span className="stat-label">{t("approvals.metaCreated")}</span><span>{formatDateTime(record.created_at)}</span>
+            <span className="stat-label">{t("approvals.metaExpires")}</span><span>{formatDateTime(record.expires_at)}</span>
+            <span className="stat-label">{t("approvals.metaStatus")}</span><span><StatusBadge status={record.status} /></span>
+          </div>
+          {othersBanner}
+          {!isPending && record.rejected_reason && (
+            <div className="banner banner-error">
+              <strong>{t(record.status === "rejected"
+                ? "approvals.resolvedRejected"
+                : record.status === "cancelled" ? "approvals.resolvedCancelled" : "approvals.resolvedReason")}:</strong>{" "}
+              {friendlyReason(record)}
+            </div>
+          )}
+          <div className="approval-detail-tabs" role="tablist" aria-label={t("approvals.detailTablist")} onKeyDown={handleDetailTabKeyDown}>
+            {detailTabs.map((tabName) => (
+              <button
+                key={tabName}
+                id={`approval-detail-tab-${tabName}`}
+                role="tab"
+                aria-selected={activeTab === tabName}
+                aria-controls="approval-detail-panel"
+                tabIndex={activeTab === tabName ? 0 : -1}
+                className={`approval-detail-tab${activeTab === tabName ? " active" : ""}`}
+                onClick={() => switchDetailTab(tabName)}
+              >
+                {t(tabName === "diff" ? "approvals.detailTabDiff" : tabName === "args" ? "approvals.detailTabArgs" : "approvals.detailTabResult")}
+              </button>
+            ))}
+          </div>
+          <div id="approval-detail-panel" className="approval-detail-body" role="tabpanel" aria-labelledby={`approval-detail-tab-${activeTab}`}>
+            {activeTab === "diff" && <DiffView record={record} onConfigErrors={onConfigErrors} />}
+            {activeTab === "args" && <YamlView value={toYaml(record.args as Record<string, unknown>)} />}
+            {activeTab === "result" && (record.result == null ? (
+              <p className="approvals-empty">
+                {record.rejected_reason
+                  ? t("approvals.noResult", { status: approvalStatusLabel(record.status), reason: friendlyReason(record) })
+                  : t("approvals.noResultRecorded", { status: approvalStatusLabel(record.status) })}
+              </p>
+            ) : <YamlView value={toYaml(record.result as Record<string, unknown>)} />)}
+          </div>
+          {error && <ErrorMsg msg={error} />}
+          {isPending && (
+            <>
+              <div className="approval-reject-row">
+                <label htmlFor="approval-reason" className="approval-reason-label">{t("approvals.reasonLabel")}</label>
+                <input id="approval-reason" type="text" value={reason}
+                  onChange={(e) => { setReason(e.target.value); setReasonDraft(record.id, e.target.value); }}
+                  className="approval-reason-input" placeholder={t("approvals.reasonPlaceholder")} disabled={locked} />
+              </div>
+              <div className="modal-actions">
+                <button className="btn btn-primary" onClick={approve} disabled={locked}>
+                  {busy === "approve" || claimed ? t("approvals.approving") : t("approvals.approve")}
+                </button>
+                <button className="btn" onClick={reject} disabled={locked}>
+                  {busy === "reject" ? t("approvals.rejecting") : t("approvals.reject")}
+                </button>
+                {previewErrors.length > 0 && (
+                  <button className="btn btn-outline" onClick={rejectWithConfigErrors} disabled={locked} title={t("approvals.rejectWithErrorTitle")}>
+                    {t("approvals.rejectWithError")}
+                  </button>
+                )}
+                <button className="btn btn-text" onClick={onClose} disabled={busy !== null}>{t("common.close")}</button>
+              </div>
+            </>
+          )}
+          {!isPending && <div className="modal-actions"><button className="btn btn-text" onClick={onClose}>{t("common.close")}</button></div>}
+        </>
       )}
     </Modal>
   );

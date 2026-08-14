@@ -66,10 +66,11 @@ function collectLiterals(): Set<string> {
   return found;
 }
 
-// Sections whose keys the BACKEND names at runtime (an approval's
-// summary_key, a chat event's code). No literal for them exists here.
+// Sections whose keys are assembled at runtime from a backend key (an
+// approval's summary_key, its friendly title/body, or a chat event's code).
+// No literal for each catalog entry exists here.
 const BACKEND_NAMED = [
-  "diff.", "version.", "mesaSuggestion.", "agentchat.notice.",
+  "diff.", "approvalSummary.", "version.", "mesaSuggestion.", "agentchat.notice.",
   "agentchat.progress.", "adminError.",
 ];
 

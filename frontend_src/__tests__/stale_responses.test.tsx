@@ -50,7 +50,11 @@ function approval(id: string, status: string) {
     tool_name: "call_service",
     cap_name: "cap_physical_control",
     args: {},
-    diff: { kind: "yaml_diff", summary: `Edit ${id}` },
+    diff: {
+      kind: "yaml_diff",
+      summary: `Edit ${id}`,
+      target: { type: "entity", label: id },
+    },
     status,
     created_at: "2026-01-01T00:00:00Z",
     expires_at: "2099-01-01T01:00:00Z",
@@ -107,11 +111,11 @@ describe("ApprovalsView discards a superseded response", () => {
 
     // The NEWER request answers first, then the older one lands.
     fastNew.resolve({ approvals: [approval("new-row", "approved")], total: 1, limit: 50, offset: 0 });
-    await screen.findByText(/Edit new-row/);
+    await screen.findByText(/Update new-row/);
     slowOld.resolve({ approvals: [approval("stale-row", "rejected")], total: 1, limit: 50, offset: 0 });
 
-    await waitFor(() => expect(screen.queryByText(/Edit new-row/)).not.toBeNull());
-    expect(screen.queryByText(/Edit stale-row/)).toBeNull();
+    await waitFor(() => expect(screen.queryByText(/Update new-row/)).not.toBeNull());
+    expect(screen.queryByText(/Update stale-row/)).toBeNull();
   });
 });
 

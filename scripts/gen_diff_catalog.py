@@ -20,6 +20,8 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from custom_components.phoenix_mcp.const import (  # noqa: E402
+    APPROVAL_SUMMARY_TEMPLATES,
+    APPROVAL_SUMMARY_UI,
     DIFF_SUMMARY_TEMPLATES,
     MESA_SUGGESTION_PHRASES,
     MESA_SUGGESTION_TEMPLATES,
@@ -38,6 +40,9 @@ def main() -> None:
     # so a literal dotted key resolves to exactly the same lookup path.
     doc = json.loads(CATALOG.read_text())
     doc["panel"]["diff"] = dict(sorted(DIFF_SUMMARY_TEMPLATES.items()))
+    doc["panel"]["approvalSummary"] = dict(sorted(
+        {**APPROVAL_SUMMARY_TEMPLATES, **APPROVAL_SUMMARY_UI}.items()
+    ))
     doc["panel"]["version"] = dict(sorted(VERSION_SUMMARY_TEMPLATES.items()))
     # MESA suggestion reasons: the sentence templates plus the sub-phrases they
     # interpolate, which need their own entries or a translated sentence would
@@ -53,6 +58,7 @@ def main() -> None:
     doc["voice"] = dict(sorted(VOICE_TEMPLATES.items()))
     CATALOG.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     print(f"wrote {len(DIFF_SUMMARY_TEMPLATES)} diff, "
+          f"{len(APPROVAL_SUMMARY_TEMPLATES) + len(APPROVAL_SUMMARY_UI)} approvalSummary, "
           f"{len(VERSION_SUMMARY_TEMPLATES)} version, "
           f"{len(MESA_SUGGESTION_TEMPLATES) + len(MESA_SUGGESTION_PHRASES)} mesaSuggestion, "
           f"{len(NOTIFICATION_TEMPLATES)} notification and "

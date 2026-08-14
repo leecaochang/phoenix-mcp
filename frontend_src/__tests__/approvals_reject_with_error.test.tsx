@@ -54,6 +54,7 @@ describe("Reject with error message", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("phx-approval-default-view", "details");
     // Open straight into Preview mode so error detection runs immediately.
     localStorage.setItem("phx-dash-preview-mode", "preview");
   });

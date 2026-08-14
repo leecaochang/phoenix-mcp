@@ -74,14 +74,26 @@ function DetailRow({ label, value, mono }: { label: string; value: string; mono?
   );
 }
 
-function EntryDetailModal({ entry, tokenName, onClose }: { entry: AuditEntry; tokenName: string; onClose: () => void }) {
+function EntryDetailModal({ entry, tokenName, onClose, onNavigatePrevious, onNavigateNext }: {
+  entry: AuditEntry;
+  tokenName: string;
+  onClose: () => void;
+  onNavigatePrevious?: () => void;
+  onNavigateNext?: () => void;
+}) {
   // Render the recorded payload as YAML in HA's code editor (via YamlView);
   // if it is not valid JSON, show the raw string verbatim.
   const prettyPayload = entry.payload
     ? (() => { try { return toYaml(JSON.parse(entry.payload) as Record<string, unknown>); } catch { return entry.payload; } })()
     : null;
   return (
-    <Modal titleId="audit-detail-title" onClose={onClose}>
+    <Modal
+      titleId="audit-detail-title"
+      onClose={onClose}
+      onNavigatePrevious={onNavigatePrevious}
+      onNavigateNext={onNavigateNext}
+      recordNavigation
+    >
       <h3 className="modal-title audit-section-title" id="audit-detail-title">{t("audit.detailTitle")}</h3>
       <DetailRow label={t("audit.rowTime")} value={formatTs(entry.timestamp)} />
       <DetailRow
@@ -152,6 +164,9 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
     if (va > vb) return sortDir === "asc" ? 1 : -1;
     return 0;
   });
+  const selectedIndex = selected
+    ? sorted.findIndex((entry) => entry.request_id === selected.request_id)
+    : -1;
 
   function th(label: string, key: SortKey) {
     return (
@@ -168,7 +183,18 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
 
   return (
     <div>
-      {selected && <EntryDetailModal entry={selected} tokenName={displayName(selected)} onClose={() => setSelected(null)} />}
+      {selected && (
+        <EntryDetailModal
+          key={selected.request_id}
+          entry={selected}
+          tokenName={displayName(selected)}
+          onClose={() => setSelected(null)}
+          onNavigatePrevious={selectedIndex > 0 ? () => setSelected(sorted[selectedIndex - 1]) : undefined}
+          onNavigateNext={selectedIndex >= 0 && selectedIndex < sorted.length - 1
+            ? () => setSelected(sorted[selectedIndex + 1])
+            : undefined}
+        />
+      )}
       <table className="data-table audit-table">
         <thead>
           <tr>

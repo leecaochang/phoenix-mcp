@@ -55,6 +55,7 @@ describe("dashboard preview toggle on the approval card", () => {
     // The Diff|Preview choice is persisted; clear it so each test starts from
     // the default (diff) regardless of what an earlier test clicked.
     localStorage.clear();
+    localStorage.setItem("phx-approval-default-view", "details");
   });
 
   it("offers no Preview button before hui-card is registered, even for a previewable layout", async () => {

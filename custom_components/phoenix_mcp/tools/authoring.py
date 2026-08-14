@@ -1198,6 +1198,24 @@ def _build_diff_create_automation(args: dict, token: TokenRecord, hass: HomeAssi
     }
 
 
+def _authoring_entry_label(
+    hass: HomeAssistant, domain: str, entry_id: str
+) -> str | None:
+    """Resolve a live friendly name for a stored authoring resource."""
+    direct = hass.states.get(f"{domain}.{entry_id}")
+    states = [direct] if direct is not None else hass.states.async_all(domain)
+    for state in states:
+        if state is None:
+            continue
+        stored_id = state.attributes.get("id")
+        if state.entity_id != f"{domain}.{entry_id}" and str(stored_id) != entry_id:
+            continue
+        label = state.attributes.get("friendly_name")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+    return None
+
+
 async def _build_diff_edit_automation(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     automation_id = (args.get("automation_id") or "").strip()
     config = dict_arg(args.get("config"))
@@ -1215,10 +1233,11 @@ async def _build_diff_edit_automation(args: dict, token: TokenRecord, hass: Home
 async def _build_diff_delete_automation(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     automation_id = str_arg(args.get("automation_id")).strip()
     before = await _entry_before_json(hass, "automation", automation_id)
+    label = _authoring_entry_label(hass, "automation", automation_id) or automation_id
     return {
         "kind": "system_action",
         **_summary("delete_automation", automation_id=automation_id),
-        "target": {"type": "automation", "id": automation_id, "label": automation_id},
+        "target": {"type": "automation", "id": automation_id, "label": label},
         "before": before,
         "preview": {"warning": "This automation will be removed permanently."},
     }
@@ -1293,10 +1312,11 @@ async def _build_diff_edit_scene(args: dict, token: TokenRecord, hass: HomeAssis
 async def _build_diff_delete_scene(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     scene_id = str(args.get("scene_id") or "").strip()
     before = await _entry_before_json(hass, "scene", scene_id)
+    label = _authoring_entry_label(hass, "scene", scene_id) or scene_id
     return {
         "kind": "system_action",
         **_summary("delete_scene", scene_id=scene_id),
-        "target": {"type": "scene", "id": scene_id, "label": scene_id},
+        "target": {"type": "scene", "id": scene_id, "label": label},
         "before": before,
         "preview": {"warning": "This scene will be removed permanently."},
     }
@@ -1332,10 +1352,11 @@ async def _build_diff_edit_script(args: dict, token: TokenRecord, hass: HomeAssi
 async def _build_diff_delete_script(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     script_id = str_arg(args.get("script_id")).strip()
     before = await _entry_before_json(hass, "script", script_id, wrap_key=script_id)
+    label = _authoring_entry_label(hass, "script", script_id) or script_id
     return {
         "kind": "system_action",
         **_summary("delete_script", script_id=script_id),
-        "target": {"type": "script", "id": script_id, "label": script_id},
+        "target": {"type": "script", "id": script_id, "label": label},
         "before": before,
         "preview": {"warning": "This script will be removed permanently."},
     }

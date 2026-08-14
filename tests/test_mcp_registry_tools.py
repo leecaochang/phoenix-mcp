@@ -1225,3 +1225,6 @@ class TestEntityAliases:
             hass, er.async_get(hass).async_get(eid))
         assert preview["before"] == [own_name]
         assert preview["after"] == [own_name, "lounge lamp"]
+        assert diff["target"] == {
+            "type": "entity", "id": eid, "label": own_name,
+        }

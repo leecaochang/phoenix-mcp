@@ -31,7 +31,11 @@ function record(over: Partial<ApprovalRecord> = {}): ApprovalRecord {
 }
 
 describe("ApprovalsView pending pagination", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    localStorage.setItem("phx-approval-default-view", "details");
+  });
 
   it("loads the first pending page with limit/offset and shows Load more when more remain", async () => {
     vi.mocked(api.listApprovals).mockResolvedValue({

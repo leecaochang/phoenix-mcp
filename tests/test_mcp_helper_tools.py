@@ -20,6 +20,7 @@ from custom_components.phoenix_mcp.data import PhoenixData
 from custom_components.phoenix_mcp.mcp_view import _EXECUTOR_REGISTRY, _call_tool
 from custom_components.phoenix_mcp.token_store import PermissionNode, PermissionTree, TokenRecord
 from custom_components.phoenix_mcp.version_store import VersionStore
+from custom_components.phoenix_mcp.tools.helper import _build_diff_delete_helper
 
 
 def _token(**caps) -> TokenRecord:
@@ -104,6 +105,22 @@ class TestCreateHelper:
 
 
 class TestEditDeleteHelper:
+    async def test_delete_diff_uses_live_friendly_name(self, hass, helper_env, hass_admin_user):
+        created = _json((await _call(
+            "create_helper",
+            {"helper_type": "input_boolean", "config": {"name": "Approval helper"}},
+            _token(), hass,
+        ))[0])
+        await hass.async_block_till_done()
+        diff = _build_diff_delete_helper(
+            {
+                "helper_type": "input_boolean",
+                "helper_id": created["helper"]["id"],
+            },
+            _token(), hass,
+        )
+        assert diff["target"]["label"] == "Approval helper"
+
     async def test_edit(self, hass, helper_env, hass_admin_user):
         created = _json((await _call(
             "create_helper", {"helper_type": "input_boolean", "config": {"name": "A"}}, _token(), hass))[0])

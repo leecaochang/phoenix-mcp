@@ -28,6 +28,10 @@ from custom_components.phoenix_mcp.mcp_view import (
     async_restore_version,
 )
 from custom_components.phoenix_mcp.token_store import PermissionNode, PermissionTree, TokenRecord
+from custom_components.phoenix_mcp.tools.authoring import (
+    _build_diff_create_script,
+    _build_diff_delete_automation,
+)
 from custom_components.phoenix_mcp.version_store import VersionStore
 
 
@@ -73,6 +77,20 @@ def write(base, rel: str, content: str = "") -> None:
 
 
 class TestAutomationSplitLayout:
+    async def test_delete_diff_uses_live_friendly_name(self, hass, env):
+        write(env, "configuration.yaml", "automation: !include automations.yaml\n")
+        write(env, "automations.yaml", "- id: 1734362394008\n  alias: ~test\n")
+        hass.states.async_set(
+            "automation.test", "off",
+            {"id": "1734362394008", "friendly_name": "~test"},
+        )
+        diff = await _build_diff_delete_automation(
+            {"automation_id": "1734362394008"}, _token(), hass,
+        )
+        assert diff["target"] == {
+            "type": "automation", "id": "1734362394008", "label": "~test",
+        }
+
     async def test_edit_touches_only_the_leaf(self, hass, env):
         write(env, "configuration.yaml", "automation: !include_dir_merge_list automations\n")
         write(env, "automations/one.yaml", "# keep me\n- id: aaa\n  alias: A\n")
@@ -155,6 +173,20 @@ class TestAutomationSplitLayout:
 
 
 class TestScriptSplitLayout:
+    def test_create_diff_persists_alias(self, hass):
+        diff = _build_diff_create_script(
+            {
+                "script_id": "approval_summary_smoke_test",
+                "config": {"alias": "Approval Summary Smoke Test", "sequence": []},
+            },
+            _token(), hass,
+        )
+        assert diff["target"] == {
+            "type": "script",
+            "id": "approval_summary_smoke_test",
+            "label": "Approval Summary Smoke Test",
+        }
+
     async def test_create_edit_delete_dir_named(self, hass, env):
         write(env, "configuration.yaml", "script: !include_dir_named scripts\n")
         (env / "scripts").mkdir()

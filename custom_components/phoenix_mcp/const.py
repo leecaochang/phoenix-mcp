@@ -1283,6 +1283,149 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
 }
 
 
+# Friendly approval-modal copy. Unlike diff summaries, these sentences are
+# presentation only: the persisted English diff remains the audit record. Every
+# known diff key gets a title and consequence so Summary never has to expose a
+# technical path or rendered YAML. The generated catalog is the frontend API.
+_APPROVAL_SUMMARY_TITLE_OVERRIDES = {
+    "set_yaml_config": "Update {file}",
+    "set_yaml_config.removing": "Update {file}",
+    "set_yaml_config.removing_entry": "Update {file}",
+    "set_yaml_config.removing_entries": "Update {file}",
+    "patch_yaml_config.set": "Update {file}",
+    "patch_yaml_config.append": "Update {file}",
+    "patch_yaml_config.remove": "Update {file}",
+    "dashboard_card.add": "Add a card to dashboard '{label}'",
+    "dashboard_card.add.section": "Add a card to dashboard '{label}'",
+    "dashboard_card.edit": "Update a card on dashboard '{label}'",
+    "dashboard_card.edit.section": "Update a card on dashboard '{label}'",
+    "dashboard_card.delete": "Remove a card from dashboard '{label}'",
+    "dashboard_card.delete.section": "Remove a card from dashboard '{label}'",
+    "patch_dashboard.set": "Update dashboard '{label}'",
+    "patch_dashboard.append": "Update dashboard '{label}'",
+    "patch_dashboard.remove": "Update dashboard '{label}'",
+}
+
+_APPROVAL_SUMMARY_BODIES = {
+    "restart_ha": "Home Assistant will be briefly unavailable while it restarts.",
+    "zigbee_reconfigure": "This will interview the Zigbee device again. It may be briefly unresponsive. Battery devices must be awake.",
+    "zigbee_reconfigure.device": "This will interview {label} again. It may be briefly unresponsive. Battery devices must be awake.",
+    "zigbee_remove": "This will remove the Zigbee device from the network. The change cannot be undone from this approval.",
+    "zigbee_remove.device": "This will remove {label} from the Zigbee network. The change cannot be undone from this approval.",
+    "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
+    "integration.remove": "This will remove the {label} integration and its configuration from Home Assistant.",
+    "delete_entity": "This will delete the registry entry for {entity_id}. The entity may be recreated later by its integration.",
+    "remove_device": "This will remove {device_id} from its integration. The device may need to be added again.",
+    "set_yaml_config": "This will replace the whole contents of {file}. Open Details to review the exact proposed change.",
+    "set_yaml_config.removing": "This will replace the whole contents of {file} and remove configuration. Open Details to review the exact proposed change.",
+    "set_yaml_config.removing_entry": "This will replace the whole contents of {file} and remove one entry. Open Details to review the exact proposed change.",
+    "set_yaml_config.removing_entries": "This will replace the whole contents of {file} and remove {count} entries. Open Details to review the exact proposed change.",
+    "patch_yaml_config.set": "Open Details to review the exact proposed change.",
+    "patch_yaml_config.append": "Open Details to review the exact proposed change.",
+    "patch_yaml_config.remove": "This will remove configuration from {file}. Open Details to review the exact proposed change.",
+    "write_file": "This will write to {path}. Existing contents at that path may be replaced.",
+    "delete_esphome_yaml": "This will permanently delete {rel}. The ESPHome device itself will not be changed.",
+    "delete_esphome_yaml.device": "This will permanently delete {rel}. The ESPHome device {device} itself will not be changed.",
+    "rename_esphome_device": "This will rename {device}, compile its configuration, and flash the device. Do not disconnect it during the update.",
+    "rename_esphome_device.services": "This will rename {device}, update its action services, compile its configuration, and flash the device. Do not disconnect it during the update.",
+    "install_esphome_firmware": "This will compile and flash firmware to {label}. Do not disconnect the device during the update.",
+    "install_esphome_firmware.jump": "This will change the ESPHome version, compile, and flash firmware to {label}. Do not disconnect the device during the update.",
+    "blueprint.delete": "This will permanently delete the {domain} blueprint {rel}.",
+    "blueprint.delete.consumers": "This will permanently delete {rel}, even though {count} automations or scripts still use it.",
+    "dashboard.delete": "This will permanently delete the dashboard {label}.",
+    "dashboard_card.delete": "This will permanently delete the selected card from {label}.",
+    "dashboard_card.delete.section": "This will permanently delete the selected card from {label}.",
+    "delete_automation": "This will permanently delete automation {automation_id}.",
+    "delete_script": "This will permanently delete script {script_id}.",
+    "delete_scene": "This will permanently delete scene {scene_id}.",
+    "delete_helper": "This will permanently delete helper {helper_id}.",
+}
+
+
+def _approval_summary_body(key: str) -> str:
+    """Return concise consequence copy for one stable diff-summary key."""
+    if key in _APPROVAL_SUMMARY_BODIES:
+        return _APPROVAL_SUMMARY_BODIES[key]
+    if key.startswith("integration."):
+        return "This will change the {label} integration in Home Assistant."
+    if key.startswith(("dashboard", "patch_dashboard", "edit_energy_config")):
+        return "This will update the Home Assistant dashboard configuration. Open Details to review the exact proposed change."
+    if key.startswith(("create_", "edit_", "set_", "patch_", "blueprint.")):
+        return "This will apply the proposed configuration change. Open Details to review the exact proposed change."
+    if key.startswith(("call_service", "mesa_service")):
+        return "This will run the proposed Home Assistant service action."
+    if key.startswith(("hass_turn", "hass_set_position", "hass_stop_moving")):
+        return "This will control the selected physical device or devices."
+    if key.startswith("zigbee_permit"):
+        return "This will change whether new devices can join the Zigbee network."
+    if key.startswith(("delete_", "remove_")):
+        return "This will remove the selected item. The change may not be reversible."
+    return "This will apply the proposed action. Open Details to review the exact proposed change."
+
+
+APPROVAL_SUMMARY_TEMPLATES: dict[str, str] = {
+    part_key: template
+    for key, diff_title in DIFF_SUMMARY_TEMPLATES.items()
+    for part_key, template in (
+        (f"{key}.title", _APPROVAL_SUMMARY_TITLE_OVERRIDES.get(key, diff_title)),
+        (f"{key}.body", _approval_summary_body(key)),
+    )
+}
+
+APPROVAL_SUMMARY_UI: dict[str, str] = {
+    "view.summary": "Summary",
+    "view.details": "Details",
+    "view.defaultAria": "Default approval view",
+    "action.approve": "Approve and execute",
+    "action.approving": "Approving...",
+    "action.reject": "Reject",
+    "action.rejecting": "Rejecting...",
+    "action.cancelReject": "Cancel",
+    "action.optionalReason": "Optional reason",
+    "action.reasonPlaceholder": "Explain why this request was rejected",
+    "fallback.file.title": "Update {file}",
+    "fallback.integration.title": "Update integration {label}",
+    "fallback.item.title": "Update {label}",
+    "fallback.service.title": "Run {label}",
+    "fallback.unknown.title": "Review proposed action",
+    "fallback.body": "Open Details to review the exact proposed change.",
+    "named.editAutomation.title": "Edit automation '{label}'",
+    "named.removeDevice.title": "Remove {device} from {integration}",
+    "named.removeDevice.body": "This will ask the {integration} integration to remove {device}. You may need to add the device again, and this action cannot be undone from Phoenix MCP.",
+    "named.removeDevice.unnamedTitle": "Remove device from {integration}",
+    "named.removeDevice.unnamedBody": "This will ask the {integration} integration to remove the selected device. You may need to add the device again, and this action cannot be undone from Phoenix MCP.",
+    "named.removeDevice.integrationFallback": "its current integration",
+    "named.kind.automation": "automation",
+    "named.kind.script": "script",
+    "named.kind.scene": "scene",
+    "named.kind.helper": "helper",
+    "named.kind.input_boolean": "input boolean helper",
+    "named.kind.input_number": "number helper",
+    "named.kind.input_text": "text helper",
+    "named.kind.input_select": "dropdown helper",
+    "named.kind.input_datetime": "date and time helper",
+    "named.kind.counter": "counter helper",
+    "named.kind.timer": "timer helper",
+    "named.resource.createTitle": "Create {kind} '{label}'",
+    "named.resource.editTitle": "Edit {kind} '{label}'",
+    "named.resource.deleteTitle": "Delete {kind} '{label}'",
+    "named.resource.deleteUnnamedTitle": "Delete {kind}",
+    "named.resource.createBody": "This will add {kind} '{label}' to Home Assistant. Open Details to review its configuration.",
+    "named.resource.editBody": "This will update {kind} '{label}'. Open Details to review the exact proposed change.",
+    "named.resource.deleteBody": "This will permanently delete {kind} '{label}'. This action cannot be undone.",
+    "named.resource.deleteUnnamedBody": "This will permanently delete the selected {kind}. This action cannot be undone.",
+    "history.approved.body": "The request completed successfully.",
+    "history.rejected.body": "The request was rejected and was not run.",
+    "history.rejectedReason.body": "The request was rejected and was not run. Reason: {reason}",
+    "history.expired.body": "The request expired and was not run.",
+    "history.cancelled.body": "The request was cancelled and was not run.",
+    "history.cancelledReason.body": "The request was cancelled and was not run. Reason: {reason}",
+    "history.failed.body": "The request was approved, but execution failed. Error: {error}",
+    "history.interrupted.body": "Execution was interrupted and the change may have been applied. Verify the current state before requesting it again.",
+    "history.resolvedAt": "Resolved {time}",
+}
+
+
 # Version-record summaries, the Changes tab's one-line "what changed" text.
 #
 # Same contract as DIFF_SUMMARY_TEMPLATES above and generated into the same

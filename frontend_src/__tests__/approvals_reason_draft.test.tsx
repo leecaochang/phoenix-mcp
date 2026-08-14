@@ -48,6 +48,7 @@ describe("rejection reason draft sharing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    localStorage.setItem("phx-approval-default-view", "details");
     vi.mocked(api.listApprovals).mockResolvedValue({
       approvals: [record()], total: 1, limit: 50, offset: 0,
     });

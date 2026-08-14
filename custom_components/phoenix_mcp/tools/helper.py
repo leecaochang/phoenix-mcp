@@ -313,10 +313,16 @@ def _build_diff_edit_helper(args: dict, token: TokenRecord, hass: HomeAssistant)
 def _build_diff_delete_helper(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     helper_type = args.get("helper_type")
     helper_id = str(args.get("helper_id") or "").strip()
+    entity_id = _resolve_helper_entity_id(hass, str(helper_type), helper_id)
+    state = hass.states.get(entity_id) if entity_id is not None else None
+    label = (
+        state.attributes.get("friendly_name")
+        if state is not None else None
+    ) or helper_id
     return {
         "kind": "system_action",
         **_summary("delete_helper", helper_type=helper_type, helper_id=helper_id),
-        "target": {"type": "helper", "id": helper_id, "label": helper_id},
+        "target": {"type": "helper", "id": helper_id, "label": label},
         "before": None,
         "preview": {"helper_type": helper_type, "warning": "This helper will be removed permanently."},
     }

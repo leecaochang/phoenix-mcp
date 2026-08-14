@@ -4020,10 +4020,13 @@ async def _build_diff_set_entity(
         )
     if mesa_decision is not None:
         preview["mesa"] = _mesa_preview(mesa_decision)
+    target_label = before.get("name")
+    if not target_label and entry is not None:
+        target_label = er.async_get_full_entity_name(hass, entry)
     return {
         "kind": "system_action",
         **_summary("set_entity", fields=", ".join(fields) or "nothing", entity_id=entity_id),
-        "target": {"type": "entity", "id": entity_id, "label": before.get("name") or entity_id},
+        "target": {"type": "entity", "id": entity_id, "label": target_label or entity_id},
         "preview": preview,
     }
 

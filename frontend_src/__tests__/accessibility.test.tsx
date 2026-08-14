@@ -61,10 +61,35 @@ describe("accessibility regressions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Open audit entry Allowed for demo/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: /Open audit entry Allowed for demo/ })[0]);
 
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText("Audit Entry")).toBeInTheDocument();
+  });
+
+  it("uses arrows to scan audit entries in their visible sort order", () => {
+    const older: AuditEntry = {
+      request_id: "req-older",
+      timestamp: "2026-06-29T00:00:00Z",
+      token_id: "tok-1",
+      token_name: "demo",
+      method: "GET",
+      resource: "/api/older",
+      outcome: "allowed",
+      client_ip: "127.0.0.1",
+      pass_through: false,
+      payload: null,
+    };
+    const newer: AuditEntry = { ...older, request_id: "req-newer", timestamp: "2026-06-30T00:00:00Z", resource: "/api/newer" };
+    render(<AuditTable entries={[older, newer]} />);
+    fireEvent.click(screen.getAllByRole("button", { name: /Open audit entry Allowed for demo/ })[0]);
+    expect(screen.getByRole("dialog")).toHaveTextContent("/api/newer");
+
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(screen.getByRole("dialog")).toHaveTextContent("/api/older");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent("/api/newer");
+    fireEvent.keyDown(document, { key: "ArrowUp" });
+    expect(screen.getByRole("dialog")).toHaveTextContent("/api/newer");
   });
 
   it("wires the whole row as a single accessible click target, not one per cell", () => {

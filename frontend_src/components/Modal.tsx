@@ -4,6 +4,11 @@ import React, { useEffect, useRef, useCallback } from "react";
 interface Props {
   titleId: string;
   onClose?: () => void;
+  /** Move through the ordered records behind this dialog. Omit at a boundary. */
+  onNavigatePrevious?: () => void;
+  onNavigateNext?: () => void;
+  /** Consume vertical arrows even at list boundaries, preventing page scroll. */
+  recordNavigation?: boolean;
   /** Widen the dialog (e.g. for side-by-side diffs that need more room). */
   wide?: boolean;
   children: React.ReactNode;
@@ -14,11 +19,36 @@ interface Props {
 // Module-scoped per bundle; the panel and the injector never share a render tree.
 const modalStack: Array<() => void> = [];
 
-export function Modal({ titleId, onClose, wide, children }: Props) {
+const VERTICAL_ARROW_OWNER = [
+  "input",
+  "textarea",
+  "select",
+  "[contenteditable='true']",
+  "ha-code-editor",
+  ".cm-editor",
+  "[role='listbox']",
+  "[role='menu']",
+  "[role='tree']",
+  "[role='grid']",
+  "[role='slider']",
+  "[role='spinbutton']",
+].join(", ");
+
+function ownsVerticalArrows(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(VERTICAL_ARROW_OWNER));
+}
+
+export function Modal({ titleId, onClose, onNavigatePrevious, onNavigateNext, recordNavigation, wide, children }: Props) {
   const modalRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const onNavigatePreviousRef = useRef(onNavigatePrevious);
+  const onNavigateNextRef = useRef(onNavigateNext);
+  const recordNavigationRef = useRef(recordNavigation);
   onCloseRef.current = onClose;
+  onNavigatePreviousRef.current = onNavigatePrevious;
+  onNavigateNextRef.current = onNavigateNext;
+  recordNavigationRef.current = recordNavigation;
 
   useEffect(() => {
     previousFocus.current = document.activeElement as HTMLElement | null;
@@ -39,10 +69,28 @@ export function Modal({ titleId, onClose, wide, children }: Props) {
     const close = () => onCloseRef.current?.();
     modalStack.push(close);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && modalStack[modalStack.length - 1] === close) {
+      if (modalStack[modalStack.length - 1] !== close) return;
+      if (e.key === "Escape") {
         e.stopPropagation();
         close();
+        return;
       }
+      if (
+        (e.key !== "ArrowUp" && e.key !== "ArrowDown")
+        || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing
+        || ownsVerticalArrows(e.target)
+      ) return;
+      if (!recordNavigationRef.current) return;
+      // Consume the key before resolving a direction. At the first/last item,
+      // doing nothing is intentional; allowing the browser default here scrolls
+      // the page behind the modal and makes the dialog appear to drift.
+      e.preventDefault();
+      e.stopPropagation();
+      const navigate = e.key === "ArrowUp"
+        ? onNavigatePreviousRef.current
+        : onNavigateNextRef.current;
+      if (!navigate) return;
+      navigate();
     };
     document.addEventListener("keydown", onKey);
     return () => {

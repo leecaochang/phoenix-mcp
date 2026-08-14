@@ -73,3 +73,57 @@ describe("Modal focus handling", () => {
     expect((document.activeElement as HTMLElement).textContent).toBe("real first");
   });
 });
+
+describe("Modal record navigation", () => {
+  it("uses Up and Down only when that direction is available", () => {
+    const previous = vi.fn();
+    const next = vi.fn();
+    const { rerender } = render(
+      <Modal titleId="t" onNavigatePrevious={previous} onNavigateNext={next} recordNavigation>
+        <button>first control</button>
+      </Modal>,
+    );
+
+    fireEvent.keyDown(document, { key: "ArrowUp" });
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(previous).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <Modal titleId="t" onNavigateNext={next} recordNavigation>
+        <button>first control</button>
+      </Modal>,
+    );
+    expect(fireEvent.keyDown(document, { key: "ArrowUp" })).toBe(false);
+    expect(previous).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves vertical arrow keys to editable controls", () => {
+    const previous = vi.fn();
+    const next = vi.fn();
+    render(
+      <Modal titleId="t" onNavigatePrevious={previous} onNavigateNext={next} recordNavigation>
+        <input aria-label="reason" />
+      </Modal>,
+    );
+    const input = document.querySelector("input")!;
+    expect(fireEvent.keyDown(input, { key: "ArrowUp" })).toBe(true);
+    expect(fireEvent.keyDown(input, { key: "ArrowDown" })).toBe(true);
+    expect(previous).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("navigates only the topmost nested modal", () => {
+    const outer = vi.fn();
+    const inner = vi.fn();
+    render(
+      <>
+        <Modal titleId="outer" onNavigateNext={outer} recordNavigation><p>outer</p></Modal>
+        <Modal titleId="inner" onNavigateNext={inner} recordNavigation><p>inner</p></Modal>
+      </>,
+    );
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+  });
+});

@@ -19,6 +19,7 @@ import re
 import string
 
 from custom_components.phoenix_mcp.const import (
+    APPROVAL_SUMMARY_TEMPLATES,
     DIFF_SUMMARY_TEMPLATES,
     VERSION_SUMMARY_TEMPLATES,
 )
@@ -60,6 +61,28 @@ def test_catalog_matches_templates_exactly() -> None:
     panel = json.loads(CATALOG.read_text())["panel"]
     for section, templates, _ in NAMESPACES:
         assert panel[section] == dict(sorted(templates.items())), section
+
+
+def test_every_diff_summary_has_friendly_title_and_body() -> None:
+    """Summary is total, and never asks for data the persisted diff lacks."""
+    for key, diff_template in DIFF_SUMMARY_TEMPLATES.items():
+        available = {
+            field for _, field, _, _ in string.Formatter().parse(diff_template)
+            if field is not None
+        }
+        for part in ("title", "body"):
+            friendly_key = f"{key}.{part}"
+            assert friendly_key in APPROVAL_SUMMARY_TEMPLATES
+            required = {
+                field for _, field, _, _ in string.Formatter().parse(
+                    APPROVAL_SUMMARY_TEMPLATES[friendly_key]
+                ) if field is not None
+            }
+            assert required <= available, friendly_key
+
+    panel = json.loads(CATALOG.read_text())["panel"]
+    for key, template in APPROVAL_SUMMARY_TEMPLATES.items():
+        assert panel["approvalSummary"][key] == template
 
 
 def test_placeholders_are_plain_names() -> None:
