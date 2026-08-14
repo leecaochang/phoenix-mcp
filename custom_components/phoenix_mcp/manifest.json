@@ -1,7 +1,7 @@
 {
   "domain": "phoenix_mcp",
   "name": "Phoenix MCP",
-  "after_dependencies": ["assist_pipeline", "blueprint", "esphome", "http", "lovelace", "mqtt", "recorder", "trace", "zha"],
+  "after_dependencies": ["assist_pipeline", "blueprint", "esphome", "http", "logger", "lovelace", "mqtt", "recorder", "trace", "zha"],
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["frontend"],

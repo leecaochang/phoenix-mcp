@@ -47,6 +47,7 @@ function makeToken(overrides: Partial<TokenRecord> = {}): TokenRecord {
     cap_yaml_edit: "deny",
     cap_esphome_yaml: "deny",
     cap_esphome_flash: "deny",
+    cap_camera_read: "deny",
     permissions: { domains: {}, devices: {}, entities: {} },
     presets: [],
     active_preset_id: null,
