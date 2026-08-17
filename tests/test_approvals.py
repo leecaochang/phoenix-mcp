@@ -553,6 +553,16 @@ class TestArgsRedaction:
         d = self._approval().to_dict(redact_args=False)
         assert d["args"]["content"] == "api_key: abc123secret"
 
+    def test_executor_only_approval_bindings_are_never_projected(self):
+        approval = self._approval()
+        approval.args["_config_entry_private_identity_fingerprint"] = "private-hash"
+        assert approval.to_dict()["args"][
+            "_config_entry_private_identity_fingerprint"
+        ] == "<redacted>"
+        assert approval.to_dict(redact_args=False)["args"][
+            "_config_entry_private_identity_fingerprint"
+        ] == "private-hash"
+
     @pytest.mark.asyncio
     async def test_created_approval_persists_raw_args(self, store):
         await async_create_pending_approval(

@@ -35,7 +35,7 @@ from custom_components.phoenix_mcp.token_store import (
 
 
 SCOPES = ("integration", "domain", "area", "device", "entity")
-ACTIONS = ("rename", "reload", "enable", "disable", "remove")
+ACTIONS = ("rename", "reload", "enable", "disable", "remove", "reconfigure")
 NON_EMPTY_SCOPE_SUBSETS = tuple(
     subset
     for size in range(1, len(SCOPES) + 1)

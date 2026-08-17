@@ -322,6 +322,9 @@ class TokenRecord:
     cap_scene_write: str = CAP_DENY
     cap_helper_write: str = CAP_DENY
     cap_integration_write: str = CAP_DENY
+    # Reconfigure flows may replace credentials and network endpoints, so they
+    # remain isolated from safe config-entry metadata lifecycle controls.
+    cap_integration_reconfigure: str = CAP_DENY
     cap_lovelace_write: str = CAP_DENY
     cap_registry_write: str = CAP_DENY
     cap_radio_write: str = CAP_DENY

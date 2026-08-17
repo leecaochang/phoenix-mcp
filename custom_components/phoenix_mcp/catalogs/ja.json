@@ -199,6 +199,10 @@
         "label": "インテグレーションの管理",
         "description": "アクセス可能な Home Assistant のインテグレーションを一覧表示、更新、再読み込み、有効化、無効化、削除します。"
       },
+      "cap_integration_reconfigure": {
+        "label": "インテグレーションの再設定",
+        "description": "確認済みの認証情報、ホスト、その他の値を Home Assistant 公式の再設定フローから送信します。Phoenix は変更を自動的にロールバックできません。"
+      },
       "cap_lovelace_write": {
         "label": "ダッシュボードの管理",
         "description": "Lovelace ダッシュボードを作成、編集、削除します。"
@@ -846,6 +850,7 @@
       "cards": "カード {count} 枚",
       "cards.was": "カード {count} 枚（変更前: {before}）",
       "config_entry.options": "{subject} を再設定",
+      "config_entry.reconfigure": "{subject} を再設定",
       "config_entry.removed": "インテグレーションを削除",
       "device.changed": "変更: {fields}",
       "device.removed": "デバイスレジストリエントリを削除",
@@ -1157,6 +1162,7 @@
       "integration.disable": "インテグレーション {label} を無効化",
       "integration.enable": "インテグレーション {label} を有効化",
       "integration.reload": "インテグレーション {label} を再読み込み",
+      "integration.reconfigure": "インテグレーション {label} を再設定",
       "integration.remove": "インテグレーション {label} を削除",
       "integration.update": "インテグレーション {label} を更新",
       "integration.log_level": "インテグレーション {label} のログレベルを変更",
@@ -1753,6 +1759,8 @@
       "integration.log_level.title": "インテグレーション {label} のログレベルを変更",
       "integration.reload.body": "{label}インテグレーションを一時的にアンロードし、再度セットアップします。",
       "integration.reload.title": "インテグレーション {label} を再読み込み",
+      "integration.reconfigure.body": "Phoenix はエージェントが指定した値を {label} の Home Assistant 再設定フローへ送信します。インテグレーションによる検証はまだ行われていません。ブラウザー、OAuth、非同期進行ステップには対応せず、Phoenix は変更を自動的にロールバックできません。",
+      "integration.reconfigure.title": "インテグレーション {label} を再設定",
       "integration.remove.body": "{label}インテグレーションとその設定をHome Assistantから削除します。",
       "integration.remove.title": "インテグレーション {label} を削除",
       "integration.update.body": "Home Assistantの{label}インテグレーションを変更します。",

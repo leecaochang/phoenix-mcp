@@ -89,6 +89,10 @@
         "label": "集成管理",
         "description": "列出、更新、重新加载、启用、禁用和移除可访问的 Home Assistant 集成。"
       },
+      "cap_integration_reconfigure": {
+        "label": "重新配置集成",
+        "description": "通过 Home Assistant 官方重新配置流程提交经审核的凭据、主机及其他值。Phoenix 无法自动回滚更改。"
+      },
       "cap_log_read": {
         "label": "读取系统日志",
         "description": "读取 Home Assistant 系统日志条目。"
@@ -795,7 +799,8 @@
       "patch.append": "向 {subject} 追加了内容",
       "patch.remove": "删除了 {subject}",
       "energy.sources": "{count} 个来源，{devices} 个设备",
-      "config_entry.options": "重新配置了 {subject}"
+      "config_entry.options": "重新配置了 {subject}",
+      "config_entry.reconfigure": "重新配置了 {subject}"
     },
     "diff": {
       "blueprint.create": "创建 {domain} 蓝图“{rel}”",
@@ -845,6 +850,7 @@
       "integration.enable": "启用集成 {label}",
       "integration.remove": "移除集成 {label}",
       "integration.reload": "重新加载集成 {label}",
+      "integration.reconfigure": "重新配置集成 {label}",
       "integration.update": "更新集成 {label}",
       "integration.log_level": "更改集成 {label} 的日志级别",
       "mesa_service": "{domain}.{service} 的 MESA 确认",
@@ -1753,6 +1759,8 @@
       "integration.log_level.title": "更改集成 {label} 的日志级别",
       "integration.reload.body": "这将暂时卸载{label}集成，然后重新设置。",
       "integration.reload.title": "重新加载集成 {label}",
+      "integration.reconfigure.body": "Phoenix 会将代理提供的值提交到 {label} 的 Home Assistant 重新配置流程。集成尚未验证这些值。不支持浏览器、OAuth 和异步进度步骤，且 Phoenix 无法自动回滚此更改。",
+      "integration.reconfigure.title": "重新配置集成 {label}",
       "integration.remove.body": "这将从Home Assistant中移除{label}集成及其配置。",
       "integration.remove.title": "移除集成 {label}",
       "integration.update.body": "这将更改Home Assistant中的{label}集成。",

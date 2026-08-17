@@ -12,7 +12,7 @@ import re
 # served to the panel by admin_view.PhoenixAdminCatalogView.
 CATALOGS_DIR = pathlib.Path(__file__).parent / "catalogs"
 
-PHOENIX_VERSION = "1.2.0"
+PHOENIX_VERSION = "1.3.0"
 # The lowest Home Assistant this integration is claimed to run on. It is a floor
 # derived from the APIs actually imported, not a guess, and two separate lines
 # were checked to arrive at it. Setup imports StaticPathConfig,
@@ -429,7 +429,7 @@ SENSITIVE_ATTRIBUTES = frozenset({
 SENSITIVE_KEY_SUBSTRINGS = frozenset({
     "password", "secret", "api_key", "apikey", "access_token",
     "auth_token", "authorization", "credential", "private_key",
-    "token", "session",
+    "token", "session", "community",
 })
 
 # The placeholder every redacting reader substitutes for a value the token may not
@@ -606,6 +606,7 @@ CAPABILITY_NAMES = (
     "cap_physical_control",
     "cap_restart",
     "cap_integration_write",
+    "cap_integration_reconfigure",
     "cap_lovelace_write",
     "cap_registry_write",
     "cap_radio_write",
@@ -639,6 +640,7 @@ CAPABILITY_TIERS: dict[str, str] = {
     "cap_physical_control": "system",
     "cap_restart": "system",
     "cap_integration_write": "system",
+    "cap_integration_reconfigure": "system",
     "cap_lovelace_write": "system",
     "cap_registry_write": "system",
     "cap_radio_write": "system",
@@ -668,6 +670,7 @@ CONFIRM_AVAILABLE_CAPS = frozenset({
     "cap_physical_control",
     "cap_restart",
     "cap_integration_write",
+    "cap_integration_reconfigure",
     "cap_log_control",
     "cap_lovelace_write",
     "cap_registry_write",
@@ -696,6 +699,7 @@ PASS_THROUGH_EXEMPT_CAPS = frozenset({
     "cap_scene_write",
     "cap_helper_write",
     "cap_integration_write",
+    "cap_integration_reconfigure",
     "cap_lovelace_write",
     "cap_registry_write",
     "cap_radio_write",
@@ -1213,6 +1217,7 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "integration.enable": "Enable integration {label}",
     "integration.disable": "Disable integration {label}",
     "integration.update": "Update integration {label}",
+    "integration.reconfigure": "Reconfigure integration {label}",
     "integration.log_level": "Change integration log level for {label}",
     "integration.reload": "Reload integration {label}",
     "integration.remove": "Remove integration {label}",
@@ -1317,6 +1322,11 @@ _APPROVAL_SUMMARY_BODIES = {
     "zigbee_remove": "This will remove the Zigbee device from the network. The change cannot be undone from this approval.",
     "zigbee_remove.device": "This will remove {label} from the Zigbee network. The change cannot be undone from this approval.",
     "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
+    "integration.reconfigure": (
+        "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. "
+        "The integration has not validated them yet. Browser or OAuth and asynchronous progress "
+        "steps are unsupported, and Phoenix cannot automatically roll this change back."
+    ),
     "integration.remove": "This will remove the {label} integration and its configuration from Home Assistant.",
     "delete_entity": "This will delete the registry entry for {entity_id}. The entity may be recreated later by its integration.",
     "remove_device": "This will remove {device_id} from its integration. The device may need to be added again.",
@@ -1424,6 +1434,14 @@ APPROVAL_SUMMARY_UI: dict[str, str] = {
     "history.expired.body": "The request expired and was not run.",
     "history.cancelled.body": "The request was cancelled and was not run.",
     "history.cancelledReason.body": "The request was cancelled and was not run. Reason: {reason}",
+    "history.error.generic": "The action could not be completed. Open Details to review the executor error.",
+    "history.error.integrationChanged": "The integration changed after approval. Review the current request details and try again.",
+    "history.error.integrationDisabled": "The integration is disabled and cannot be reloaded.",
+    "history.error.integrationLoggerChanged": "The integration's logging configuration changed after approval. Review the current request details and try again.",
+    "history.error.integrationNotFound": "The integration no longer exists.",
+    "history.error.integrationReloadFailed": "Home Assistant could not reload the integration.",
+    "history.error.integrationReloadUnsupported": "This integration does not currently support reloading.",
+    "history.error.integrationStateNotReloadable": "The integration is currently in state {state} and cannot be reloaded.",
     "history.failed.body": "The request was approved, but execution failed. Error: {error}",
     "history.interrupted.body": "Execution was interrupted and the change may have been applied. Verify the current state before requesting it again.",
     "history.resolvedAt": "Resolved {time}",
@@ -1460,6 +1478,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "loc.card": "card {index}",
     "energy.sources": "{count} sources, {devices} devices",
     "config_entry.options": "reconfigured {subject}",
+    "config_entry.reconfigure": "reconfigured {subject}",
     "patch.set": "set {subject}",
     "patch.append": "appended to {subject}",
     "patch.remove": "removed {subject}",

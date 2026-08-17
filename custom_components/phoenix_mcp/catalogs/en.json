@@ -200,6 +200,10 @@
         "label": "Integration management",
         "description": "List, update, reload, enable, disable, and remove accessible Home Assistant integrations."
       },
+      "cap_integration_reconfigure": {
+        "label": "Integration reconfiguration",
+        "description": "Submit reviewed credentials, hosts, and other values through Home Assistant's official reconfigure flow. Phoenix cannot automatically roll changes back."
+      },
       "cap_lovelace_write": {
         "label": "Manage dashboards",
         "description": "Create, edit, and delete Lovelace dashboards."
@@ -1424,6 +1428,7 @@
       "integration.disable": "Disable integration {label}",
       "integration.enable": "Enable integration {label}",
       "integration.log_level": "Change integration log level for {label}",
+      "integration.reconfigure": "Reconfigure integration {label}",
       "integration.reload": "Reload integration {label}",
       "integration.remove": "Remove integration {label}",
       "integration.update": "Update integration {label}",
@@ -1463,6 +1468,7 @@
       "cards": "{count} cards",
       "cards.was": "{count} cards (was {before})",
       "config_entry.options": "reconfigured {subject}",
+      "config_entry.reconfigure": "reconfigured {subject}",
       "config_entry.removed": "integration removed",
       "device.changed": "changed: {fields}",
       "device.removed": "device registry entry removed",
@@ -1731,7 +1737,6 @@
       "history.approved.body": "The request completed successfully.",
       "history.cancelled.body": "The request was cancelled and was not run.",
       "history.cancelledReason.body": "The request was cancelled and was not run. Reason: {reason}",
-      "history.expired.body": "The request expired and was not run.",
       "history.error.generic": "The action could not be completed. Open Details to review the executor error.",
       "history.error.integrationChanged": "The integration changed after approval. Review the current request details and try again.",
       "history.error.integrationDisabled": "The integration is disabled and cannot be reloaded.",
@@ -1740,6 +1745,7 @@
       "history.error.integrationReloadFailed": "Home Assistant could not reload the integration.",
       "history.error.integrationReloadUnsupported": "This integration does not currently support reloading.",
       "history.error.integrationStateNotReloadable": "The integration is currently in state {state} and cannot be reloaded.",
+      "history.expired.body": "The request expired and was not run.",
       "history.failed.body": "The request was approved, but execution failed. Error: {error}",
       "history.interrupted.body": "Execution was interrupted and the change may have been applied. Verify the current state before requesting it again.",
       "history.rejected.body": "The request was rejected and was not run.",
@@ -1755,6 +1761,8 @@
       "integration.enable.title": "Enable integration {label}",
       "integration.log_level.body": "This will change the {label} integration in Home Assistant.",
       "integration.log_level.title": "Change integration log level for {label}",
+      "integration.reconfigure.body": "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. The integration has not validated them yet. Browser or OAuth and asynchronous progress steps are unsupported, and Phoenix cannot automatically roll this change back.",
+      "integration.reconfigure.title": "Reconfigure integration {label}",
       "integration.reload.body": "This will temporarily unload the {label} integration and set it up again.",
       "integration.reload.title": "Reload integration {label}",
       "integration.remove.body": "This will remove the {label} integration and its configuration from Home Assistant.",
@@ -1826,7 +1834,7 @@
       "set_yaml_config.removing_entry.body": "This will replace the whole contents of {file} and remove one entry. Open Details to review the exact proposed change.",
       "set_yaml_config.removing_entry.title": "Update {file}",
       "set_yaml_config.title": "Update {file}",
-      "view.defaultAria": "Approval list and default modal view",
+      "view.defaultAria": "Default approval view",
       "view.details": "Details",
       "view.summary": "Summary",
       "write_file.body": "This will write to {path}. Existing contents at that path may be replaced.",

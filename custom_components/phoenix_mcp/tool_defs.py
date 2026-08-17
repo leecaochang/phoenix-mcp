@@ -2201,7 +2201,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "entity/device counts. Never returns config-entry data, options, unique IDs, discovery identity, "
             "URLs, credentials, or network identity. Use entry_id with integration management tools."
         ),
-        "cap": "cap_integration_write",
+        "caps_any": ["cap_integration_write", "cap_integration_reconfigure"],
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -2220,6 +2220,40 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 "changes": {"type": "object", "minProperties": 1, "description": "Reversible integration metadata to update.", "properties": {"title": {"type": "string", "minLength": 1, "description": "New entry title."}, "pref_disable_new_entities": {"type": "boolean", "description": "Whether newly discovered entities start disabled."}, "pref_disable_polling": {"type": "boolean", "description": "Whether polling is disabled."}}},
             },
             "required": ["entry_id", "changes"],
+        },
+    },
+    {
+        "name": "reconfigure_integration",
+        "description": (
+            "Submit agent-provided values to an integration's official Home Assistant reconfigure flow. "
+            "Requires complete WRITE coverage and review through the dedicated integration-reconfigure "
+            "capability. Phoenix does not display or emulate Home Assistant's form: values are validated only "
+            "after approval. Supports bounded flat form and ordered menu steps; browser/OAuth and progress steps "
+            "must be completed in Home Assistant's frontend. Status is flow_aborted_before_apply, apply_failed, "
+            "applied_and_verified, applied_but_unverified, applied_but_incomplete, or "
+            "applied_identity_mismatch. Applied results are never safe to retry automatically."
+        ),
+        "cap": "cap_integration_reconfigure",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The private config entry id returned by list_integrations.",
+                },
+                "config": {
+                    "type": "object",
+                    "description": "Flat agent-provided field values for the reconfigure forms. May be empty for confirmation-only flows.",
+                },
+                "menu_choices": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": {"type": "string", "minLength": 1},
+                    "description": "Optional menu step choices, consumed in encounter order.",
+                },
+            },
+            "required": ["entry_id", "config"],
         },
     },
     {
@@ -3027,6 +3061,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "set_yaml_config": _annot(False, True, True),
     "set_integration_enabled": _annot(False, True, True),
     "set_integration": _annot(False, True, True),
+    "reconfigure_integration": _annot(False, True, False),
     "reload_integration": _annot(False, True, True),
     "remove_integration": _annot(False, True, True),
     "create_backup": _annot(False, False, False),

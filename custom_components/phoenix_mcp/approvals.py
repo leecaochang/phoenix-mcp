@@ -102,13 +102,23 @@ class PendingApproval:
         """
         from .helpers import redact_structure  # noqa: PLC0415
 
+        public_args = redact_structure(self.args)
+        if isinstance(public_args, dict):
+            # Leading-underscore arguments are executor-only approval bindings
+            # (MESA/context/private identity hashes), not operator input. Keep
+            # them durably for replay but never project them through the admin
+            # API or Details view.
+            public_args = {
+                key: "<redacted>" if isinstance(key, str) and key.startswith("_") else value
+                for key, value in public_args.items()
+            }
         return {
             "id": self.id,
             "token_id": self.token_id,
             "token_name": self.token_name,
             "tool_name": self.tool_name,
             "cap_name": self.cap_name,
-            "args": self.args if not redact_args else redact_structure(self.args),
+            "args": self.args if not redact_args else public_args,
             "diff": self.diff,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,

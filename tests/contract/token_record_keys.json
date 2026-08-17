@@ -12,6 +12,7 @@
     "cap_filesystem",
     "cap_helper_write",
     "cap_integration_write",
+    "cap_integration_reconfigure",
     "cap_log_control",
     "cap_log_read",
     "cap_lovelace_write",

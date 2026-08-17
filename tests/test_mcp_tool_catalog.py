@@ -138,6 +138,7 @@ async def test_tools_list_exposes_annotations_and_still_strips_cap():
     for tool in tools:
         assert "cap" not in tool, f"{tool['name']} leaked its gating cap to the client"
         assert "caps" not in tool, f"{tool['name']} leaked its gating caps to the client"
+        assert "caps_any" not in tool, f"{tool['name']} leaked its any-of gating caps to the client"
         assert "requires" not in tool, f"{tool['name']} leaked its availability key to the client"
         assert set(tool["annotations"]) == _HINT_KEYS
 
@@ -189,14 +190,14 @@ def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wire
             "openai_bytes": 76525,
         },
             "announce_all": {
-                "tool_count": 142,
-                "canonical_bytes": 131597,
-                "claude_bytes": 116942,
-                "openai_bytes": 121060,
+                "tool_count": 143,
+                "canonical_bytes": 132887,
+                "claude_bytes": 118128,
+                "openai_bytes": 122275,
             },
     }
-    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 142
-    assert mcp_view.tool_catalog_counts()["total"] == 148
+    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 143
+    assert mcp_view.tool_catalog_counts()["total"] == 149
 
 
 def test_every_public_parameter_has_a_description():
@@ -501,3 +502,17 @@ def test_cap_tied_reads_are_not_reported_as_needing_approval():
     # The matching WRITES, on the same caps, must still be reported as gating.
     for write_tool in ("edit_automation", "edit_script", "set_dashboard_config", "patch_dashboard"):
         assert write_tool in gate_map["needs_approval"], write_tool
+
+
+def test_list_integrations_is_visible_with_either_integration_capability():
+    """The shared discovery read uses OR semantics, never accidental dual-cap AND."""
+    base = dict(
+        id="t1", name="t", token_hash="x", created_at=utcnow(), created_by="u",
+        permissions=PermissionTree(),
+    )
+    definition = next(d for d in _all_defs() if d["name"] == "list_integrations")
+    for granted in ("cap_integration_write", "cap_integration_reconfigure"):
+        token = TokenRecord(**base, **{granted: "allow"})
+        assert mcp_view._tool_is_announced(definition, token, False, None)
+    denied = TokenRecord(**base)
+    assert not mcp_view._tool_is_announced(definition, denied, False, None)

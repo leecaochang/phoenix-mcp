@@ -54,6 +54,7 @@ const TOKEN_RECORD_KEYS = {
   cap_physical_control: true,
   cap_restart: true,
   cap_integration_write: true,
+  cap_integration_reconfigure: true,
   cap_lovelace_write: true,
   cap_registry_write: true,
   cap_radio_write: true,

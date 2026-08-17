@@ -502,6 +502,15 @@ mode: single
 - `set_integration` changes only the title and the two safe polling/new-entity
   preferences. `set_integration_enabled` toggles only user-controlled state, and
   `reload_integration` refuses disabled, transitioning, or unsupported entries.
+- `reconfigure_integration` uses the separate `cap_integration_reconfigure` and
+  submits agent-provided values only after review. The approval is not Home
+  Assistant's form, the operator cannot edit it, and the integration validates
+  values only after approval. Browser/OAuth and progress steps are unsupported;
+  use Home Assistant's frontend for those flows or for interactive field discovery.
+  Results are `flow_aborted_before_apply`, `apply_failed`,
+  `applied_and_verified`, `applied_but_unverified`,
+  `applied_but_incomplete`, or `applied_identity_mismatch`. Never automatically
+  retry an `applied_*` result: Phoenix cannot roll it back.
 - Rename, reload, enable, disable, and removal resolve `config_entry.*` against
   every owned entity, including entity, device, area, integration, and domain
   MESA layers. One denial blocks the whole entry and one enforced confirmation is

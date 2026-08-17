@@ -44,6 +44,7 @@ export interface CapabilityFlagsMap {
   cap_physical_control: CapMode;
   cap_restart: CapMode;
   cap_integration_write: CapMode;
+  cap_integration_reconfigure: CapMode;
   cap_lovelace_write: CapMode;
   cap_registry_write: CapMode;
   cap_radio_write: CapMode;
@@ -498,6 +499,7 @@ export interface PatchTokenBody {
   cap_scene_write?: CapMode;
   cap_helper_write?: CapMode;
   cap_integration_write?: CapMode;
+  cap_integration_reconfigure?: CapMode;
   cap_lovelace_write?: CapMode;
   cap_registry_write?: CapMode;
   cap_radio_write?: CapMode;

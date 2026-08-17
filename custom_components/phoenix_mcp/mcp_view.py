@@ -55,7 +55,7 @@ from .mesa import (
 )
 from .ws_dispatch import WsDispatchError, async_ws_command
 from .mesa_tools import MESA_TOOL_NAMES, async_call_mesa_tool, mesa_tool_defs
-from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, redact_diagnostics, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogDegradedError, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message
+from .helpers import build_error_response as _error, build_permitted_states as _build_permitted_states, build_safe_config, collect_log_entries as _collect_log_entries, content_hash, diff_summary_fields as _summary, effective_cap, effective_caps, fire_rate_limit_events as _fire_rate_limit_events, async_get_authenticated_token as _async_get_authenticated_token, get_client_ip as _get_client_ip, log_request as _log, parse_time_param as _parse_time_param, redact_diagnostics, redact_structure, render_template_for_token as _render_template_for_token, sanitize_service_data as _sanitize_service_data, service_not_found_hint as _service_not_found_hint, str_arg, SystemLogDegradedError, SystemLogUnavailableError, token_has_write_scope, validation_error_message as _validation_error_message, version_summary_fields as _version_summary
 from .recorder_queries import (
     MAX_SIGNIFICANT_STATES_RANGE,
     STATISTIC_PERIOD_LIMITS,
@@ -98,6 +98,11 @@ from .tools.helper import (
     _tool_delete_helper,
     _tool_edit_helper,
     _tool_list_helpers,
+)
+from .tools.integration_reconfigure import (
+    MENU_CHOICE_BUDGET,
+    STATUS_APPLY_FAILED as RECONFIGURE_APPLY_FAILED,
+    async_run_reconfigure_flow,
 )
 from .tools.radio import (
     _execute_permit_zigbee_join,
@@ -289,13 +294,26 @@ _WRITE_GATED_TOOLS = frozenset({
 })
 
 
-def _tool_caps(tool_def: dict) -> tuple[str, ...]:
-    """Return every capability a tool requires, including dual-cap reads."""
+def _tool_required_caps(tool_def: dict) -> tuple[str, ...]:
+    """Return capabilities which are all required."""
     caps = tool_def.get("caps")
     if isinstance(caps, (list, tuple)):
         return tuple(cap for cap in caps if isinstance(cap, str))
     cap = tool_def.get("cap")
     return (cap,) if isinstance(cap, str) else ()
+
+
+def _tool_any_caps(tool_def: dict) -> tuple[str, ...]:
+    """Return capabilities for which any non-Deny grant makes a tool visible."""
+    caps = tool_def.get("caps_any")
+    if isinstance(caps, (list, tuple)):
+        return tuple(cap for cap in caps if isinstance(cap, str))
+    return ()
+
+
+def _tool_caps(tool_def: dict) -> tuple[str, ...]:
+    """Return every capability named by a tool definition."""
+    return _tool_required_caps(tool_def) + _tool_any_caps(tool_def)
 
 
 def _tool_is_announced(
@@ -313,10 +331,13 @@ def _tool_is_announced(
     agentcli.build_mcp_tool_list (Agent Chat, Assist, voice, AI Task) each decide
     announcement independently. Changing the rules here means changing all three.
     """
-    caps = _tool_caps(tool_def)
+    caps = _tool_required_caps(tool_def)
+    any_caps = _tool_any_caps(tool_def)
     if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
         return False
-    if not caps and tool_def["name"] in _WRITE_GATED_TOOLS and not has_write:
+    if any_caps and all(effective_cap(token, cap) == CAP_DENY for cap in any_caps):
+        return False
+    if not caps and not any_caps and tool_def["name"] in _WRITE_GATED_TOOLS and not has_write:
         return False
     return _requires_satisfied(tool_def, hass)
 
@@ -370,15 +391,20 @@ def _tool_gate_map(
     reasons: dict[str, str] = {}
     for tool_def in list(_ENTITY_TOOL_DEFS) + list(_NATIVE_TOOL_DEFS) + list(_SYSTEM_TOOL_DEFS) + mesa_defs:
         name = tool_def["name"]
-        caps = _tool_caps(tool_def)
+        caps = _tool_required_caps(tool_def)
+        any_caps = _tool_any_caps(tool_def)
         if not _requires_satisfied(tool_def, hass):
             unavailable.append(name)
             reasons[name] = _requires_unavailable_reason(tool_def)
-        elif caps:
+        elif caps or any_caps:
             modes = [effective_cap(token, cap) for cap in caps]
-            if CAP_DENY in modes:
+            any_modes = [effective_cap(token, cap) for cap in any_caps]
+            if CAP_DENY in modes or (any_modes and all(mode == CAP_DENY for mode in any_modes)):
                 unavailable.append(name)
-            elif CAP_CONFIRM in modes and name in _EXECUTOR_REGISTRY:
+            elif (
+                CAP_CONFIRM in modes
+                or (any_modes and all(mode == CAP_CONFIRM for mode in any_modes))
+            ) and name in _EXECUTOR_REGISTRY:
                 needs_approval.append(name)
             else:
                 usable.append(name)
@@ -4923,7 +4949,8 @@ async def async_restore_version(
         if resource_type == "config_entry":
             if target.get("restorable") is False:
                 return _tool_error(
-                    "Integration removal versions are audit records and cannot be restored."
+                    "This integration version is a non-restorable audit record and cannot be restored. Phoenix "
+                    "does not store raw integration data or provide automatic rollback."
                 ), "invalid_request", "async_restore_version"
             if target.get("snapshot_type") == _CONFIG_ENTRY_METADATA_SNAPSHOT:
                 fields = {
@@ -5358,6 +5385,9 @@ async def _tool_watch_entity(
 _CONFIG_ENTRY_CONTEXT_FINGERPRINT = "_config_entry_context_fingerprint"
 _CONFIG_ENTRY_METADATA_SNAPSHOT = "phoenix.config_entry.metadata.v1"
 _CONFIG_ENTRY_DELETE_SNAPSHOT = "phoenix.config_entry.delete.v1"
+_CONFIG_ENTRY_RECONFIGURE_SNAPSHOT = "phoenix.config_entry.reconfigure.v1"
+_CONFIG_ENTRY_PRIVATE_IDENTITY_FINGERPRINT = "_config_entry_private_identity_fingerprint"
+_CONFIG_ENTRY_STABLE_IDENTITY_FINGERPRINT = "_config_entry_stable_identity_fingerprint"
 
 
 @dataclasses.dataclass
@@ -5370,6 +5400,117 @@ class _ConfigEntryActionDecision:
     warnings: list[str]
     fingerprint: str
     blocked: list[tuple[str, str, str]]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ConfigEntryPrivateIdentity:
+    """Private config-entry identity used only for approval/apply binding."""
+
+    binding_fingerprint: str
+    stable_fingerprint: str
+    entities: list[dict[str, Any]]
+    devices: list[dict[str, Any]]
+    cross_domain_coowners: list[dict[str, str]]
+    same_domain_coowners: list[dict[str, str]]
+
+
+def _identity_fingerprint(document: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+
+
+def _config_entry_private_identity(
+    entry: Any, hass: HomeAssistant
+) -> _ConfigEntryPrivateIdentity | None:
+    """Capture private identity, registry membership and shared ownership.
+
+    No value from this document is returned through MCP or the admin API. The
+    approval stores only hashes; the human preview gets safe resource ids and
+    co-owner domains separately.
+    """
+    context = config_entry_registry_context(entry.entry_id, hass)
+    if context is None:
+        return None
+    if not isinstance(getattr(entry, "modified_at", None), datetime):
+        return None
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    entities: list[dict[str, Any]] = []
+    devices: list[dict[str, Any]] = []
+    same_domain: list[dict[str, str]] = []
+    cross_domain: list[dict[str, str]] = []
+    stable_anchor = bool(getattr(entry, "unique_id", None))
+
+    for entity_id in context.entity_ids:
+        registry_entry = entity_registry.async_get(entity_id)
+        if registry_entry is None or registry_entry.config_entry_id != entry.entry_id:
+            return None
+        unique_id = getattr(registry_entry, "unique_id", None)
+        stable_anchor = stable_anchor or bool(unique_id)
+        entities.append({
+            "entity_id": entity_id,
+            "unique_id": unique_id,
+            "platform": getattr(registry_entry, "platform", None),
+            "device_id": getattr(registry_entry, "device_id", None),
+        })
+
+    for device_id in context.device_ids:
+        device = device_registry.async_get(device_id)
+        if device is None or entry.entry_id not in device_config_entry_ids(device):
+            return None
+        identifiers = sorted(
+            (str(domain), str(identifier))
+            for domain, identifier in getattr(device, "identifiers", set())
+        )
+        connections = sorted(
+            (str(kind), str(value))
+            for kind, value in getattr(device, "connections", set())
+        )
+        stable_anchor = stable_anchor or bool(identifiers or connections)
+        owners: list[dict[str, str]] = []
+        for owner_id in sorted(device_config_entry_ids(device)):
+            owner = hass.config_entries.async_get_entry(owner_id)
+            if owner is None:
+                return None
+            owner_doc = {"entry_id": owner_id, "domain": owner.domain}
+            owners.append(owner_doc)
+            if owner_id != entry.entry_id:
+                (same_domain if owner.domain == entry.domain else cross_domain).append({
+                    "device_id": device_id,
+                    **owner_doc,
+                })
+        devices.append({
+            "device_id": device_id,
+            "identifiers": identifiers,
+            "connections": connections,
+            "owners": owners,
+        })
+
+    # An entry with no stable private identity cannot be distinguished from a
+    # replacement that reused its public id. Reconfiguration therefore fails
+    # closed instead of asking the operator to approve an ambiguous target.
+    if not stable_anchor:
+        return None
+    stable_document = {
+        "entry_id": entry.entry_id,
+        "domain": entry.domain,
+        "unique_id": getattr(entry, "unique_id", None),
+        "entities": entities,
+        "devices": devices,
+    }
+    binding_document = {
+        **stable_document,
+        "modified_at": getattr(entry, "modified_at", None),
+    }
+    return _ConfigEntryPrivateIdentity(
+        binding_fingerprint=_identity_fingerprint(binding_document),
+        stable_fingerprint=_identity_fingerprint(stable_document),
+        entities=entities,
+        devices=devices,
+        cross_domain_coowners=cross_domain,
+        same_domain_coowners=same_domain,
+    )
 
 
 def _config_entry_value(value: Any) -> str | None:
@@ -5620,6 +5761,8 @@ async def _integration_gate(
     request_id: str,
     client_ip: str | None,
     diff: Any,
+    cap_name: str = "cap_integration_write",
+    approval_bindings: dict[str, str] | None = None,
 ) -> tuple[dict, str, str] | None:
     """Merge capability and MESA confirmation into one pending approval."""
     resolved = _config_entry_action_decision(
@@ -5639,8 +5782,10 @@ async def _integration_gate(
         return _config_entry_mesa_error(entry.entry_id, resolved)
     approval_args = dict(args)
     approval_args[_CONFIG_ENTRY_CONTEXT_FINGERPRINT] = resolved.fingerprint
+    if approval_bindings:
+        approval_args.update(approval_bindings)
     blocked = await _gate(
-        "cap_integration_write",
+        cap_name,
         token,
         hass,
         data,
@@ -5662,7 +5807,7 @@ async def _integration_gate(
             diff=await diff(resolved),
             request_id=request_id,
             client_ip=client_ip,
-            cap_name="cap_integration_write",
+            cap_name=cap_name,
         )
     return None
 
@@ -5671,7 +5816,10 @@ async def _tool_list_integrations(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
     """MCP tool: list only config entries visible through owned resources."""
-    if effective_cap(token, "cap_integration_write") == CAP_DENY:
+    if (
+        effective_cap(token, "cap_integration_write") == CAP_DENY
+        and effective_cap(token, "cap_integration_reconfigure") == CAP_DENY
+    ):
         return _tool_error("Forbidden."), "denied", "list_integrations"
     integrations: list[dict[str, Any]] = []
     for entry in hass.config_entries.async_entries():
@@ -5725,6 +5873,302 @@ async def _tool_list_integrations(
         })
     integrations.sort(key=lambda e: (e["domain"], e["title"] or ""))
     return _tool_success(json.dumps({"count": len(integrations), "integrations": integrations}, default=str)), "allowed", "list_integrations"
+
+
+def _reconfigure_args_error(args: dict[str, Any]) -> str | None:
+    entry_id = args.get("entry_id")
+    config = args.get("config")
+    menu_choices = args.get("menu_choices", [])
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        return "entry_id is required."
+    if not isinstance(config, dict):
+        return "config must be an object."
+    if any(not isinstance(key, str) or not key for key in config):
+        return "config field names must be non-empty strings."
+    if not isinstance(menu_choices, list) or any(
+        not isinstance(choice, str) or not choice for choice in menu_choices
+    ):
+        return "menu_choices must be an array of non-empty strings."
+    if len(menu_choices) > MENU_CHOICE_BUDGET:
+        return f"menu_choices supports at most {MENU_CHOICE_BUDGET} choices."
+    return None
+
+
+def _reconfigure_identity_error(entry_id: str) -> tuple[dict, str, str]:
+    return (
+        _tool_error(
+            "Phoenix could not establish a stable private identity for this integration; "
+            "no reconfigure flow was started. Use Home Assistant's frontend."
+        ),
+        "denied",
+        entry_id,
+    )
+
+
+def _reconfigure_shared_owner_error(
+    entry_id: str, identity: _ConfigEntryPrivateIdentity
+) -> tuple[dict, str, str]:
+    return (
+        _tool_error(json.dumps({
+            "status": "flow_aborted_before_apply",
+            "error": (
+                "A device is shared with another config entry from the same integration "
+                "domain, so Phoenix cannot prove which entry the flow will reconfigure. "
+                "Use Home Assistant's frontend."
+            ),
+            "same_domain_shared_ownership": identity.same_domain_coowners,
+            "retry_safe": True,
+        }, default=str)),
+        "denied",
+        entry_id,
+    )
+
+
+def _reconfigure_version_snapshot(
+    entry: Any, args: dict[str, Any], status: str
+) -> dict[str, Any]:
+    """Redacted audit evidence; deliberately insufficient for restoration."""
+    raw_config = args.get("config")
+    config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+    return {
+        "snapshot_type": _CONFIG_ENTRY_RECONFIGURE_SNAPSHOT,
+        "restorable": False,
+        "entry_id": entry.entry_id,
+        "domain": entry.domain,
+        "title": redact_diagnostics(entry.title),
+        "submitted_fields": sorted(config),
+        "submitted_config": redact_structure(config),
+        "menu_choice_count": len(args.get("menu_choices") or []),
+        "status": status,
+        "automatic_rollback": False,
+    }
+
+
+async def _build_diff_reconfigure_integration(
+    args: dict[str, Any],
+    token: TokenRecord,
+    hass: HomeAssistant,
+    mesa_decision: _ConfigEntryActionDecision | None = None,
+) -> dict[str, Any]:
+    entry_id = str(args.get("entry_id") or "").strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    identity = _config_entry_private_identity(entry, hass) if entry is not None else None
+    label = (
+        f"{entry.domain} ({redact_diagnostics(entry.title)})"
+        if entry is not None
+        else entry_id
+    )
+    raw_config = args.get("config")
+    config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+    preview: dict[str, Any] = {
+        "submitted_fields": sorted(config),
+        "submitted_config": redact_structure(config),
+        "menu_choices": list(args.get("menu_choices") or []),
+        "validation_state": "not_yet_validated_by_integration",
+        "operator_editable": False,
+        "unsupported_steps": ["external", "oauth", "progress"],
+        "automatic_rollback": False,
+    }
+    if entry is not None:
+        preview["integration"] = {"domain": entry.domain, "name": label}
+    if identity is not None:
+        preview["affected_entities"] = [
+            {"entity_id": item["entity_id"], "device_id": item["device_id"]}
+            for item in identity.entities
+        ]
+        preview["affected_devices"] = [
+            {
+                "device_id": item["device_id"],
+                "owners": item["owners"],
+            }
+            for item in identity.devices
+        ]
+        preview["cross_domain_coowners"] = identity.cross_domain_coowners
+        preview["identity_binding"] = "private_identity_and_registry_context_pinned"
+    if mesa_decision is not None:
+        preview["mesa"] = _config_entry_mesa_preview(mesa_decision)
+    return {
+        "kind": "system_action",
+        **_summary("integration.reconfigure", label=label),
+        "target": {"type": "integration", "id": entry_id, "label": label},
+        # There is intentionally no before/after config-entry data. The
+        # integration has not validated the proposed values at review time.
+        "preview": preview,
+    }
+
+
+async def _tool_reconfigure_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Review agent values, then run only HA's official reconfigure flow."""
+    if effective_cap(token, "cap_integration_reconfigure") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "reconfigure_integration"
+    value_error = _reconfigure_args_error(args)
+    if value_error is not None:
+        return _tool_error(value_error), "invalid_request", "reconfigure_integration"
+    entry_id = str(args["entry_id"]).strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    identity = _config_entry_private_identity(entry, hass)
+    if identity is None:
+        return _reconfigure_identity_error(entry_id)
+    if identity.same_domain_coowners:
+        return _reconfigure_shared_owner_error(entry_id, identity)
+    _, _, _, supports_reconfigure = await _config_entry_support(entry, hass)
+    if supports_reconfigure is False:
+        return (
+            _tool_error(
+                "This integration does not expose Home Assistant's official reconfigure flow. "
+                "Use Home Assistant's frontend if it offers another configuration path."
+            ),
+            "invalid_request",
+            entry_id,
+        )
+    blocked = await _integration_gate(
+        tool_name="reconfigure_integration",
+        args=args,
+        token=token,
+        hass=hass,
+        data=data,
+        entry=entry,
+        actions=["config_entry.reconfigure"],
+        service_data={"submitted_fields": sorted(args["config"])},
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda decision: _build_diff_reconfigure_integration(
+            args, token, hass, decision
+        ),
+        cap_name="cap_integration_reconfigure",
+        approval_bindings={
+            _CONFIG_ENTRY_PRIVATE_IDENTITY_FINGERPRINT: identity.binding_fingerprint,
+            _CONFIG_ENTRY_STABLE_IDENTITY_FINGERPRINT: identity.stable_fingerprint,
+        },
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_reconfigure_integration(args, token, hass, data)
+
+
+async def _execute_reconfigure_integration(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    """Revalidate approval context, execute, classify, and audit one flow."""
+    value_error = _reconfigure_args_error(args)
+    if value_error is not None:
+        return _tool_error(value_error), "invalid_request", "reconfigure_integration"
+    entry_id = str(args["entry_id"]).strip()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain == DOMAIN:
+        return _tool_error("Integration not found."), "not_found", entry_id
+    perm_error = _config_entry_write_error(entry_id, token, hass)
+    if perm_error is not None:
+        return perm_error
+    identity = _config_entry_private_identity(entry, hass)
+    if identity is None:
+        return _reconfigure_identity_error(entry_id)
+    if identity.same_domain_coowners:
+        return _reconfigure_shared_owner_error(entry_id, identity)
+
+    resolved = _config_entry_action_decision(
+        data,
+        token,
+        hass,
+        entry,
+        actions=["config_entry.reconfigure"],
+        service_data={"submitted_fields": sorted(args["config"])},
+        session_id="reconfigure_integration_execute",
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    approved = bool(_approved_exec_ctx.get())
+    saved_context = args.get(_CONFIG_ENTRY_CONTEXT_FINGERPRINT)
+    saved_binding = args.get(_CONFIG_ENTRY_PRIVATE_IDENTITY_FINGERPRINT)
+    saved_stable = args.get(_CONFIG_ENTRY_STABLE_IDENTITY_FINGERPRINT)
+    if approved and (
+        saved_context != resolved.fingerprint
+        or saved_binding != identity.binding_fingerprint
+        or saved_stable != identity.stable_fingerprint
+    ):
+        return _config_entry_context_changed_error(entry_id, resolved)
+    if resolved.decision == "deny" or (resolved.decision == "confirm" and not approved):
+        if resolved.blocked:
+            fire_mesa_blocked_event(hass, token, resolved.blocked)
+        return _config_entry_mesa_error(entry_id, resolved)
+
+    flow_result = await async_run_reconfigure_flow(
+        hass,
+        entry,
+        args["config"],
+        list(args.get("menu_choices") or []),
+    )
+    status = flow_result.status
+    if flow_result.applied:
+        current = hass.config_entries.async_get_entry(entry_id)
+        post_identity = (
+            _config_entry_private_identity(current, hass) if current is not None else None
+        )
+        if post_identity is None or post_identity.stable_fingerprint != identity.stable_fingerprint:
+            status = "applied_identity_mismatch"
+
+    body: dict[str, Any] = {
+        "status": status,
+        "entry_id": entry_id,
+        "domain": entry.domain,
+        "applied": flow_result.applied,
+        "retry_safe": not flow_result.applied,
+        "reason": flow_result.reason,
+        "details": redact_structure(flow_result.details),
+        "automatic_rollback": False,
+    }
+    if identity.cross_domain_coowners:
+        body["cross_domain_coowners"] = identity.cross_domain_coowners
+        body["warning"] = (
+            "One or more affected devices also belong to another integration domain."
+        )
+    if resolved.warnings:
+        body["mesa_advisory"] = resolved.warnings
+        _mesa_advisory_ctx.set(True)
+    if flow_result.applied:
+        body["retry_warning"] = (
+            "Do not automatically retry any applied_* result. Inspect Home Assistant "
+            "and recover manually in its frontend if needed."
+        )
+        current = hass.config_entries.async_get_entry(entry_id) or entry
+        await _record_version(
+            data,
+            token,
+            resource_type="config_entry",
+            resource_id=entry_id,
+            action="edit",
+            before=None,
+            after=_reconfigure_version_snapshot(current, args, status),
+            alias=redact_diagnostics(entry.title),
+            summary=_version_summary(
+                "config_entry.reconfigure", subject=redact_diagnostics(entry.title)
+            ),
+        )
+        return (
+            _tool_success(json.dumps(body, default=str)),
+            "allowed",
+            f"integration:{entry_id}",
+        )
+    return (
+        _tool_error(json.dumps(body, default=str)),
+        "denied" if status == RECONFIGURE_APPLY_FAILED else "invalid_request",
+        entry_id,
+    )
 
 
 async def _tool_set_integration_enabled(
@@ -7259,7 +7703,7 @@ async def _dispatch_mcp(
         tools = []
         for tool_def in list(_ENTITY_TOOL_DEFS) + list(_NATIVE_TOOL_DEFS) + list(_SYSTEM_TOOL_DEFS) + mesa_defs:
             if announce_all or _tool_is_announced(tool_def, token, has_write, hass):
-                tools.append({k: v for k, v in tool_def.items() if k not in ("cap", "caps", "requires")})
+                tools.append({k: v for k, v in tool_def.items() if k not in ("cap", "caps", "caps_any", "requires")})
         resp = _jsonrpc_result(msg_id, {"tools": tools})
         # The client's tool list is now current: echo the settings version (in
         # memory; persisted by the periodic flush, like last_used_at) and clear
@@ -8392,6 +8836,7 @@ _register_executor("rename_esphome_device", _execute_rename_esphome_device)
 _register_executor("install_esphome_firmware", _execute_install_esphome_firmware)
 _register_executor("set_integration_enabled", _execute_set_integration_enabled)
 _register_executor("set_integration", _execute_set_integration)
+_register_executor("reconfigure_integration", _execute_reconfigure_integration)
 _register_executor("set_integration_log_level", _execute_set_integration_log_level)
 _register_executor("reload_integration", _execute_reload_integration)
 _register_executor("remove_integration", _execute_remove_integration)
@@ -8556,6 +9001,7 @@ _register_tool("set_helper_settings", _tool_set_config_entry_options)
 _register_tool("list_integrations", _tool_list_integrations)
 _register_tool("set_integration_enabled", _tool_set_integration_enabled)
 _register_tool("set_integration", _tool_set_integration)
+_register_tool("reconfigure_integration", _tool_reconfigure_integration)
 _register_tool("reload_integration", _tool_reload_integration)
 _register_tool("remove_integration", _tool_remove_integration)
 _register_tool("list_backups", _tool_list_backups)

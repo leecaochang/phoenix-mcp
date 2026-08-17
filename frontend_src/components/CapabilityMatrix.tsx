@@ -168,6 +168,13 @@ const CAPS: CapDef[] = [
     confirmAvailable: true,
   },
   {
+    key: "cap_integration_reconfigure",
+    labelKey: "caps.cap_integration_reconfigure.label",
+    descriptionKey: "caps.cap_integration_reconfigure.description",
+    tier: "system",
+    confirmAvailable: true,
+  },
+  {
     key: "cap_lovelace_write",
     labelKey: "caps.cap_lovelace_write.label",
     descriptionKey: "caps.cap_lovelace_write.description",

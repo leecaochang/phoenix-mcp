@@ -1906,7 +1906,7 @@ def build_mcp_tool_list(token: TokenRecord, data: PhoenixData) -> list[dict]:
     out = []
     for d in list(_ENTITY_TOOL_DEFS) + list(_NATIVE_TOOL_DEFS) + list(_SYSTEM_TOOL_DEFS) + mesa_defs:
         if announce_all or _tool_is_announced(d, token, has_write, cast(Any, hass)):
-            out.append({k: v for k, v in d.items() if k not in ("cap", "caps", "requires")})
+            out.append({k: v for k, v in d.items() if k not in ("cap", "caps", "caps_any", "requires")})
     rank = {name: i for i, name in enumerate(_TOOL_PRIORITY)}
     out.sort(key=lambda t: rank.get(t["name"], len(rank)))
     return out
