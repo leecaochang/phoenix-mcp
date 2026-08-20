@@ -108,6 +108,38 @@ class _ResolvedZ2MPropertyChange:
     mesa_entities: tuple[str, ...]
 
 
+@dataclasses.dataclass(frozen=True)
+class _ResolvedZigbeeBindingChange:
+    """One registry-scoped Zigbee device-to-device binding change."""
+
+    operation: str
+    backend: str
+    source: _ResolvedRadioDevice
+    target: _ResolvedRadioDevice
+    source_endpoint: int | None
+    target_endpoint: int | None
+    clusters: tuple[str, ...]
+    source_entry: dict[str, Any] | None
+    target_entry: dict[str, Any] | None
+    source_before: dict[str, Any] | None
+    target_before: dict[str, Any] | None
+    source_hash: str | None
+    target_hash: str | None
+    mesa_entities: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedZigbeeReportingChange:
+    """One exact, conflict-checked Zigbee2MQTT reporting update."""
+
+    device: Any
+    ieee: str
+    entry: dict[str, Any]
+    before: dict[str, Any]
+    before_hash: str
+    desired: dict[str, Any]
+
+
 def _z2m_root_property_groups(entry: dict[str, Any]) -> dict[str, list[set[str]]]:
     """Group recursive property leaves by each top-level expose type."""
     definition = entry.get("definition") if isinstance(entry, dict) else None
@@ -506,6 +538,245 @@ async def _resolve_z2m_property_change(
     )
 
 
+def _valid_content_hash(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _radio_mesa_entities(
+    token: TokenRecord, hass: HomeAssistant, device_ids: set[str]
+) -> tuple[str, ...]:
+    """All registry entities on selected devices that the token may write."""
+    registry = er.async_get(hass)
+    return tuple(
+        sorted(
+            entry.entity_id
+            for device_id in device_ids
+            for entry in er.async_entries_for_device(
+                registry, device_id, include_disabled_entities=True
+            )
+            if resolve(entry.entity_id, token, hass) == Permission.WRITE
+        )
+    )
+
+
+def _same_radio_network(
+    source: _ResolvedRadioDevice, target: _ResolvedRadioDevice
+) -> bool:
+    """Prove two registry devices belong to the same backend network."""
+    if source.backend != target.backend:
+        return False
+    source_via = getattr(source.device, "via_device_id", None)
+    target_via = getattr(target.device, "via_device_id", None)
+    if source.backend == radio_backend.BACKEND_Z2M:
+        return source_via is not None and source_via == target_via
+    if source_via is not None or target_via is not None:
+        return source_via is not None and source_via == target_via
+    source_entries = set(getattr(source.device, "config_entries", ()) or ())
+    target_entries = set(getattr(target.device, "config_entries", ()) or ())
+    return bool(source_entries & target_entries)
+
+
+async def _resolve_zigbee_binding_change(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZigbeeBindingChange | tuple[dict, str, str]:
+    """Resolve both scoped devices and validate one backend binding change."""
+    tool = "set_zigbee_binding"
+    operation = args.get("operation")
+    if operation not in {"bind", "unbind"}:
+        return _tool_error("operation must be bind or unbind."), "invalid_request", tool
+    source_id = args.get("source_device_id")
+    target_id = args.get("target_device_id")
+    source = _resolve_radio_device(
+        {"device_id": source_id}, token, hass, tool, require_write=True
+    )
+    if isinstance(source, tuple):
+        return source
+    target = _resolve_radio_device(
+        {"device_id": target_id}, token, hass, tool, require_write=True
+    )
+    if isinstance(target, tuple):
+        return target
+    if source.device.id == target.device.id:
+        return (
+            _tool_error("Source and target must be different Zigbee devices."),
+            "invalid_request",
+            source.device.id,
+        )
+    if not _same_radio_network(source, target):
+        return (
+            _tool_error("Source and target must belong to the same Zigbee network."),
+            "invalid_request",
+            source.device.id,
+        )
+    mesa_entities = _radio_mesa_entities(
+        token, hass, {source.device.id, target.device.id}
+    )
+    if source.backend == radio_backend.BACKEND_ZHA:
+        z2m_only = (
+            "source_endpoint",
+            "target_endpoint",
+            "clusters",
+            "expected_source_hash",
+            "expected_target_hash",
+        )
+        if any(args.get(key) is not None for key in z2m_only):
+            return (
+                _tool_error(
+                    "For ZHA, omit endpoints, clusters, and hashes; ZHA selects all compatible bindings internally."
+                ),
+                "invalid_request",
+                source.device.id,
+            )
+        return _ResolvedZigbeeBindingChange(
+            operation=operation,
+            backend=source.backend,
+            source=source,
+            target=target,
+            source_endpoint=None,
+            target_endpoint=None,
+            clusters=(),
+            source_entry=None,
+            target_entry=None,
+            source_before=None,
+            target_before=None,
+            source_hash=None,
+            target_hash=None,
+            mesa_entities=mesa_entities,
+        )
+
+    expected_source_hash = args.get("expected_source_hash")
+    expected_target_hash = args.get("expected_target_hash")
+    if not _valid_content_hash(expected_source_hash) or not _valid_content_hash(
+        expected_target_hash
+    ):
+        return (
+            _tool_error(
+                "Zigbee2MQTT bindings require expected_source_hash and expected_target_hash from get_radio_device radio_configuration."
+            ),
+            "invalid_request",
+            source.device.id,
+        )
+    try:
+        (source_entry, _source_options, _), (target_entry, _target_options, _) = (
+            await asyncio.gather(
+                radio_backend.async_z2m_device_snapshot(hass, source.ieee),
+                radio_backend.async_z2m_device_snapshot(hass, target.ieee),
+            )
+        )
+        if source_entry is None or target_entry is None:
+            raise RadioError("Source or target is no longer on the Zigbee network.")
+        (
+            source_endpoint,
+            target_endpoint,
+            clusters,
+            source_before,
+            target_before,
+        ) = radio_backend.validate_z2m_binding(
+            source_entry,
+            target_entry,
+            target_ieee=target.ieee,
+            source_endpoint=args.get("source_endpoint"),
+            target_endpoint=args.get("target_endpoint"),
+            clusters=args.get("clusters"),
+            operation=operation,
+        )
+    except (RadioError, radio_backend.Z2MRadioConfigurationError) as exc:
+        return _tool_error(str(exc)), "invalid_request", source.device.id
+    source_hash = radio_backend.z2m_radio_configuration_hash(source_before)
+    target_hash = radio_backend.z2m_radio_configuration_hash(target_before)
+    if expected_source_hash != source_hash or expected_target_hash != target_hash:
+        return (
+            _tool_error(
+                "A Zigbee2MQTT endpoint, binding, or reporting configuration changed after it was read. "
+                "Call get_radio_device for both devices and retry with the new hashes."
+            ),
+            "invalid_request",
+            source.device.id,
+        )
+    return _ResolvedZigbeeBindingChange(
+        operation=operation,
+        backend=source.backend,
+        source=source,
+        target=target,
+        source_endpoint=source_endpoint,
+        target_endpoint=target_endpoint,
+        clusters=clusters,
+        source_entry=source_entry,
+        target_entry=target_entry,
+        source_before=source_before,
+        target_before=target_before,
+        source_hash=source_hash,
+        target_hash=target_hash,
+        mesa_entities=mesa_entities,
+    )
+
+
+async def _resolve_zigbee_reporting_change(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZigbeeReportingChange | tuple[dict, str, str]:
+    """Resolve and conflict-check one Zigbee2MQTT reporting update."""
+    tool = "configure_zigbee_reporting"
+    resolved = _resolve_radio_device(args, token, hass, tool, require_write=True)
+    if isinstance(resolved, tuple):
+        return resolved
+    if resolved.backend != radio_backend.BACKEND_Z2M:
+        return (
+            _tool_error(
+                "Targeted reporting configuration is available only for Zigbee2MQTT devices; use reconfigure_zigbee_device for ZHA."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    expected_hash = args.get("expected_hash")
+    if not _valid_content_hash(expected_hash):
+        return (
+            _tool_error(
+                "expected_hash must be the lowercase radio_configuration.content_hash from get_radio_device."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    try:
+        entry, _options, _ = await radio_backend.async_z2m_device_snapshot(
+            hass, resolved.ieee
+        )
+        if entry is None:
+            raise RadioError("Device is not on the Zigbee network.")
+        before, desired = radio_backend.validate_z2m_reporting(
+            entry,
+            endpoint=args.get("endpoint"),
+            cluster=args.get("cluster"),
+            attribute=args.get("attribute"),
+            minimum_report_interval=args.get("minimum_report_interval"),
+            maximum_report_interval=args.get("maximum_report_interval"),
+            reportable_change=args.get("reportable_change"),
+        )
+    except (RadioError, radio_backend.Z2MRadioConfigurationError) as exc:
+        return _tool_error(str(exc)), "invalid_request", resolved.device.id
+    before_hash = radio_backend.z2m_radio_configuration_hash(before)
+    if expected_hash != before_hash:
+        return (
+            _tool_error(
+                "The Zigbee2MQTT endpoint, binding, or reporting configuration changed after it was read. "
+                "Call get_radio_device again and retry with its new hash."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    return _ResolvedZigbeeReportingChange(
+        device=resolved.device,
+        ieee=resolved.ieee,
+        entry=entry,
+        before=before,
+        before_hash=before_hash,
+        desired=desired,
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class _ResolvedPermitJoin:
     """Validated permit_zigbee_join args; backend and duration always present."""
@@ -708,6 +979,154 @@ async def _build_diff_set_zigbee_device_property(
     }
 
 
+async def _build_diff_set_zigbee_binding(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    change: _ResolvedZigbeeBindingChange | None = None,
+) -> dict:
+    """Approval preview for one registry-scoped binding relationship."""
+    resolved = change or await _resolve_zigbee_binding_change(args, token, hass)
+    if isinstance(resolved, tuple):
+        return {
+            "kind": "config_diff",
+            **_summary("zigbee_binding"),
+            "before": "{}",
+            "after": "{}",
+            "preview": {},
+        }
+    change = resolved
+    source_label = (
+        change.source.device.name_by_user
+        or change.source.device.name
+        or change.source.device.id
+    )
+    target_label = (
+        change.target.device.name_by_user
+        or change.target.device.name
+        or change.target.device.id
+    )
+    before = {
+        "bound": change.operation == "unbind",
+        "source_device_id": change.source.device.id,
+        "target_device_id": change.target.device.id,
+    }
+    after = {**before, "bound": change.operation == "bind"}
+    if change.backend == radio_backend.BACKEND_Z2M:
+        before.update(
+            {
+                "source_endpoint": change.source_endpoint,
+                "target_endpoint": change.target_endpoint,
+                "clusters": list(change.clusters),
+            }
+        )
+        after.update(
+            {
+                "source_endpoint": change.source_endpoint,
+                "target_endpoint": change.target_endpoint,
+                "clusters": list(change.clusters),
+            }
+        )
+    preview: dict[str, Any] = {
+        "backend": change.backend,
+        "operation": change.operation,
+        "source": {
+            "device_id": change.source.device.id,
+            "label": source_label,
+        },
+        "target_device": {
+            "device_id": change.target.device.id,
+            "label": target_label,
+        },
+        "warning": (
+            "Binding changes direct device control that can operate without Home Assistant. "
+            "Wake battery-powered source devices immediately before approval."
+        ),
+    }
+    if change.backend == radio_backend.BACKEND_ZHA:
+        preview["selection"] = "ZHA will derive every compatible endpoint and cluster."
+    mesa_note = _mesa_confirm_annotation(
+        token,
+        hass,
+        [("zigbee", "set_binding", list(change.mesa_entities))],
+    )
+    if mesa_note:
+        preview["mesa"] = mesa_note
+    return {
+        "kind": "config_diff",
+        **_summary(
+            "zigbee_binding.devices",
+            operation=change.operation,
+            source=source_label,
+            target=target_label,
+        ),
+        "target": {
+            "type": "device",
+            "id": change.source.device.id,
+            "label": source_label,
+        },
+        "before": _truncate(json.dumps(before, indent=2)),
+        "after": _truncate(json.dumps(after, indent=2)),
+        "preview": preview,
+    }
+
+
+async def _build_diff_configure_zigbee_reporting(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    change: _ResolvedZigbeeReportingChange | None = None,
+) -> dict:
+    """Approval preview for one exact reporting record."""
+    resolved = change or await _resolve_zigbee_reporting_change(args, token, hass)
+    if isinstance(resolved, tuple):
+        return {
+            "kind": "config_diff",
+            **_summary("zigbee_reporting"),
+            "before": "null",
+            "after": "null",
+            "preview": {},
+        }
+    change = resolved
+    label = change.device.name_by_user or change.device.name or change.device.id
+    endpoint = next(
+        item
+        for item in change.before["endpoints"]
+        if item["endpoint"] == change.desired["endpoint"]
+    )
+    before = next(
+        (
+            item
+            for item in endpoint["configured_reportings"]
+            if item["cluster"] == change.desired["cluster"]
+            and item["attribute"] == change.desired["attribute"]
+        ),
+        None,
+    )
+    return {
+        "kind": "config_diff",
+        **_summary(
+            "zigbee_reporting.device",
+            label=label,
+            cluster=change.desired["cluster"],
+            attribute=change.desired["attribute"],
+        ),
+        "target": {"type": "device", "id": change.device.id, "label": label},
+        "before": _truncate(json.dumps(before, indent=2, default=str)),
+        "after": _truncate(json.dumps(change.desired, indent=2, default=str)),
+        "preview": {
+            "backend": radio_backend.BACKEND_Z2M,
+            "content_hash": change.before_hash,
+            "warning": (
+                "Short reporting intervals can increase Zigbee traffic and drain battery devices. "
+                "A maximum interval of 65535 disables reporting for this attribute."
+            ),
+        },
+    }
+
+
 async def _build_diff_remove_zigbee_device(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> dict:
@@ -768,15 +1187,25 @@ async def _tool_get_radio_device(
     device, backend, ieee = resolved.device, resolved.backend, resolved.ieee
     try:
         if backend == radio_backend.BACKEND_Z2M:
-            entry, current_options, _options_hash = (
-                await radio_backend.async_z2m_device_snapshot(hass, ieee)
+            entry, current_options, _options_hash, bridge_info = (
+                await radio_backend.async_z2m_device_snapshot_with_info(hass, ieee)
             )
             if entry is None:
                 # Registered in HA but unknown to Z2M (a stale discovery
                 # leftover). The token already sees the device, so no oracle.
                 return _tool_error("Device is not on the Zigbee network."), "invalid_request", device.id
+            accessible = _accessible_entity_ids(token, hass)
             projected = radio_backend.project_z2m_device(
-                entry, current_options=current_options
+                entry,
+                current_options=current_options,
+                visible_ieee_map=radio_backend.visible_zigbee_device_map(
+                    hass, accessible
+                ),
+                coordinator_ieee=(
+                    bridge_info.get("coordinator", {}).get("ieee_address")
+                    if isinstance(bridge_info.get("coordinator"), dict)
+                    else None
+                ),
             )
             projected["direct_property_fallback"] = _property_fallback_summary(
                 hass, device.id, entry
@@ -844,6 +1273,14 @@ async def _tool_get_radio_device(
                 visible_ieee_map=radio_backend.visible_zigbee_device_map(hass, accessible),
                 pass_through=token.pass_through,
             )
+            projected["radio_configuration"] = {
+                "status": "managed_by_zha",
+                "binding_mode": "all_zha_compatible_clusters",
+                "note": (
+                    "ZHA selects compatible endpoints and clusters internally; "
+                    "its public device view does not expose an exact binding snapshot."
+                ),
+            }
     except RadioError as exc:
         return _tool_error(f"Failed to read Zigbee device: {exc}"), "invalid_request", device.id
     projected["device_id"] = device.id
@@ -1288,6 +1725,350 @@ async def _execute_set_zigbee_device_property(
     if mesa_outcome.warnings:
         body["mesa_advisory"] = mesa_outcome.warnings
     return _tool_success(json.dumps(body)), "allowed", change.device.id
+
+
+async def _tool_set_zigbee_binding(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: bind/unbind two scoped Zigbee devices (dual-gated)."""
+    caps = ("cap_radio_write", "cap_physical_control")
+    if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_zigbee_binding"
+    pre = await _resolve_zigbee_binding_change(args, token, hass)
+    if isinstance(pre, tuple):
+        return pre
+    pre_diff = await _build_diff_set_zigbee_binding(
+        args, token, hass, change=pre
+    )
+    mesa_outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        token,
+        domain="zigbee",
+        service="set_binding",
+        service_data={
+            "operation": pre.operation,
+            "source_device_id": pre.source.device.id,
+            "target_device_id": pre.target.device.id,
+            "clusters": list(pre.clusters),
+        },
+        entities=list(pre.mesa_entities),
+        request_id=request_id or "zigbee_binding",
+        client_ip=client_ip,
+        session_id=request_id or "zigbee_binding",
+        confirm_approved=False,
+        approval_tool_name="set_zigbee_binding",
+        approval_args=args,
+        approval_diff=pre_diff,
+        require_all=True,
+    )
+    if mesa_outcome.blocked:
+        fire_mesa_blocked_event(hass, token, mesa_outcome.blocked)
+    if mesa_outcome.decision == "pending":
+        return await _pending_or_inline(hass, data, token, mesa_outcome.approval)
+    if mesa_outcome.decision == "deny":
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", pre.source.device.id
+    if mesa_outcome.warnings:
+        _mesa_advisory_ctx.set(True)
+    if not _approved_exec_ctx.get():
+        for cap in caps:
+            if effective_cap(token, cap) != CAP_CONFIRM:
+                continue
+            blocked = await _gate(
+                cap,
+                token,
+                hass,
+                data,
+                tool_name="set_zigbee_binding",
+                args=args,
+                request_id=request_id,
+                client_ip=client_ip,
+                diff=pre_diff,
+            )
+            if blocked is not None:
+                return blocked
+    return await _execute_set_zigbee_binding(
+        args, token, hass, data, request_id=request_id, client_ip=client_ip
+    )
+
+
+async def _execute_set_zigbee_binding(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Revalidate, apply, and audit one exact binding relationship."""
+    if any(
+        effective_cap(token, cap) == CAP_DENY
+        for cap in ("cap_radio_write", "cap_physical_control")
+    ):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_zigbee_binding"
+    change = await _resolve_zigbee_binding_change(args, token, hass)
+    if isinstance(change, tuple):
+        return change
+    diff = await _build_diff_set_zigbee_binding(
+        args, token, hass, change=change
+    )
+    mesa_outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        token,
+        domain="zigbee",
+        service="set_binding",
+        service_data={
+            "operation": change.operation,
+            "source_device_id": change.source.device.id,
+            "target_device_id": change.target.device.id,
+            "clusters": list(change.clusters),
+        },
+        entities=list(change.mesa_entities),
+        request_id=request_id or "zigbee_binding",
+        client_ip=client_ip,
+        session_id=request_id or "zigbee_binding",
+        confirm_approved=_approved_exec_ctx.get(),
+        approval_tool_name="set_zigbee_binding",
+        approval_args=args,
+        approval_diff=diff,
+        require_all=True,
+    )
+    if mesa_outcome.blocked:
+        fire_mesa_blocked_event(hass, token, mesa_outcome.blocked)
+    if mesa_outcome.decision == "pending":
+        return await _pending_or_inline(hass, data, token, mesa_outcome.approval)
+    if mesa_outcome.decision == "deny":
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", change.source.device.id
+    if mesa_outcome.warnings:
+        _mesa_advisory_ctx.set(True)
+
+    source_after_hash: str | None = None
+    target_after_hash: str | None = None
+    try:
+        if change.backend == radio_backend.BACKEND_Z2M:
+            assert change.source_endpoint is not None
+            assert change.target_endpoint is not None
+            _entry, _source_after, source_after_hash = (
+                await radio_backend.async_set_z2m_binding(
+                    hass,
+                    operation=change.operation,
+                    source_ieee=change.source.ieee,
+                    target_ieee=change.target.ieee,
+                    source_endpoint=change.source_endpoint,
+                    target_endpoint=change.target_endpoint,
+                    clusters=change.clusters,
+                )
+            )
+            target_entry = await radio_backend.async_z2m_device_entry(
+                hass, change.target.ieee
+            )
+            if target_entry is None:
+                raise RadioError("Target disappeared after the binding change.")
+            target_after = radio_backend.z2m_radio_configuration(target_entry)
+            target_after_hash = radio_backend.z2m_radio_configuration_hash(
+                target_after
+            )
+        else:
+            await radio_backend.async_set_zha_binding(
+                hass,
+                operation=change.operation,
+                source_ieee=change.source.ieee,
+                target_ieee=change.target.ieee,
+            )
+    except (RadioError, radio_backend.Z2MRadioConfigurationError) as exc:
+        return _tool_error(str(exc)), "invalid_request", change.source.device.id
+
+    source_label = (
+        change.source.device.name_by_user
+        or change.source.device.name
+        or change.source.device.id
+    )
+    snapshot_base: dict[str, Any] = {
+        "snapshot_type": "zigbee_binding",
+        "restorable": False,
+        "backend": change.backend,
+        "source_device_id": change.source.device.id,
+        "target_device_id": change.target.device.id,
+        "source_endpoint": change.source_endpoint,
+        "target_endpoint": change.target_endpoint,
+        "clusters": list(change.clusters),
+    }
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=change.source.device.id,
+        action="edit",
+        before={
+            **snapshot_base,
+            "bound": change.operation == "unbind",
+            "source_content_hash": change.source_hash,
+            "target_content_hash": change.target_hash,
+        },
+        after={
+            **snapshot_base,
+            "bound": change.operation == "bind",
+            "source_content_hash": source_after_hash,
+            "target_content_hash": target_after_hash,
+        },
+        alias=source_label,
+        summary=_version_summary(
+            "device.zigbee_binding",
+            operation=change.operation,
+            target=(
+                change.target.device.name_by_user
+                or change.target.device.name
+                or change.target.device.id
+            ),
+        ),
+    )
+    body: dict[str, Any] = {
+        "success": True,
+        "backend": change.backend,
+        "operation": change.operation,
+        "source_device_id": change.source.device.id,
+        "target_device_id": change.target.device.id,
+        "source_endpoint": change.source_endpoint,
+        "target_endpoint": change.target_endpoint,
+        "clusters": list(change.clusters),
+        "source_content_hash": source_after_hash,
+        "target_content_hash": target_after_hash,
+        "confirmation": (
+            "retained_binding_state"
+            if change.backend == radio_backend.BACKEND_Z2M
+            else "zha_operation_complete"
+        ),
+        "message": (
+            "Binding created."
+            if change.operation == "bind"
+            else "Binding removed without deleting unrelated reporting configuration."
+        ),
+    }
+    if change.backend == radio_backend.BACKEND_ZHA:
+        body["selection"] = "all_zha_compatible_clusters"
+    if mesa_outcome.warnings:
+        body["mesa_advisory"] = mesa_outcome.warnings
+    return _tool_success(json.dumps(body)), "allowed", change.source.device.id
+
+
+async def _tool_configure_zigbee_reporting(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: configure one Z2M attribute reporting record."""
+    if effective_cap(token, "cap_radio_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "configure_zigbee_reporting"
+    pre = await _resolve_zigbee_reporting_change(args, token, hass)
+    if isinstance(pre, tuple):
+        return pre
+    blocked = await _gate(
+        "cap_radio_write",
+        token,
+        hass,
+        data,
+        tool_name="configure_zigbee_reporting",
+        args=args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda: _build_diff_configure_zigbee_reporting(
+            args, token, hass, change=pre
+        ),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_configure_zigbee_reporting(args, token, hass, data)
+
+
+async def _execute_configure_zigbee_reporting(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    """Revalidate, apply, exactly confirm, and audit reporting configuration."""
+    if effective_cap(token, "cap_radio_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "configure_zigbee_reporting"
+    change = await _resolve_zigbee_reporting_change(args, token, hass)
+    if isinstance(change, tuple):
+        return change
+    try:
+        _entry, _after, after_hash = await radio_backend.async_configure_z2m_reporting(
+            hass, ieee=change.ieee, desired=change.desired
+        )
+    except (RadioError, radio_backend.Z2MRadioConfigurationError) as exc:
+        return _tool_error(str(exc)), "invalid_request", change.device.id
+    label = change.device.name_by_user or change.device.name or change.device.id
+    snapshot_base = {
+        "snapshot_type": "zigbee_reporting",
+        "restorable": False,
+        "endpoint": change.desired["endpoint"],
+        "cluster": change.desired["cluster"],
+        "attribute": change.desired["attribute"],
+    }
+    before_endpoint = next(
+        item
+        for item in change.before["endpoints"]
+        if item["endpoint"] == change.desired["endpoint"]
+    )
+    before_reporting = next(
+        (
+            item
+            for item in before_endpoint["configured_reportings"]
+            if item["cluster"] == change.desired["cluster"]
+            and item["attribute"] == change.desired["attribute"]
+        ),
+        None,
+    )
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=change.device.id,
+        action="edit",
+        before={
+            **snapshot_base,
+            "reporting": before_reporting,
+            "content_hash": change.before_hash,
+        },
+        after={
+            **snapshot_base,
+            "reporting": change.desired,
+            "content_hash": after_hash,
+        },
+        alias=label,
+        summary=_version_summary(
+            "device.zigbee_reporting",
+            cluster=change.desired["cluster"],
+            attribute=change.desired["attribute"],
+        ),
+    )
+    return (
+        _tool_success(
+            json.dumps(
+                {
+                    "success": True,
+                    "backend": radio_backend.BACKEND_Z2M,
+                    "device_id": change.device.id,
+                    "reporting": change.desired,
+                    "content_hash": after_hash,
+                    "confirmation": "retained_reporting_state",
+                    "message": "Reporting configuration changed and confirmed.",
+                }
+            )
+        ),
+        "allowed",
+        change.device.id,
+    )
 
 
 async def _tool_remove_zigbee_device(

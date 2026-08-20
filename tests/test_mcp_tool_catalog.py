@@ -179,25 +179,25 @@ def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wire
     assert metrics == {
         "read_only": {
             "tool_count": 47,
-            "canonical_bytes": 38205,
-            "claude_bytes": 33366,
-            "openai_bytes": 34729,
+            "canonical_bytes": 38366,
+            "claude_bytes": 33527,
+            "openai_bytes": 34890,
         },
         "write_capable": {
             "tool_count": 91,
-            "canonical_bytes": 83850,
-            "claude_bytes": 74466,
-            "openai_bytes": 77105,
+            "canonical_bytes": 84011,
+            "claude_bytes": 74627,
+            "openai_bytes": 77266,
         },
-            "announce_all": {
-                "tool_count": 145,
-                "canonical_bytes": 135901,
-                "claude_bytes": 120936,
-                "openai_bytes": 125141,
-            },
+        "announce_all": {
+            "tool_count": 147,
+            "canonical_bytes": 140053,
+            "claude_bytes": 124882,
+            "openai_bytes": 129145,
+        },
     }
-    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 145
-    assert mcp_view.tool_catalog_counts()["total"] == 151
+    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 147
+    assert mcp_view.tool_catalog_counts()["total"] == 153
 
 
 def test_every_public_parameter_has_a_description():

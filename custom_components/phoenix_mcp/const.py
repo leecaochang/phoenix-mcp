@@ -1207,6 +1207,10 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "zigbee_options.device": "Change Zigbee2MQTT options ({keys}) for {label}",
     "zigbee_property": "Change a Zigbee2MQTT exposed property",
     "zigbee_property.device": "Change Zigbee2MQTT property {property} for {label}",
+    "zigbee_binding": "Change a Zigbee device binding",
+    "zigbee_binding.devices": "{operation} Zigbee binding from {source} to {target}",
+    "zigbee_reporting": "Configure Zigbee attribute reporting",
+    "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}",
     # System.
     "restart_ha": "Restart Home Assistant",
     # {file} rather than a literal configuration.yaml: these tools write any
@@ -1332,6 +1336,10 @@ _APPROVAL_SUMMARY_BODIES = {
     "zigbee_options.device": "This will change Zigbee2MQTT device options for {label}. Open Details to review the proposed values.",
     "zigbee_property": "This will directly change a Zigbee2MQTT device property. Open Details to review the proposed value.",
     "zigbee_property.device": "This will directly change property {property} for {label}. Open Details to review the proposed value.",
+    "zigbee_binding": "This will change direct control between two Zigbee devices. Open Details to review both devices and the selected clusters.",
+    "zigbee_binding.devices": "This will {operation} direct Zigbee control from {source} to {target}. Open Details to review the exact relationship.",
+    "zigbee_reporting": "This will change how frequently a Zigbee device reports an attribute. Open Details to review the intervals.",
+    "zigbee_reporting.device": "This will change {cluster}.{attribute} reporting for {label}. Open Details to review the intervals.",
     "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
     "integration.reconfigure": (
         "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. "
@@ -1482,6 +1490,8 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "device.changed": "changed: {fields}",
     "device.zigbee_options": "changed Zigbee2MQTT options: {keys}",
     "device.zigbee_property": "changed Zigbee2MQTT property: {property}",
+    "device.zigbee_binding": "{operation} Zigbee binding to {target}",
+    "device.zigbee_reporting": "configured Zigbee reporting: {cluster}.{attribute}",
     "config_entry.removed": "integration removed",
     "card.added": "added {subject} ({where})",
     "card.edited": "edited {subject} ({where})",

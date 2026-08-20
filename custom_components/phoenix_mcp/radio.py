@@ -74,6 +74,12 @@ _Z2M_OPTION_MAX_DEPTH = 4
 _Z2M_OPTION_MAX_STRING = 1024
 _Z2M_PROPERTY_MAX_NAME = 128
 _Z2M_FRIENDLY_NAME_MAX_LENGTH = 256
+_Z2M_RADIO_MAX_ENDPOINTS = 32
+_Z2M_RADIO_MAX_CLUSTERS = 64
+_Z2M_RADIO_MAX_BINDINGS = 128
+_Z2M_RADIO_MAX_REPORTINGS = 128
+_Z2M_RADIO_MAX_NAME = 128
+_Z2M_RADIO_MAX_REQUEST_CLUSTERS = 16
 _Z2M_DIRECT_PROPERTY_TYPES = frozenset(
     {"binary", "enum", "numeric", "text", "list", "composite"}
 )
@@ -89,6 +95,10 @@ class Z2MOptionValidationError(ValueError):
 
 class Z2MPropertyValidationError(ValueError):
     """A direct Zigbee2MQTT exposed property is unsafe or invalid."""
+
+
+class Z2MRadioConfigurationError(ValueError):
+    """Zigbee2MQTT endpoint, binding, or reporting metadata is unsafe."""
 
 
 # ---------------------------------------------------------------------------
@@ -889,8 +899,360 @@ async def async_set_z2m_exposed_property(
         unsubscribe()
 
 
+def _z2m_endpoint_id(value: Any, path: str) -> int:
+    """Return one real Zigbee endpoint id from retained metadata or arguments."""
+    if isinstance(value, str) and value.isdigit():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 254:
+        raise Z2MRadioConfigurationError(f"{path} must be an integer from 1 to 254.")
+    return value
+
+
+def _z2m_short_name(value: Any, path: str) -> str:
+    """Validate a bounded Zigbee cluster or attribute name."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > _Z2M_RADIO_MAX_NAME
+        or "\x00" in value
+    ):
+        raise Z2MRadioConfigurationError(f"{path} must be a short non-empty string.")
+    return value
+
+
+def _z2m_cluster_list(value: Any, path: str) -> list[str]:
+    """Validate one bounded retained input/output cluster list."""
+    if not isinstance(value, list) or len(value) > _Z2M_RADIO_MAX_CLUSTERS:
+        raise Z2MRadioConfigurationError(f"{path} is missing or too large.")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        name = _z2m_short_name(item, f"{path}[{index}]")
+        if name not in result:
+            result.append(name)
+    return result
+
+
+def z2m_radio_configuration(entry: Any) -> dict[str, Any]:
+    """Normalize the exact endpoint/binding/reporting slice of one Z2M device.
+
+    This is both the content-hash source and the mutation validator. It fails
+    closed rather than truncating: approving against a partial endpoint tree
+    could hide a conflicting binding or reporting record.
+    """
+    entry = entry if isinstance(entry, dict) else {}
+    raw_endpoints = entry.get("endpoints")
+    if not isinstance(raw_endpoints, dict) or len(raw_endpoints) > _Z2M_RADIO_MAX_ENDPOINTS:
+        raise Z2MRadioConfigurationError("Zigbee2MQTT endpoint metadata is missing or too large.")
+    endpoints: list[dict[str, Any]] = []
+    binding_count = 0
+    reporting_count = 0
+    seen_ids: set[int] = set()
+    for raw_id, raw_endpoint in raw_endpoints.items():
+        endpoint_id = _z2m_endpoint_id(raw_id, "endpoint")
+        if endpoint_id in seen_ids or not isinstance(raw_endpoint, dict):
+            raise Z2MRadioConfigurationError("Zigbee2MQTT endpoint metadata is ambiguous.")
+        seen_ids.add(endpoint_id)
+        raw_clusters = raw_endpoint.get("clusters")
+        if not isinstance(raw_clusters, dict):
+            raise Z2MRadioConfigurationError("Zigbee2MQTT cluster metadata is missing.")
+        endpoint: dict[str, Any] = {
+            "endpoint": endpoint_id,
+            "input_clusters": _z2m_cluster_list(
+                raw_clusters.get("input"), f"endpoint {endpoint_id} input clusters"
+            ),
+            "output_clusters": _z2m_cluster_list(
+                raw_clusters.get("output"), f"endpoint {endpoint_id} output clusters"
+            ),
+            "bindings": [],
+            "configured_reportings": [],
+        }
+        raw_name = raw_endpoint.get("name")
+        if raw_name is not None:
+            endpoint["name"] = _z2m_short_name(raw_name, f"endpoint {endpoint_id} name")
+
+        raw_bindings = raw_endpoint.get("bindings")
+        if not isinstance(raw_bindings, list):
+            raise Z2MRadioConfigurationError("Zigbee2MQTT binding metadata is missing.")
+        binding_count += len(raw_bindings)
+        if binding_count > _Z2M_RADIO_MAX_BINDINGS:
+            raise Z2MRadioConfigurationError("Zigbee2MQTT binding metadata is too large.")
+        for index, raw_binding in enumerate(raw_bindings):
+            if not isinstance(raw_binding, dict) or not isinstance(raw_binding.get("target"), dict):
+                raise Z2MRadioConfigurationError("Zigbee2MQTT binding metadata is malformed.")
+            cluster = _z2m_short_name(
+                raw_binding.get("cluster"), f"endpoint {endpoint_id} binding {index} cluster"
+            )
+            raw_target = raw_binding["target"]
+            target_type = raw_target.get("type")
+            if target_type == "endpoint":
+                ieee = raw_target.get("ieee_address")
+                if not isinstance(ieee, str) or not ieee or len(ieee) > 32:
+                    raise Z2MRadioConfigurationError("Zigbee2MQTT binding target is malformed.")
+                target = {
+                    "type": "endpoint",
+                    "ieee_address": ieee.lower(),
+                    "endpoint": _z2m_endpoint_id(
+                        raw_target.get("endpoint"), "binding target endpoint"
+                    ),
+                }
+            elif target_type == "group":
+                group_id = raw_target.get("id")
+                if isinstance(group_id, bool) or not isinstance(group_id, int) or not 1 <= group_id <= 65535:
+                    raise Z2MRadioConfigurationError("Zigbee2MQTT binding group target is malformed.")
+                target = {"type": "group", "id": group_id}
+            else:
+                raise Z2MRadioConfigurationError("Zigbee2MQTT binding target type is unknown.")
+            endpoint["bindings"].append({"cluster": cluster, "target": target})
+
+        raw_reportings = raw_endpoint.get("configured_reportings")
+        if not isinstance(raw_reportings, list):
+            raise Z2MRadioConfigurationError("Zigbee2MQTT reporting metadata is missing.")
+        reporting_count += len(raw_reportings)
+        if reporting_count > _Z2M_RADIO_MAX_REPORTINGS:
+            raise Z2MRadioConfigurationError("Zigbee2MQTT reporting metadata is too large.")
+        for index, raw_reporting in enumerate(raw_reportings):
+            if not isinstance(raw_reporting, dict):
+                raise Z2MRadioConfigurationError("Zigbee2MQTT reporting metadata is malformed.")
+            attribute = raw_reporting.get("attribute")
+            if isinstance(attribute, bool) or not isinstance(attribute, (str, int)):
+                raise Z2MRadioConfigurationError("Zigbee2MQTT reporting attribute is malformed.")
+            if isinstance(attribute, str):
+                attribute = _z2m_short_name(
+                    attribute, f"endpoint {endpoint_id} reporting {index} attribute"
+                )
+            elif not 0 <= attribute <= 65535:
+                raise Z2MRadioConfigurationError("Zigbee2MQTT reporting attribute is out of range.")
+            minimum = raw_reporting.get("minimum_report_interval")
+            maximum = raw_reporting.get("maximum_report_interval")
+            for field, value in (("minimum", minimum), ("maximum", maximum)):
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 65535:
+                    raise Z2MRadioConfigurationError(
+                        f"Zigbee2MQTT reporting {field} interval is malformed."
+                    )
+            reporting: dict[str, Any] = {
+                "cluster": _z2m_short_name(
+                    raw_reporting.get("cluster"), f"endpoint {endpoint_id} reporting {index} cluster"
+                ),
+                "attribute": attribute,
+                "minimum_report_interval": minimum,
+                "maximum_report_interval": maximum,
+            }
+            change = raw_reporting.get("reportable_change")
+            if change is not None:
+                if (
+                    isinstance(change, bool)
+                    or not isinstance(change, (int, float))
+                    or not math.isfinite(change)
+                    or change < 0
+                ):
+                    raise Z2MRadioConfigurationError("Zigbee2MQTT reportable change is malformed.")
+                reporting["reportable_change"] = change
+            endpoint["configured_reportings"].append(reporting)
+        endpoint["bindings"].sort(
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+        )
+        endpoint["configured_reportings"].sort(
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+        )
+        endpoints.append(endpoint)
+    endpoints.sort(key=lambda item: item["endpoint"])
+    return {"endpoints": endpoints}
+
+
+def z2m_radio_configuration_hash(configuration: dict[str, Any]) -> str:
+    """Stable hash for a normalized endpoint/binding/reporting configuration."""
+    canonical = json.dumps(
+        configuration, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def project_z2m_radio_configuration(
+    entry: Any,
+    *,
+    visible_ieee_map: dict[str, str],
+    coordinator_ieee: str | None = None,
+) -> dict[str, Any]:
+    """Scope-project endpoints without exposing inaccessible IEEE addresses."""
+    try:
+        configuration = z2m_radio_configuration(entry)
+    except Z2MRadioConfigurationError:
+        return {
+            "status": "unavailable",
+            "reason": "unsafe_or_unsupported_metadata",
+        }
+    projected = json.loads(json.dumps(configuration))
+    visible = {key.lower(): value for key, value in visible_ieee_map.items()}
+    coordinator = coordinator_ieee.lower() if isinstance(coordinator_ieee, str) else None
+    for endpoint in projected["endpoints"]:
+        for binding in endpoint["bindings"]:
+            target = binding["target"]
+            if target.get("type") == "group":
+                binding["target"] = {"kind": "group"}
+                continue
+            ieee = str(target.get("ieee_address", "")).lower()
+            target_endpoint = target.get("endpoint")
+            if coordinator and ieee == coordinator:
+                binding["target"] = {
+                    "kind": "coordinator",
+                    "endpoint": target_endpoint,
+                }
+            elif ieee in visible:
+                binding["target"] = {
+                    "kind": "device",
+                    "device_id": visible[ieee],
+                    "endpoint": target_endpoint,
+                }
+            else:
+                binding["target"] = {"kind": "redacted_device"}
+    return {
+        "status": "available",
+        **projected,
+        "content_hash": z2m_radio_configuration_hash(configuration),
+    }
+
+
+def _z2m_configuration_endpoint(
+    configuration: dict[str, Any], endpoint_id: int
+) -> dict[str, Any]:
+    endpoint = next(
+        (item for item in configuration.get("endpoints", []) if item.get("endpoint") == endpoint_id),
+        None,
+    )
+    if endpoint is None:
+        raise Z2MRadioConfigurationError(f"Device does not have endpoint {endpoint_id}.")
+    return endpoint
+
+
+def validate_z2m_binding(
+    source_entry: Any,
+    target_entry: Any,
+    *,
+    target_ieee: str,
+    source_endpoint: Any,
+    target_endpoint: Any,
+    clusters: Any,
+    operation: str,
+) -> tuple[int, int, tuple[str, ...], dict[str, Any], dict[str, Any]]:
+    """Validate one exact device-to-device binding change against both devices."""
+    if operation not in {"bind", "unbind"}:
+        raise Z2MRadioConfigurationError("operation must be bind or unbind.")
+    source_endpoint_id = _z2m_endpoint_id(source_endpoint, "source_endpoint")
+    target_endpoint_id = _z2m_endpoint_id(target_endpoint, "target_endpoint")
+    if (
+        not isinstance(clusters, list)
+        or not clusters
+        or len(clusters) > _Z2M_RADIO_MAX_REQUEST_CLUSTERS
+    ):
+        raise Z2MRadioConfigurationError(
+            f"clusters must contain 1 to {_Z2M_RADIO_MAX_REQUEST_CLUSTERS} names."
+        )
+    requested: list[str] = []
+    for index, raw_cluster in enumerate(clusters):
+        cluster = _z2m_short_name(raw_cluster, f"clusters[{index}]")
+        if cluster in requested:
+            raise Z2MRadioConfigurationError("clusters must not contain duplicates.")
+        requested.append(cluster)
+    source_configuration = z2m_radio_configuration(source_entry)
+    target_configuration = z2m_radio_configuration(target_entry)
+    source = _z2m_configuration_endpoint(source_configuration, source_endpoint_id)
+    target = _z2m_configuration_endpoint(target_configuration, target_endpoint_id)
+    allowed = set(source["output_clusters"]) & set(target["input_clusters"])
+    unsupported = sorted(set(requested) - allowed)
+    if unsupported:
+        raise Z2MRadioConfigurationError(
+            "Clusters are not source-output/target-input compatible: " + ", ".join(unsupported) + "."
+        )
+    target_ieee = target_ieee.lower()
+    present = {
+        item["cluster"]
+        for item in source["bindings"]
+        if item["target"].get("type") == "endpoint"
+        and item["target"].get("ieee_address") == target_ieee
+        and item["target"].get("endpoint") == target_endpoint_id
+    }
+    if operation == "bind" and present & set(requested):
+        raise Z2MRadioConfigurationError("One or more requested bindings already exist.")
+    if operation == "unbind" and set(requested) - present:
+        raise Z2MRadioConfigurationError("One or more requested bindings do not exist.")
+    return (
+        source_endpoint_id,
+        target_endpoint_id,
+        tuple(requested),
+        source_configuration,
+        target_configuration,
+    )
+
+
+def validate_z2m_reporting(
+    entry: Any,
+    *,
+    endpoint: Any,
+    cluster: Any,
+    attribute: Any,
+    minimum_report_interval: Any,
+    maximum_report_interval: Any,
+    reportable_change: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate one reporting configuration against retained endpoint metadata."""
+    endpoint_id = _z2m_endpoint_id(endpoint, "endpoint")
+    cluster_name = _z2m_short_name(cluster, "cluster")
+    if isinstance(attribute, bool) or not isinstance(attribute, (str, int)):
+        raise Z2MRadioConfigurationError("attribute must be a name or numeric Zigbee attribute id.")
+    if isinstance(attribute, str):
+        attribute = _z2m_short_name(attribute, "attribute")
+    elif not 0 <= attribute <= 65535:
+        raise Z2MRadioConfigurationError("attribute must be between 0 and 65535.")
+    for name, value in (
+        ("minimum_report_interval", minimum_report_interval),
+        ("maximum_report_interval", maximum_report_interval),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 65535:
+            raise Z2MRadioConfigurationError(f"{name} must be an integer from 0 to 65535.")
+    if minimum_report_interval > maximum_report_interval and maximum_report_interval != 65535:
+        raise Z2MRadioConfigurationError(
+            "minimum_report_interval cannot exceed maximum_report_interval."
+        )
+    if reportable_change is not None and (
+        isinstance(reportable_change, bool)
+        or not isinstance(reportable_change, (int, float))
+        or not math.isfinite(reportable_change)
+        or reportable_change < 0
+    ):
+        raise Z2MRadioConfigurationError("reportable_change must be a finite non-negative number.")
+    configuration = z2m_radio_configuration(entry)
+    endpoint_config = _z2m_configuration_endpoint(configuration, endpoint_id)
+    if cluster_name not in endpoint_config["input_clusters"]:
+        raise Z2MRadioConfigurationError(
+            "cluster must be listed as an input cluster on the selected endpoint."
+        )
+    desired: dict[str, Any] = {
+        "cluster": cluster_name,
+        "attribute": attribute,
+        "minimum_report_interval": minimum_report_interval,
+        "maximum_report_interval": maximum_report_interval,
+    }
+    if reportable_change is not None:
+        desired["reportable_change"] = reportable_change
+    existing = next(
+        (
+            item
+            for item in endpoint_config["configured_reportings"]
+            if item["cluster"] == cluster_name and item["attribute"] == attribute
+        ),
+        None,
+    )
+    if existing == desired:
+        raise Z2MRadioConfigurationError("The requested reporting configuration is already current.")
+    return configuration, {"endpoint": endpoint_id, **desired}
+
+
 def project_z2m_device(
-    entry: Any, *, current_options: dict[str, Any] | None = None
+    entry: Any,
+    *,
+    current_options: dict[str, Any] | None = None,
+    visible_ieee_map: dict[str, str] | None = None,
+    coordinator_ieee: str | None = None,
 ) -> dict[str, Any]:
     """Project one bridge/devices entry to the safe per-device view.
 
@@ -928,6 +1290,11 @@ def project_z2m_device(
         "values": values,
         "content_hash": z2m_options_hash(values),
     }
+    projected["radio_configuration"] = project_z2m_radio_configuration(
+        entry,
+        visible_ieee_map=visible_ieee_map or {},
+        coordinator_ieee=coordinator_ieee,
+    )
     return projected
 
 
@@ -1033,12 +1400,15 @@ async def async_z2m_device_entry(hass: HomeAssistant, ieee: str) -> dict[str, An
     if not isinstance(devices, list):
         raise RadioError("Unexpected Zigbee2MQTT device list payload.")
     for entry in devices:
-        if isinstance(entry, dict) and str(entry.get("ieee_address")) == ieee:
+        if (
+            isinstance(entry, dict)
+            and str(entry.get("ieee_address")).lower() == ieee.lower()
+        ):
             return entry
     return None
 
 
-async def _async_z2m_device_snapshot_with_info(
+async def async_z2m_device_snapshot_with_info(
     hass: HomeAssistant, ieee: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any], str, dict[str, Any]]:
     """Read one Z2M device, effective options, hash, and the source info."""
@@ -1070,7 +1440,7 @@ async def async_z2m_device_snapshot(
     hass: HomeAssistant, ieee: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any], str]:
     """Read one Z2M device plus its effective converter options and hash."""
-    entry, options, content_hash, _info = await _async_z2m_device_snapshot_with_info(
+    entry, options, content_hash, _info = await async_z2m_device_snapshot_with_info(
         hass, ieee
     )
     return entry, options, content_hash
@@ -1098,7 +1468,7 @@ async def async_confirm_z2m_device_options(
             raise TimeoutError
         async with asyncio.timeout(remaining):
             entry, current, current_hash, info = (
-                await _async_z2m_device_snapshot_with_info(hass, ieee)
+                await async_z2m_device_snapshot_with_info(hass, ieee)
             )
         if entry is None:
             raise RadioError("Device is no longer on the Zigbee network.")
@@ -1187,3 +1557,151 @@ async def async_set_z2m_device_options(
         {"id": ieee, "options": options},
         timeout=Z2M_DEVICE_OPTIONS_RESPONSE_TIMEOUT_SECONDS,
     )
+
+
+async def _async_confirm_z2m_radio_configuration(
+    hass: HomeAssistant,
+    ieee: str,
+    predicate: Callable[[dict[str, Any]], bool],
+    *,
+    timeout: float = Z2M_RETAINED_READ_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Poll retained bridge/devices until one exact radio mutation is visible."""
+    deadline = hass.loop.time() + timeout
+    while True:
+        entry = await async_z2m_device_entry(hass, ieee)
+        if entry is None:
+            raise RadioError("Device is no longer on the Zigbee network.")
+        try:
+            configuration = z2m_radio_configuration(entry)
+        except Z2MRadioConfigurationError as exc:
+            raise RadioError(f"Unsafe Zigbee2MQTT radio metadata: {exc}") from exc
+        if predicate(configuration):
+            return entry, configuration, z2m_radio_configuration_hash(configuration)
+        remaining = deadline - hass.loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        await asyncio.sleep(min(0.25, remaining))
+
+
+async def async_set_z2m_binding(
+    hass: HomeAssistant,
+    *,
+    operation: str,
+    source_ieee: str,
+    target_ieee: str,
+    source_endpoint: int,
+    target_endpoint: int,
+    clusters: tuple[str, ...],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Apply and exactly confirm one bounded device-to-device Z2M binding."""
+    if operation not in {"bind", "unbind"}:
+        raise Z2MRadioConfigurationError("operation must be bind or unbind.")
+    payload = {
+        "from": source_ieee,
+        "from_endpoint": source_endpoint,
+        "to": target_ieee,
+        "to_endpoint": target_endpoint,
+        "clusters": list(clusters),
+        # Never let unbinding silently remove manual reporting configuration.
+        "skip_disable_reporting": True,
+    }
+    response = await async_z2m_request(hass, f"device/{operation}", payload)
+    returned = response.get("clusters")
+    failed = response.get("failed")
+    if (
+        not isinstance(returned, list)
+        or not isinstance(failed, list)
+        or failed
+        or not all(isinstance(cluster, str) for cluster in returned)
+        or set(returned) != set(clusters)
+        or len(returned) != len(clusters)
+    ):
+        raise RadioError(
+            f"Zigbee2MQTT did not confirm every requested cluster for {operation}."
+        )
+
+    expected_present = operation == "bind"
+
+    def _confirmed(configuration: dict[str, Any]) -> bool:
+        try:
+            endpoint = _z2m_configuration_endpoint(configuration, source_endpoint)
+        except Z2MRadioConfigurationError:
+            return False
+        present = {
+            item["cluster"]
+            for item in endpoint["bindings"]
+            if item["target"].get("type") == "endpoint"
+            and item["target"].get("ieee_address") == target_ieee.lower()
+            and item["target"].get("endpoint") == target_endpoint
+        }
+        return all((cluster in present) is expected_present for cluster in clusters)
+
+    try:
+        return await _async_confirm_z2m_radio_configuration(
+            hass, source_ieee, _confirmed
+        )
+    except TimeoutError as exc:
+        raise RadioError(
+            "Timed out waiting for Zigbee2MQTT retained state to confirm the binding change. "
+            "Read both devices again before retrying because the change may have applied."
+        ) from exc
+
+
+async def async_set_zha_binding(
+    hass: HomeAssistant,
+    *,
+    operation: str,
+    source_ieee: str,
+    target_ieee: str,
+) -> None:
+    """Ask ZHA to bind/unbind every pair its own binding helper deems valid."""
+    if operation not in {"bind", "unbind"}:
+        raise RadioError("operation must be bind or unbind.")
+    try:
+        await async_ws_command(
+            hass,
+            f"zha/devices/{operation}",
+            {"source_ieee": source_ieee, "target_ieee": target_ieee},
+            timeout=Z2M_REQUEST_TIMEOUT_SECONDS,
+        )
+    except WsDispatchError as exc:
+        raise RadioError(str(exc)) from exc
+
+
+async def async_configure_z2m_reporting(
+    hass: HomeAssistant,
+    *,
+    ieee: str,
+    desired: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Configure and exactly confirm one Z2M reporting record."""
+    payload = {"id": ieee, **desired}
+    response = await async_z2m_request(
+        hass, "device/reporting/configure", payload
+    )
+    for key, value in payload.items():
+        if key == "reportable_change" and value is None:
+            continue
+        if key not in response or not _same_scalar(response[key], value):
+            raise RadioError(
+                "Zigbee2MQTT returned an incomplete or mismatched reporting confirmation."
+            )
+
+    endpoint_id = desired["endpoint"]
+    reporting = {key: value for key, value in desired.items() if key != "endpoint"}
+
+    def _confirmed(configuration: dict[str, Any]) -> bool:
+        try:
+            endpoint = _z2m_configuration_endpoint(configuration, endpoint_id)
+        except Z2MRadioConfigurationError:
+            return False
+        return any(item == reporting for item in endpoint["configured_reportings"])
+
+    try:
+        return await _async_confirm_z2m_radio_configuration(hass, ieee, _confirmed)
+    except TimeoutError as exc:
+        raise RadioError(
+            "Timed out waiting for Zigbee2MQTT retained state to confirm reporting. "
+            "Read the device again before retrying because the change may have applied."
+        ) from exc

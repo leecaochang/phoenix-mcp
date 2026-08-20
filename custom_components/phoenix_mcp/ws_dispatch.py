@@ -41,13 +41,17 @@ DEFAULT_TIMEOUT = 10.0
 # list, backup read/create, lovelace dashboard CRUD) and radio.py (the two ZHA
 # reads). restore_backup is deliberately absent (too destructive). The helper
 # "list" read is used to capture the pre-change config for version history.
-# The ZHA write-side commands (zha/devices/permit, zha/devices/reconfigure,
+# Most ZHA write-side commands (zha/devices/permit, zha/devices/reconfigure,
 # zha/topology/update) are deliberately absent: their handlers enable
 # process-wide ZHA debug logging and/or park cleanup callbacks in
 # connection.subscriptions, which a synthetic capturing connection never
 # releases, and reconfigure/topology never call send_result (guaranteed
 # timeout). Permit and remove go through the zha.permit / zha.remove admin
 # services instead; reconfigure goes through async_zha_reconfigure_device below.
+# zha/devices/bind and zha/devices/unbind are the narrow exception: both await
+# ZHA's own compatible-cluster binding helper and then call send_result without
+# registering a subscription. Phoenix resolves both IEEE arguments from scoped
+# device-registry entries; callers never provide either address.
 _HELPER_DOMAINS = (
     "input_boolean", "input_number", "input_text",
     "input_select", "input_datetime", "counter", "timer",
@@ -65,6 +69,7 @@ ALLOWED_WS_COMMANDS: frozenset[str] = frozenset(
         # timed-restoration gates before reaching this command.
         "logger/integration_log_level",
         "zha/device", "zha/network/settings",
+        "zha/devices/bind", "zha/devices/unbind",
         # Blueprint authoring. HA's own handlers do the whole job: blueprint/save
         # parses the YAML, builds a Blueprint against the domain schema, refuses an
         # existing path unless allow_override, and reloads every consumer on an

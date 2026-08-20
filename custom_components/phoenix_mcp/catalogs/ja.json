@@ -853,8 +853,10 @@
       "config_entry.reconfigure": "{subject} を再設定",
       "config_entry.removed": "インテグレーションを削除",
       "device.changed": "変更: {fields}",
+      "device.zigbee_binding": "{target} への Zigbee バインディングを {operation}",
       "device.zigbee_options": "Zigbee2MQTT オプションを変更: {keys}",
       "device.zigbee_property": "Zigbee2MQTT プロパティを変更: {property}",
+      "device.zigbee_reporting": "Zigbee レポートを設定: {cluster}.{attribute}",
       "device.removed": "デバイスレジストリエントリを削除",
       "energy.sources": "ソース {count} 個、デバイス {devices} 台",
       "entity.changed": "変更: {fields}",
@@ -1189,6 +1191,8 @@
       "set_yaml_config.removing_entries": "{file} を置換し、{count} 個のエントリを削除",
       "set_yaml_config.removing_entry": "{file} を置換し、1 個のエントリを削除",
       "write_file": "ファイル「{path}」を書き込む",
+      "zigbee_binding": "Zigbee デバイスのバインディングを変更",
+      "zigbee_binding.devices": "{source} から {target} への Zigbee バインディングを {operation}",
       "zigbee_permit": "Zigbee ネットワークを参加可能にする",
       "zigbee_permit.close": "Zigbee 参加ウィンドウを閉じる",
       "zigbee_permit.open": "Zigbee ネットワークを {duration} 秒間参加可能にする",
@@ -1199,7 +1203,9 @@
       "zigbee_options": "Zigbee2MQTT デバイスオプションを変更",
       "zigbee_options.device": "{label} の Zigbee2MQTT オプション（{keys}）を変更",
       "zigbee_property": "Zigbee2MQTT 公開プロパティを変更",
-      "zigbee_property.device": "{label} の Zigbee2MQTT プロパティ {property} を変更"
+      "zigbee_property.device": "{label} の Zigbee2MQTT プロパティ {property} を変更",
+      "zigbee_reporting": "Zigbee 属性レポートを設定",
+      "zigbee_reporting.device": "{label} の {cluster}.{attribute} レポートを設定"
     },
     "settings": {
       "addProviderFirst": "先に Agent Chat でプロバイダーアカウントを追加してください。",
@@ -1841,6 +1847,10 @@
       "view.summary": "概要",
       "write_file.body": "{path}に書き込みます。そのパスにある既存の内容は置き換えられる場合があります。",
       "write_file.title": "ファイル「{path}」を書き込む",
+      "zigbee_binding.body": "両方の Zigbee デバイス間の直接制御を変更します。詳細で両方のデバイスと選択したクラスターを確認してください。",
+      "zigbee_binding.devices.body": "{source} から {target} への直接 Zigbee 制御を {operation} します。詳細で正確な関係を確認してください。",
+      "zigbee_binding.devices.title": "{source} から {target} への Zigbee バインディングを {operation}",
+      "zigbee_binding.title": "Zigbee デバイスのバインディングを変更",
       "zigbee_permit.body": "新しいデバイスがZigbeeネットワークに参加できるかどうかを変更します。",
       "zigbee_permit.close.body": "新しいデバイスがZigbeeネットワークに参加できるかどうかを変更します。",
       "zigbee_permit.close.title": "Zigbee 参加ウィンドウを閉じる",
@@ -1862,7 +1872,11 @@
       "zigbee_property.body": "Zigbee2MQTT デバイスのプロパティを直接変更します。詳細で提案された値を確認してください。",
       "zigbee_property.device.body": "{label} のプロパティ {property} を直接変更します。詳細で提案された値を確認してください。",
       "zigbee_property.device.title": "{label} の Zigbee2MQTT プロパティ {property} を変更",
-      "zigbee_property.title": "Zigbee2MQTT 公開プロパティを変更"
+      "zigbee_property.title": "Zigbee2MQTT 公開プロパティを変更",
+      "zigbee_reporting.body": "Zigbee デバイスが属性をレポートする頻度を変更します。詳細で間隔を確認してください。",
+      "zigbee_reporting.device.body": "{label} の {cluster}.{attribute} レポートを変更します。詳細で間隔を確認してください。",
+      "zigbee_reporting.device.title": "{label} の {cluster}.{attribute} レポートを設定",
+      "zigbee_reporting.title": "Zigbee 属性レポートを設定"
     }
   },
   "notification": {

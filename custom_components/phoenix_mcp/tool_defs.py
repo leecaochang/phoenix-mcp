@@ -1041,7 +1041,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "Radio-level diagnostics for one device: signal quality (LQI/RSSI), availability, last seen, "
             "power source, interview state, and (ZHA backend) mesh neighbors. For Zigbee2MQTT devices it also "
             "returns bounded capability exposes plus converter-option definitions, effective values, and a "
-            "content hash used by set_zigbee_device_options. For Zigbee2MQTT, direct_property_fallback lists only "
+            "content hash used by set_zigbee_device_options. Its radio_configuration also returns bounded endpoint, "
+            "cluster, scoped binding, and configured-reporting state plus a conflict hash for binding/reporting tools. "
+            "For Zigbee2MQTT, direct_property_fallback lists only "
             "readable exposes that MQTT discovery proves have no owning Home Assistant entity. Pass one listed "
             "property to read its current value and conflict hash. Prefer ordinary Home Assistant entities when a "
             "capability is represented there. device_id is Phoenix MCP's registry id from list_devices/get_device. "
@@ -1179,6 +1181,131 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 },
             },
             "required": ["device_id", "property", "value", "expected_hash"],
+        },
+    },
+    {
+        "name": "set_zigbee_binding",
+        "description": (
+            "Create or remove a direct device-to-device Zigbee binding. Both source and target are Home Assistant "
+            "device registry IDs and must be WRITE-accessible on the same Zigbee network; callers never provide IEEE "
+            "addresses or broker topics. For Zigbee2MQTT, first read both devices and pass explicit endpoint IDs, a "
+            "non-empty cluster subset that is present as source-output and target-input, and both radio_configuration "
+            "hashes. ZHA instead derives all compatible endpoints/clusters internally, so omit those Z2M-only fields. "
+            "Requires both cap_radio_write and cap_physical_control plus inherited MESA evaluation across both devices, "
+            "and may require confirmation. Unbinding preserves unrelated manual reporting configuration."
+        ),
+        "caps": ["cap_radio_write", "cap_physical_control"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["bind", "unbind"],
+                    "description": "Whether to create or remove the exact binding relationship.",
+                },
+                "source_device_id": {
+                    "type": "string",
+                    "description": "WRITE-accessible source Zigbee device registry ID.",
+                },
+                "target_device_id": {
+                    "type": "string",
+                    "description": "WRITE-accessible target Zigbee device registry ID on the same network.",
+                },
+                "source_endpoint": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 254,
+                    "description": "Zigbee2MQTT source endpoint from get_radio_device; omit for ZHA.",
+                },
+                "target_endpoint": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 254,
+                    "description": "Zigbee2MQTT target endpoint from get_radio_device; omit for ZHA.",
+                },
+                "clusters": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "uniqueItems": True,
+                    "items": {"type": "string"},
+                    "description": "Zigbee2MQTT source-output/target-input cluster names; omit for ZHA.",
+                },
+                "expected_source_hash": {
+                    "type": "string",
+                    "description": "Zigbee2MQTT source radio_configuration.content_hash; omit for ZHA.",
+                },
+                "expected_target_hash": {
+                    "type": "string",
+                    "description": "Zigbee2MQTT target radio_configuration.content_hash; omit for ZHA.",
+                },
+            },
+            "required": ["operation", "source_device_id", "target_device_id"],
+        },
+    },
+    {
+        "name": "configure_zigbee_reporting",
+        "description": (
+            "Configure one Zigbee2MQTT attribute reporting record using an endpoint and input cluster listed by "
+            "get_radio_device. Pass radio_configuration.content_hash to prevent races. Intervals are Zigbee seconds; "
+            "maximum_report_interval 65535 disables reporting for the attribute. Short intervals can increase mesh "
+            "traffic and battery use. Requires WRITE access and cap_radio_write, may require confirmation, and never "
+            "accepts MQTT topics, friendly names, IEEE addresses, manufacturer options, or arbitrary payloads. For ZHA, "
+            "use reconfigure_zigbee_device to re-apply integration-managed reporting."
+        ),
+        "cap": "cap_radio_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "WRITE-accessible Zigbee2MQTT device registry ID.",
+                },
+                "endpoint": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 254,
+                    "description": "Endpoint ID from radio_configuration.endpoints.",
+                },
+                "cluster": {
+                    "type": "string",
+                    "description": "Input cluster name listed for the selected endpoint.",
+                },
+                "attribute": {
+                    "type": ["string", "integer"],
+                    "description": "Zigbee attribute name or numeric ID within the selected cluster.",
+                },
+                "minimum_report_interval": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535,
+                    "description": "Minimum seconds between reports after a qualifying change.",
+                },
+                "maximum_report_interval": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535,
+                    "description": "Maximum seconds between reports; 65535 disables reporting.",
+                },
+                "reportable_change": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Optional raw attribute change threshold; unit depends on the Zigbee attribute type.",
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "Lowercase radio_configuration.content_hash from the latest get_radio_device result.",
+                },
+            },
+            "required": [
+                "device_id",
+                "endpoint",
+                "cluster",
+                "attribute",
+                "minimum_report_interval",
+                "maximum_report_interval",
+                "expected_hash",
+            ],
         },
     },
     {
@@ -3151,6 +3278,8 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "remove_zigbee_device": _annot(False, True, True),
     "set_zigbee_device_options": _annot(False, True, True),
     "set_zigbee_device_property": _annot(False, True, True),
+    "set_zigbee_binding": _annot(False, True, True),
+    "configure_zigbee_reporting": _annot(False, True, True),
     # Native HA MCP tools.
     "GetLiveContext": _annot(True, False, True),
     "GetDateTime": _annot(True, False, True),

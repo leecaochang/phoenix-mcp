@@ -105,11 +105,14 @@ from .tools.integration_reconfigure import (
     async_run_reconfigure_flow,
 )
 from .tools.radio import (
+    _execute_configure_zigbee_reporting,
     _execute_permit_zigbee_join,
     _execute_reconfigure_zigbee_device,
     _execute_remove_zigbee_device,
     _execute_set_zigbee_device_options,
     _execute_set_zigbee_device_property,
+    _execute_set_zigbee_binding,
+    _tool_configure_zigbee_reporting,
     _tool_get_radio_device,
     _tool_get_radio_network,
     _tool_permit_zigbee_join,
@@ -117,6 +120,7 @@ from .tools.radio import (
     _tool_remove_zigbee_device,
     _tool_set_zigbee_device_options,
     _tool_set_zigbee_device_property,
+    _tool_set_zigbee_binding,
 )
 from .tools.energy import (
     _execute_edit_energy_config,
@@ -8863,6 +8867,8 @@ _register_executor("reconfigure_zigbee_device", _execute_reconfigure_zigbee_devi
 _register_executor("remove_zigbee_device", _execute_remove_zigbee_device)
 _register_executor("set_zigbee_device_options", _execute_set_zigbee_device_options)
 _register_executor("set_zigbee_device_property", _execute_set_zigbee_device_property)
+_register_executor("set_zigbee_binding", _execute_set_zigbee_binding)
+_register_executor("configure_zigbee_reporting", _execute_configure_zigbee_reporting)
 _register_executor("HassSetPosition", _execute_hass_set_position)
 _register_executor("HassStopMoving", _execute_hass_stop_moving)
 _register_executor("HassTurnOn", _execute_hass_turn_on)
@@ -8945,6 +8951,8 @@ _register_tool("reconfigure_zigbee_device", _tool_reconfigure_zigbee_device)
 _register_tool("remove_zigbee_device", _tool_remove_zigbee_device)
 _register_tool("set_zigbee_device_options", _tool_set_zigbee_device_options)
 _register_tool("set_zigbee_device_property", _tool_set_zigbee_device_property)
+_register_tool("set_zigbee_binding", _tool_set_zigbee_binding)
+_register_tool("configure_zigbee_reporting", _tool_configure_zigbee_reporting)
 _register_tool("create_script", _tool_create_script)
 _register_tool("edit_script", _tool_edit_script)
 _register_tool("delete_script", _tool_delete_script)

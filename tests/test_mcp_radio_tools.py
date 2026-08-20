@@ -1,6 +1,6 @@
 """Tests for the radio management tools (get_radio_network, get_radio_device,
-permit_zigbee_join, reconfigure_zigbee_device, set_zigbee_device_options,
-remove_zigbee_device).
+permit_zigbee_join, reconfigure_zigbee_device, set_zigbee_binding,
+configure_zigbee_reporting, set_zigbee_device_options, and remove_zigbee_device).
 
 The Z2M backend is exercised against a fake MQTT broker monkeypatched over
 radio.py's two seams (_mqtt_subscribe/_mqtt_publish), so no paho client is
@@ -37,6 +37,7 @@ from custom_components.phoenix_mcp.token_store import PermissionNode, Permission
 Z2M_BULB_IEEE = "0x00158d0001112222"
 Z2M_LOCK_IEEE = "0x00158d0009998888"
 ZHA_BULB_IEEE = "00:11:22:33:44:55:66:77"
+ZHA_TARGET_IEEE = "00:11:22:33:44:55:66:88"
 
 BRIDGE_INFO = {
     "version": "2.12.1",
@@ -163,6 +164,17 @@ def broker(monkeypatch) -> FakeBroker:
             "interview_state": "SUCCESSFUL",
             "power_source": "Mains (single phase)",
             "software_build_id": "1.0",
+            "endpoints": {
+                "1": {
+                    "name": "default",
+                    "bindings": [],
+                    "configured_reportings": [],
+                    "clusters": {
+                        "input": ["genOnOff", "genLevelCtrl"],
+                        "output": ["genOnOff", "genLevelCtrl"],
+                    },
+                }
+            },
             "definition": {
                 "model": "B1",
                 "vendor": "Acme",
@@ -204,6 +216,16 @@ def broker(monkeypatch) -> FakeBroker:
             "ieee_address": Z2M_LOCK_IEEE,
             "friendly_name": "Z2M Lock",
             "type": "EndDevice",
+            "endpoints": {
+                "1": {
+                    "bindings": [],
+                    "configured_reportings": [],
+                    "clusters": {
+                        "input": ["genOnOff"],
+                        "output": [],
+                    },
+                }
+            },
             "definition": {"model": "L1", "vendor": "Acme", "description": "Lock"},
         },
     ])
@@ -215,6 +237,68 @@ def broker(monkeypatch) -> FakeBroker:
     fake.responders["permit_join"] = lambda req: {"status": "ok", "data": {"time": req.get("time")}}
     fake.responders["device/configure"] = lambda req: {"status": "ok", "data": {"id": req.get("id")}}
     fake.responders["device/remove"] = lambda req: {"status": "ok", "data": {"id": req.get("id")}}
+
+    def _binding(req, operation):
+        devices = json.loads(fake.retained["zigbee2mqtt/bridge/devices"])
+        source = next(item for item in devices if item["ieee_address"] == req["from"])
+        endpoint = source["endpoints"][str(req["from_endpoint"])]
+        for cluster in req["clusters"]:
+            binding = {
+                "cluster": cluster,
+                "target": {
+                    "type": "endpoint",
+                    "ieee_address": req["to"],
+                    "endpoint": req["to_endpoint"],
+                },
+            }
+            if operation == "bind":
+                endpoint["bindings"].append(binding)
+            else:
+                endpoint["bindings"].remove(binding)
+        fake.retained["zigbee2mqtt/bridge/devices"] = json.dumps(devices)
+        return {
+            "status": "ok",
+            "data": {
+                "from": req["from"],
+                "from_endpoint": req["from_endpoint"],
+                "to": req["to"],
+                "to_endpoint": req["to_endpoint"],
+                "clusters": req["clusters"],
+                "failed": [],
+            },
+        }
+
+    fake.responders["device/bind"] = lambda req: _binding(req, "bind")
+    fake.responders["device/unbind"] = lambda req: _binding(req, "unbind")
+
+    def _reporting(req):
+        devices = json.loads(fake.retained["zigbee2mqtt/bridge/devices"])
+        device = next(item for item in devices if item["ieee_address"] == req["id"])
+        endpoint = device["endpoints"][str(req["endpoint"])]
+        desired = {
+            key: req[key]
+            for key in (
+                "cluster",
+                "attribute",
+                "minimum_report_interval",
+                "maximum_report_interval",
+                "reportable_change",
+            )
+            if key in req
+        }
+        endpoint["configured_reportings"] = [
+            item
+            for item in endpoint["configured_reportings"]
+            if not (
+                item["cluster"] == req["cluster"]
+                and item["attribute"] == req["attribute"]
+            )
+        ]
+        endpoint["configured_reportings"].append(desired)
+        fake.retained["zigbee2mqtt/bridge/devices"] = json.dumps(devices)
+        return {"status": "ok", "data": {"id": req["id"], **desired, "endpoint": req["endpoint"]}}
+
+    fake.responders["device/reporting/configure"] = _reporting
 
     def _device_options(req):
         info = json.loads(fake.retained["zigbee2mqtt/bridge/info"])
@@ -251,16 +335,25 @@ def radio_env(hass: HomeAssistant):
     dev_reg = dr.async_get(hass)
     ent_reg = er.async_get(hass)
 
-    def _device(identifiers, name):
+    def _device(identifiers, name, *, via_device_id=None):
         return dev_reg.async_get_or_create(
             config_entry_id=entry.entry_id, identifiers=identifiers, name=name,
-            manufacturer="Acme", model="M1",
+            manufacturer="Acme", model="M1", via_device_id=via_device_id,
         )
 
-    z2m_bulb = _device({("mqtt", f"zigbee2mqtt_{Z2M_BULB_IEEE}")}, "Z2M Bulb")
-    z2m_lock = _device({("mqtt", f"zigbee2mqtt_{Z2M_LOCK_IEEE}")}, "Z2M Lock")
-    zha_bulb = _device({("zha", ZHA_BULB_IEEE)}, "ZHA Bulb")
     bridge = _device({("mqtt", "zigbee2mqtt_bridge_0x00124b002e1e03c7")}, "Z2M Bridge")
+    z2m_bulb = _device(
+        {("mqtt", f"zigbee2mqtt_{Z2M_BULB_IEEE}")},
+        "Z2M Bulb",
+        via_device_id=bridge.id,
+    )
+    z2m_lock = _device(
+        {("mqtt", f"zigbee2mqtt_{Z2M_LOCK_IEEE}")},
+        "Z2M Lock",
+        via_device_id=bridge.id,
+    )
+    zha_bulb = _device({("zha", ZHA_BULB_IEEE)}, "ZHA Bulb")
+    zha_target = _device({("zha", ZHA_TARGET_IEEE)}, "ZHA Target")
     plain = _device({("mqtt", "some_other_thing")}, "Plain Device")
 
     def _entity(domain, uid, device, object_id):
@@ -278,6 +371,8 @@ def radio_env(hass: HomeAssistant):
         "z2m_lock_eid": _entity("lock", "u2", z2m_lock, "z2m_lock"),
         "zha_bulb": zha_bulb.id,
         "zha_bulb_eid": _entity("light", "u3", zha_bulb, "zha_bulb"),
+        "zha_target": zha_target.id,
+        "zha_target_eid": _entity("light", "u6", zha_target, "zha_target"),
         "bridge": bridge.id,
         "bridge_eid": _entity("light", "u4", bridge, "bridge_glow"),
         "plain": plain.id,
@@ -318,6 +413,16 @@ def _light_token(**caps) -> TokenRecord:
 
 def _read_only_light_token(**caps) -> TokenRecord:
     tree = PermissionTree(domains={"light": PermissionNode(state="YELLOW")})
+    return _token(tree=tree, **caps)
+
+
+def _z2m_pair_token(*, lock_state: str = "GREEN", **caps) -> TokenRecord:
+    tree = PermissionTree(
+        domains={
+            "light": PermissionNode(state="GREEN"),
+            "lock": PermissionNode(state=lock_state),
+        }
+    )
     return _token(tree=tree, **caps)
 
 
@@ -473,6 +578,72 @@ class TestGetRadioDevice:
         text = _text(res)
         for secret in ("network_key", "core-mosquitto", "hunter2", "config_schema"):
             assert secret not in text
+
+    async def test_z2m_binding_targets_are_scope_projected(
+        self, hass, radio_env, broker
+    ):
+        devices = json.loads(broker.retained["zigbee2mqtt/bridge/devices"])
+        source = next(item for item in devices if item["ieee_address"] == Z2M_BULB_IEEE)
+        source["endpoints"]["1"]["bindings"] = [
+            {
+                "cluster": "genOnOff",
+                "target": {
+                    "type": "endpoint",
+                    "ieee_address": Z2M_LOCK_IEEE,
+                    "endpoint": 1,
+                },
+            },
+            {
+                "cluster": "genLevelCtrl",
+                "target": {"type": "group", "id": 42},
+            },
+            {
+                "cluster": "genOnOff",
+                "target": {
+                    "type": "endpoint",
+                    "ieee_address": BRIDGE_INFO["coordinator"]["ieee_address"],
+                    "endpoint": 1,
+                },
+            },
+        ]
+        broker.retained["zigbee2mqtt/bridge/devices"] = json.dumps(devices)
+        hass.config.components.add("mqtt")
+
+        hidden = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"]},
+            _light_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        hidden_config = _body(hidden)["radio_configuration"]
+        targets = [
+            binding["target"]
+            for binding in hidden_config["endpoints"][0]["bindings"]
+        ]
+        assert {target["kind"] for target in targets} == {
+            "coordinator",
+            "group",
+            "redacted_device",
+        }
+        assert all("ieee_address" not in target for target in targets)
+        assert all("id" not in target for target in targets)
+
+        visible = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"]},
+            _z2m_pair_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        visible_targets = [
+            binding["target"]
+            for binding in _body(visible)["radio_configuration"]["endpoints"][0]["bindings"]
+        ]
+        assert any(
+            target.get("device_id") == radio_env["z2m_lock"]
+            for target in visible_targets
+        )
 
     def test_z2m_exposes_are_bounded_and_allowlisted(self):
         entry = {
@@ -1379,6 +1550,442 @@ class TestSetZigbeeDeviceProperty:
         )
         assert output[1] == "denied"
         assert broker.published == []
+
+
+class TestSetZigbeeBinding:
+    async def _configuration(self, hass, device_id, token) -> dict:
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": device_id},
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "allowed"
+        configuration = _body(result)["radio_configuration"]
+        assert configuration["status"] == "available"
+        return configuration
+
+    async def _args(self, hass, radio_env, token, operation="bind") -> dict:
+        source = await self._configuration(
+            hass, radio_env["z2m_bulb"], token
+        )
+        target = await self._configuration(
+            hass, radio_env["z2m_lock"], token
+        )
+        return {
+            "operation": operation,
+            "source_device_id": radio_env["z2m_bulb"],
+            "target_device_id": radio_env["z2m_lock"],
+            "source_endpoint": 1,
+            "target_endpoint": 1,
+            "clusters": ["genOnOff"],
+            "expected_source_hash": source["content_hash"],
+            "expected_target_hash": target["content_hash"],
+        }
+
+    @pytest.mark.parametrize(
+        ("radio_cap", "physical_cap"),
+        [("deny", "allow"), ("allow", "deny")],
+    )
+    async def test_either_capability_deny_is_not_an_oracle(
+        self, hass, radio_env, broker, radio_cap, physical_cap
+    ):
+        token = _z2m_pair_token(
+            cap_radio_write=radio_cap,
+            cap_physical_control=physical_cap,
+        )
+        bodies = set()
+        for source, target in (
+            ("ghost", radio_env["z2m_lock"]),
+            (radio_env["z2m_bulb"], "ghost"),
+            (radio_env["z2m_bulb"], radio_env["z2m_lock"]),
+        ):
+            result = await _call_tool(
+                "set_zigbee_binding",
+                {
+                    "operation": "bind",
+                    "source_device_id": source,
+                    "target_device_id": target,
+                },
+                token,
+                hass,
+                _data(),
+            )
+            assert result[1] == "denied"
+            bodies.add(json.dumps(result[0]))
+        assert len(bodies) == 1
+        assert broker.published == []
+
+    async def test_both_devices_require_write_scope(
+        self, hass, radio_env, broker
+    ):
+        token = _z2m_pair_token(
+            lock_state="YELLOW",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        result = await _call_tool(
+            "set_zigbee_binding",
+            {
+                "operation": "bind",
+                "source_device_id": radio_env["z2m_bulb"],
+                "target_device_id": radio_env["z2m_lock"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "denied"
+        assert "write access" in _text(result)
+        assert broker.published == []
+
+    async def test_z2m_devices_on_different_bridges_are_rejected(
+        self, hass, radio_env, broker
+    ):
+        registry = dr.async_get(hass)
+        other_bridge = registry.async_get_or_create(
+            config_entry_id="e_radio",
+            identifiers={("mqtt", "zigbee2mqtt_bridge_0x00124b002e1e03d8")},
+            name="Other Z2M Bridge",
+        )
+        registry.async_update_device(
+            radio_env["z2m_lock"], via_device_id=other_bridge.id
+        )
+        token = _z2m_pair_token(
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        result = await _call_tool(
+            "set_zigbee_binding",
+            {
+                "operation": "bind",
+                "source_device_id": radio_env["z2m_bulb"],
+                "target_device_id": radio_env["z2m_lock"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "same Zigbee network" in _text(result)
+        assert broker.published == []
+
+    async def test_z2m_bind_and_unbind_exact_relationship(
+        self, hass, radio_env, broker
+    ):
+        token = _z2m_pair_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        data = _data()
+        bind_args = await self._args(hass, radio_env, token)
+        result = await _call_tool(
+            "set_zigbee_binding", bind_args, token, hass, data
+        )
+        assert result[1] == "allowed"
+        body = _body(result)
+        assert body["confirmation"] == "retained_binding_state"
+        assert body["source_content_hash"] != bind_args["expected_source_hash"]
+        topic, request = broker.published[-1]
+        assert topic == "zigbee2mqtt/bridge/request/device/bind"
+        assert request["from"] == Z2M_BULB_IEEE
+        assert request["to"] == Z2M_LOCK_IEEE
+        assert request["from_endpoint"] == request["to_endpoint"] == 1
+        assert request["clusters"] == ["genOnOff"]
+        assert request["skip_disable_reporting"] is True
+
+        unbind_args = await self._args(hass, radio_env, token, "unbind")
+        unbound = await _call_tool(
+            "set_zigbee_binding", unbind_args, token, hass, data
+        )
+        assert unbound[1] == "allowed"
+        assert _body(unbound)["confirmation"] == "retained_binding_state"
+        topic, request = broker.published[-1]
+        assert topic == "zigbee2mqtt/bridge/request/device/unbind"
+        assert request["skip_disable_reporting"] is True
+        records = data.versions.list_for("device", radio_env["z2m_bulb"])
+        assert len(records) == 2
+        assert records[0].before["restorable"] is False
+        assert records[0].before["snapshot_type"] == "zigbee_binding"
+        assert Z2M_BULB_IEEE not in json.dumps(records[0].before)
+        assert Z2M_LOCK_IEEE not in json.dumps(records[0].before)
+
+    async def test_incompatible_cluster_and_stale_hash_never_publish(
+        self, hass, radio_env, broker
+    ):
+        token = _z2m_pair_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        args = await self._args(hass, radio_env, token)
+        broker.published.clear()
+        incompatible = await _call_tool(
+            "set_zigbee_binding",
+            {**args, "clusters": ["genLevelCtrl"]},
+            token,
+            hass,
+            _data(),
+        )
+        assert incompatible[1] == "invalid_request"
+        assert "not source-output/target-input compatible" in _text(incompatible)
+        stale = await _call_tool(
+            "set_zigbee_binding",
+            {**args, "expected_target_hash": "0" * 64},
+            token,
+            hass,
+            _data(),
+        )
+        assert stale[1] == "invalid_request"
+        assert "changed after it was read" in _text(stale)
+        assert broker.published == []
+
+    async def test_malformed_cluster_response_fails_closed(
+        self, hass, radio_env, broker
+    ):
+        token = _z2m_pair_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        args = await self._args(hass, radio_env, token)
+        broker.responders["device/bind"] = lambda req: {
+            "status": "ok",
+            "data": {"clusters": [{"name": "genOnOff"}], "failed": []},
+        }
+        result = await _call_tool(
+            "set_zigbee_binding", args, token, hass, _data()
+        )
+        assert result[1] == "invalid_request"
+        assert "did not confirm every requested cluster" in _text(result)
+
+    async def test_confirm_queues_once_and_revalidates_both_caps(
+        self, hass, radio_env, broker
+    ):
+        data, store = _appr_data()
+        token = _z2m_pair_token(
+            cap_diagnostics="allow",
+            cap_radio_write="confirm",
+            cap_physical_control="confirm",
+        )
+        args = await self._args(hass, radio_env, token)
+        broker.published.clear()
+        result = await _call_tool(
+            "set_zigbee_binding",
+            args,
+            token,
+            hass,
+            data,
+            "rid-binding",
+            "1.2.3.4",
+        )
+        assert result[1] == "pending_approval"
+        assert len(store._p) == 1
+        assert store._p[0]["tool_name"] == "set_zigbee_binding"
+        assert broker.published == []
+        token.cap_physical_control = "deny"
+        output = await async_execute_approved_tool(
+            "set_zigbee_binding", store._p[0]["args"], token, hass, data
+        )
+        assert output[1] == "denied"
+        assert broker.published == []
+
+    async def test_zha_uses_registry_derived_addresses_and_rejects_z2m_fields(
+        self, hass, radio_env, broker, monkeypatch
+    ):
+        dispatch = AsyncMock(return_value=None)
+        monkeypatch.setattr(radio, "async_ws_command", dispatch)
+        token = _light_token(
+            cap_radio_write="allow", cap_physical_control="allow"
+        )
+        args = {
+            "operation": "bind",
+            "source_device_id": radio_env["zha_bulb"],
+            "target_device_id": radio_env["zha_target"],
+        }
+        result = await _call_tool(
+            "set_zigbee_binding", args, token, hass, _data()
+        )
+        assert result[1] == "allowed"
+        dispatch.assert_awaited_once_with(
+            hass,
+            "zha/devices/bind",
+            {"source_ieee": ZHA_BULB_IEEE, "target_ieee": ZHA_TARGET_IEEE},
+            timeout=radio.Z2M_REQUEST_TIMEOUT_SECONDS,
+        )
+        dispatch.reset_mock()
+        rejected = await _call_tool(
+            "set_zigbee_binding",
+            {**args, "clusters": ["genOnOff"]},
+            token,
+            hass,
+            _data(),
+        )
+        assert rejected[1] == "invalid_request"
+        assert "omit endpoints, clusters, and hashes" in _text(rejected)
+        dispatch.assert_not_awaited()
+
+        self_binding = await _call_tool(
+            "set_zigbee_binding",
+            {**args, "target_device_id": radio_env["zha_bulb"]},
+            token,
+            hass,
+            _data(),
+        )
+        assert self_binding[1] == "invalid_request"
+        assert "must be different" in _text(self_binding)
+
+
+class TestConfigureZigbeeReporting:
+    async def _current(self, hass, radio_env, token) -> dict:
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"]},
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "allowed"
+        return _body(result)["radio_configuration"]
+
+    async def _args(self, hass, radio_env, token) -> dict:
+        current = await self._current(hass, radio_env, token)
+        return {
+            "device_id": radio_env["z2m_bulb"],
+            "endpoint": 1,
+            "cluster": "genLevelCtrl",
+            "attribute": "currentLevel",
+            "minimum_report_interval": 5,
+            "maximum_report_interval": 60,
+            "reportable_change": 10,
+            "expected_hash": current["content_hash"],
+        }
+
+    async def test_cap_deny_not_an_oracle(self, hass, radio_env, broker):
+        token = _light_token(cap_radio_write="deny")
+        bodies = set()
+        for device_id in ("ghost", radio_env["z2m_bulb"]):
+            result = await _call_tool(
+                "configure_zigbee_reporting",
+                {
+                    "device_id": device_id,
+                    "endpoint": 1,
+                    "cluster": "genLevelCtrl",
+                    "attribute": "currentLevel",
+                    "minimum_report_interval": 5,
+                    "maximum_report_interval": 60,
+                    "expected_hash": "0" * 64,
+                },
+                token,
+                hass,
+                _data(),
+            )
+            assert result[1] == "denied"
+            bodies.add(json.dumps(result[0]))
+        assert len(bodies) == 1
+        assert broker.published == []
+
+    async def test_configures_and_exactly_confirms_reporting(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow", cap_radio_write="allow"
+        )
+        args = await self._args(hass, radio_env, token)
+        data = _data()
+        result = await _call_tool(
+            "configure_zigbee_reporting", args, token, hass, data
+        )
+        assert result[1] == "allowed"
+        body = _body(result)
+        assert body["confirmation"] == "retained_reporting_state"
+        assert body["reporting"]["attribute"] == "currentLevel"
+        assert body["content_hash"] != args["expected_hash"]
+        topic, request = broker.published[-1]
+        assert topic == "zigbee2mqtt/bridge/request/device/reporting/configure"
+        assert request["id"] == Z2M_BULB_IEEE
+        assert request["endpoint"] == 1
+        assert "options" not in request and "topic" not in request
+        record = data.versions.list_for("device", radio_env["z2m_bulb"])[0]
+        assert record.before["snapshot_type"] == "zigbee_reporting"
+        assert record.before["restorable"] is False
+        assert Z2M_BULB_IEEE not in json.dumps(record.before)
+        assert Z2M_BULB_IEEE not in json.dumps(record.after)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"cluster": "genScenes"},
+            {"endpoint": 2},
+            {"minimum_report_interval": -1},
+            {"maximum_report_interval": 65536},
+            {"reportable_change": -1},
+        ],
+    )
+    async def test_invalid_endpoint_cluster_or_interval_never_publish(
+        self, hass, radio_env, broker, change
+    ):
+        token = _light_token(
+            cap_diagnostics="allow", cap_radio_write="allow"
+        )
+        args = await self._args(hass, radio_env, token)
+        broker.published.clear()
+        result = await _call_tool(
+            "configure_zigbee_reporting",
+            {**args, **change},
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert broker.published == []
+
+    async def test_zha_and_stale_hash_fail_before_publish(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow", cap_radio_write="allow"
+        )
+        args = await self._args(hass, radio_env, token)
+        broker.published.clear()
+        stale = await _call_tool(
+            "configure_zigbee_reporting",
+            {**args, "expected_hash": "0" * 64},
+            token,
+            hass,
+            _data(),
+        )
+        assert stale[1] == "invalid_request"
+        zha = await _call_tool(
+            "configure_zigbee_reporting",
+            {**args, "device_id": radio_env["zha_bulb"]},
+            token,
+            hass,
+            _data(),
+        )
+        assert zha[1] == "invalid_request"
+        assert "only for Zigbee2MQTT" in _text(zha)
+        assert broker.published == []
+
+    async def test_mismatched_response_fails_closed(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow", cap_radio_write="allow"
+        )
+        args = await self._args(hass, radio_env, token)
+        broker.published.clear()
+        broker.responders["device/reporting/configure"] = lambda req: {
+            "status": "ok",
+            "data": {**req, "maximum_report_interval": 61},
+        }
+        result = await _call_tool(
+            "configure_zigbee_reporting", args, token, hass, _data()
+        )
+        assert result[1] == "invalid_request"
+        assert "mismatched reporting confirmation" in _text(result)
 
 
 class TestRemoveZigbeeDevice:
