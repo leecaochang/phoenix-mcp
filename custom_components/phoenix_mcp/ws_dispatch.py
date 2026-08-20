@@ -46,7 +46,8 @@ DEFAULT_TIMEOUT = 10.0
 # process-wide ZHA debug logging and/or park cleanup callbacks in
 # connection.subscriptions, which a synthetic capturing connection never
 # releases, and reconfigure/topology never call send_result (guaranteed
-# timeout). Permit and remove go through the zha.permit / zha.remove admin
+# timeout). The scoped topology tool therefore awaits zigpy's scanner directly
+# in radio.py. Permit and remove go through the zha.permit / zha.remove admin
 # services instead; reconfigure goes through async_zha_reconfigure_device below.
 # zha/devices/bind, zha/devices/unbind, and the group CRUD commands are the
 # narrow exceptions: they await ZHA's own operation and then call send_result

@@ -53,6 +53,7 @@ from ..tool_common import (
     _mesa_confirm_annotation,
     _pending_or_inline,
     _record_version,
+    _set_progress_status,
     _tool_error,
     _tool_success,
     _truncate,
@@ -173,6 +174,14 @@ class _ResolvedZigbeeGroupChange:
 class _ResolvedGroupMembers:
     devices: tuple[_ResolvedRadioDevice, ...]
     endpoints: tuple[int, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedTopologyScan:
+    """One backend scan with the caller's current registry-scoped IEEE map."""
+
+    backend: str
+    visible_map: dict[str, str]
 
 
 def _z2m_root_property_groups(entry: dict[str, Any]) -> dict[str, list[set[str]]]:
@@ -1324,6 +1333,44 @@ class _ResolvedPermitJoin:
     router_label: str | None = None
 
 
+def _resolve_topology_scan(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedTopologyScan | tuple[dict, str, str]:
+    """Validate the backend and capture only devices visible to this token."""
+    tool = "scan_zigbee_topology"
+    backend = args.get("backend")
+    if backend is not None and backend not in radio_backend.ZIGBEE_BACKENDS:
+        return _tool_error("backend must be one of: z2m, zha."), "invalid_request", tool
+    present = radio_backend.present_zigbee_backends(hass)
+    if backend is None:
+        if not present:
+            return _tool_error("No Zigbee network is available."), "invalid_request", tool
+        if len(present) > 1:
+            return (
+                _tool_error("Both Zigbee backends are present; pass backend: z2m or zha."),
+                "invalid_request",
+                tool,
+            )
+        backend = present[0]
+    elif backend not in present:
+        return _tool_error("That Zigbee backend is not available."), "invalid_request", tool
+
+    accessible = _accessible_entity_ids(token, hass)
+    scoped = _scoped_zigbee_device_map(hass, accessible)
+    visible_map = {
+        ieee: device_id
+        for (candidate_backend, ieee), device_id in scoped.items()
+        if candidate_backend == backend
+    }
+    if not visible_map:
+        return (
+            _tool_error("No Zigbee devices on that backend are accessible to this token."),
+            "invalid_request",
+            tool,
+        )
+    return _ResolvedTopologyScan(backend=backend, visible_map=visible_map)
+
+
 def _resolve_permit_join(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> _ResolvedPermitJoin | tuple[dict, str, str]:
@@ -1390,6 +1437,37 @@ async def _build_diff_permit_zigbee_join(
         **fields,
         "target": {"type": "system", "id": f"zigbee:{backend}", "label": "Zigbee network"},
         "preview": preview,
+    }
+
+
+async def _build_diff_scan_zigbee_topology(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> dict:
+    """Approval preview for the active mesh scan."""
+    resolved = _resolve_topology_scan(args, token, hass)
+    if isinstance(resolved, tuple):
+        return {
+            "kind": "system_action",
+            **_summary("zigbee_topology"),
+            "preview": {},
+        }
+    return {
+        "kind": "system_action",
+        **_summary("zigbee_topology.backend", backend=resolved.backend),
+        "target": {
+            "type": "system",
+            "id": f"zigbee:{resolved.backend}",
+            "label": "Zigbee network",
+        },
+        "preview": {
+            "backend": resolved.backend,
+            "visible_device_count": len(resolved.visible_map),
+            "routes": False,
+            "warning": (
+                "This actively queries Zigbee routers. The mesh may be less responsive "
+                "while the scan runs, normally 10 seconds to 2 minutes."
+            ),
+        },
     }
 
 
@@ -1827,6 +1905,94 @@ async def _tool_get_zigbee_groups(
         _tool_success(json.dumps(body, default=str)),
         "allowed",
         "get_zigbee_groups",
+    )
+
+
+async def _tool_scan_zigbee_topology(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: run one approval-eligible active Zigbee mesh scan."""
+    caps = ("cap_diagnostics", "cap_radio_write")
+    if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "scan_zigbee_topology"
+    resolved = _resolve_topology_scan(args, token, hass)
+    if isinstance(resolved, tuple):
+        return resolved
+    diff = await _build_diff_scan_zigbee_topology(args, token, hass)
+    if not _approved_exec_ctx.get():
+        for cap in caps:
+            if effective_cap(token, cap) != CAP_CONFIRM:
+                continue
+            blocked = await _gate(
+                cap,
+                token,
+                hass,
+                data,
+                tool_name="scan_zigbee_topology",
+                args=args,
+                request_id=request_id,
+                client_ip=client_ip,
+                diff=diff,
+            )
+            if blocked is not None:
+                return blocked
+    return await _execute_scan_zigbee_topology(args, token, hass, data)
+
+
+async def _execute_scan_zigbee_topology(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    """Re-resolve scope, scan, and project without returning radio addresses."""
+    del data
+    caps = ("cap_diagnostics", "cap_radio_write")
+    if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "scan_zigbee_topology"
+    resolved = _resolve_topology_scan(args, token, hass)
+    if isinstance(resolved, tuple):
+        return resolved
+    _set_progress_status(
+        "Scanning Zigbee neighbor tables; the mesh may be less responsive."
+    )
+    try:
+        raw = await radio_backend.async_scan_zigbee_topology(
+            hass, resolved.backend, set(resolved.visible_map)
+        )
+        topology = radio_backend.project_zigbee_topology(
+            resolved.backend, raw, resolved.visible_map
+        )
+    except RadioError as exc:
+        _LOGGER.error("%s topology scan failed: %s", resolved.backend, exc)
+        return (
+            _tool_error(f"The {resolved.backend} topology scan failed."),
+            "invalid_request",
+            f"zigbee:{resolved.backend}",
+        )
+    except TimeoutError:
+        return (
+            _tool_error(
+                "The topology scan exceeded 125 seconds. Do not retry immediately; "
+                "Zigbee2MQTT may still be finishing the network scan."
+            ),
+            "invalid_request",
+            f"zigbee:{resolved.backend}",
+        )
+    body = {
+        "success": True,
+        **topology,
+        "scope": "accessible_registry_devices",
+        "message": (
+            "Topology scan complete. Routes and links involving inaccessible devices were omitted."
+        ),
+    }
+    return (
+        _tool_success(json.dumps(body, default=str)),
+        "allowed",
+        f"zigbee:{resolved.backend}",
     )
 
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 134 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 135 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 134 of its own, 157 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 135 of its own, 158 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 157 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 158 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -407,6 +407,13 @@
             <p class="tool-desc">Manage the Zigbee network. Open or close the pairing window, re-interview a device, or remove one through Zigbee2MQTT or ZHA. <code>set_zigbee_binding</code> binds or unbinds two scoped devices on the same network and additionally requires Physical control plus inherited MESA approval. ZHA selects every compatible binding internally. Zigbee2MQTT requires explicit endpoints, compatible clusters, and the latest configuration hashes; unbinding preserves existing reporting configuration. The three group tools create a non-empty group, add or remove exact members, or remove a fully scoped group. They address groups and members only through Home Assistant registry IDs, require the latest group hash for changes to an existing group, and additionally require Physical control plus inherited MESA approval across every affected member.</p>
             <p class="tool-desc">For Zigbee2MQTT, <code>configure_zigbee_reporting</code> changes one input-cluster attribute reporting rule using the latest configuration hash. <code>set_zigbee_device_options</code> changes only converter-declared options using the hash from <code>get_radio_device</code>; every value is checked against its converter definition and a required restart is reported without being performed. <code>set_zigbee_device_property</code> changes one direct-fallback property with exact state confirmation and additionally requires Physical control plus inherited MESA approval. Device-scoped writes need write access to at least one of the device's entities, and the coordinator can never be targeted.</p>
             <dl><dt>params</dt><dd><code>permit_zigbee_join</code>: <code>duration</code> (0-254, default 60), optional <code>device_id</code> (router) and <code>backend</code>; <code>set_zigbee_binding</code>: <code>operation</code>, <code>source_device_id</code>, <code>target_device_id</code>, plus Zigbee2MQTT <code>source_endpoint</code>, <code>target_endpoint</code>, <code>clusters</code>, <code>expected_source_hash</code>, and <code>expected_target_hash</code>; <code>configure_zigbee_reporting</code>: <code>device_id</code>, <code>endpoint</code>, <code>cluster</code>, <code>attribute</code>, <code>minimum_report_interval</code>, <code>maximum_report_interval</code>, optional <code>reportable_change</code>, and <code>expected_hash</code>; <code>set_zigbee_device_options</code>: <code>device_id</code>, partial <code>options</code>, and <code>expected_hash</code>; <code>set_zigbee_device_property</code>: <code>device_id</code>, <code>property</code>, <code>value</code>, and <code>expected_hash</code> from the latest property read; <code>create_zigbee_group</code>: <code>name</code> and non-empty <code>members</code> (<code>device_id</code>, <code>endpoint</code>); <code>set_zigbee_group_members</code>: <code>group_entity_id</code>, add/remove <code>operation</code>, <code>members</code>, and <code>expected_hash</code>; <code>remove_zigbee_group</code>: <code>group_entity_id</code> and <code>expected_hash</code>; reconfigure/remove device: <code>device_id</code></dd></dl>
+          </article>
+
+          <article class="tool" data-cap="system diagnostics" data-search="scan_zigbee_topology zigbee mesh network map neighbors lqi routes z2m zha zigbee2mqtt">
+            <div class="tool-head"><span class="tool-name">scan_zigbee_topology</span><span class="badge badge-cap">Diagnostics + Radio management</span></div>
+            <p class="tool-desc">Actively query one ZHA or Zigbee2MQTT mesh and return its registry-scoped neighbor map. Nodes are accessible Home Assistant device IDs plus one opaque coordinator; links include direction, LQI, and an allowlisted relationship. IEEE and network addresses, friendly names, raw group IDs, routes, inaccessible nodes, and hidden-node counts never appear. <code>partial</code> reports only that some topology was omitted, without revealing how much.</p>
+            <p class="tool-desc">The scan may make the mesh less responsive for roughly 10 seconds to 2 minutes, so it requires both Diagnostics and Radio management and is Confirm-eligible. ZHA queries only visible routers. Zigbee2MQTT's backend request necessarily scans the whole mesh, but Phoenix scopes the response before returning it and explicitly disables route-table output.</p>
+            <dl><dt>params</dt><dd>optional <code>backend</code> (<code>z2m</code> or <code>zha</code>); required when both are present</dd></dl>
           </article>
 
           <article class="tool" data-cap="system" data-search="restart_ha restart home assistant">

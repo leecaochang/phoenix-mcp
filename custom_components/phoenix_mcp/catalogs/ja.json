@@ -213,7 +213,7 @@
       },
       "cap_radio_write": {
         "label": "無線デバイスの管理",
-        "description": "Zigbee2MQTT または ZHA を通じて Zigbee デバイスのペアリング、再インタビュー、削除を行います。"
+        "description": "Zigbee2MQTT または ZHA を通じてトポロジーをスキャンし、Zigbee デバイスを管理します。"
       },
       "cap_energy_write": {
         "label": "エネルギーダッシュボードの管理",
@@ -1208,7 +1208,9 @@
       "zigbee_property": "Zigbee2MQTT 公開プロパティを変更",
       "zigbee_property.device": "{label} の Zigbee2MQTT プロパティ {property} を変更",
       "zigbee_reporting": "Zigbee 属性レポートを設定",
-      "zigbee_reporting.device": "{label} の {cluster}.{attribute} レポートを設定"
+      "zigbee_reporting.device": "{label} の {cluster}.{attribute} レポートを設定",
+      "zigbee_topology": "Zigbee トポロジーをスキャン",
+      "zigbee_topology.backend": "{backend} の近隣テーブルをスキャンしてスコープ内の Zigbee マップを生成"
     },
     "settings": {
       "addProviderFirst": "先に Agent Chat でプロバイダーアカウントを追加してください。",
@@ -1883,7 +1885,11 @@
       "zigbee_reporting.body": "Zigbee デバイスが属性をレポートする頻度を変更します。詳細で間隔を確認してください。",
       "zigbee_reporting.device.body": "{label} の {cluster}.{attribute} レポートを変更します。詳細で間隔を確認してください。",
       "zigbee_reporting.device.title": "{label} の {cluster}.{attribute} レポートを設定",
-      "zigbee_reporting.title": "Zigbee 属性レポートを設定"
+      "zigbee_reporting.title": "Zigbee 属性レポートを設定",
+      "zigbee_topology.backend.body": "{backend} 上の Zigbee ルーターへ能動的に問い合わせます。スキャン中はメッシュの応答性が低下する場合があります。",
+      "zigbee_topology.backend.title": "{backend} の近隣テーブルをスキャンしてスコープ内の Zigbee マップを生成",
+      "zigbee_topology.body": "Zigbee ルーターへ能動的に問い合わせます。スキャン中はメッシュの応答性が低下する場合があります。",
+      "zigbee_topology.title": "Zigbee トポロジーをスキャン"
     }
   },
   "notification": {

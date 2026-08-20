@@ -579,6 +579,223 @@ class TestGetRadioNetwork:
         assert "error" in networks[0]
 
 
+class TestScanZigbeeTopology:
+    @staticmethod
+    def _raw_map() -> dict:
+        return {
+            "nodes": [
+                {
+                    "ieeeAddr": BRIDGE_INFO["coordinator"]["ieee_address"],
+                    "friendlyName": "Coordinator secret name",
+                    "type": "Coordinator",
+                    "networkAddress": 0,
+                },
+                {
+                    "ieeeAddr": Z2M_BULB_IEEE,
+                    "friendlyName": "Z2M Bulb",
+                    "type": "Router",
+                    "networkAddress": 4660,
+                    "definition": {"model": "secret model"},
+                },
+                {
+                    "ieeeAddr": Z2M_LOCK_IEEE,
+                    "friendlyName": "Hidden Lock",
+                    "type": "EndDevice",
+                    "networkAddress": 4661,
+                    "failed": ["lqi"],
+                },
+            ],
+            "links": [
+                {
+                    "source": {
+                        "ieeeAddr": BRIDGE_INFO["coordinator"]["ieee_address"],
+                        "networkAddress": 0,
+                    },
+                    "target": {"ieeeAddr": Z2M_BULB_IEEE, "networkAddress": 4660},
+                    "lqi": 211,
+                    "relationship": 1,
+                    "routes": [{"destinationAddress": 4661, "nextHopAddress": 4660}],
+                },
+                {
+                    "source": {"ieeeAddr": Z2M_LOCK_IEEE, "networkAddress": 4661},
+                    "target": {"ieeeAddr": Z2M_BULB_IEEE, "networkAddress": 4660},
+                    "lqi": 87,
+                    "relationship": 2,
+                },
+            ],
+        }
+
+    async def test_denied_capability_is_not_an_oracle(self, hass, radio_env, broker):
+        hass.config.components.add("mqtt")
+        for token in (
+            _light_token(cap_diagnostics="deny", cap_radio_write="allow"),
+            _light_token(cap_diagnostics="allow", cap_radio_write="deny"),
+        ):
+            result = await _call_tool(
+                "scan_zigbee_topology", {"backend": "z2m"}, token, hass, _data()
+            )
+            assert result[1] == "denied"
+            assert broker.published == []
+
+    async def test_confirm_previews_active_scan_without_publishing(
+        self, hass, radio_env, broker
+    ):
+        hass.config.components.add("mqtt")
+        data, store = _appr_data()
+        token = _light_token(cap_diagnostics="allow", cap_radio_write="confirm")
+        result = await _call_tool(
+            "scan_zigbee_topology",
+            {"backend": "z2m"},
+            token,
+            hass,
+            data,
+            "rid-topology",
+            "1.2.3.4",
+        )
+        assert result[1] == "pending_approval"
+        assert broker.published == []
+        approval = store._p[0]
+        assert approval["tool_name"] == "scan_zigbee_topology"
+        assert approval["cap_name"] == "cap_radio_write"
+        assert approval["diff"]["preview"]["routes"] is False
+        assert "less responsive" in approval["diff"]["preview"]["warning"]
+
+    async def test_z2m_scan_is_transaction_correlated_and_scope_projected(
+        self, hass, radio_env, broker
+    ):
+        hass.config.components.add("mqtt")
+        broker.responders["networkmap"] = lambda req: {
+            "status": "ok",
+            "data": {"type": "raw", "routes": False, "value": self._raw_map()},
+        }
+        token = _light_token(cap_diagnostics="allow", cap_radio_write="allow")
+        result = await _call_tool(
+            "scan_zigbee_topology", {"backend": "z2m"}, token, hass, _data()
+        )
+        assert result[1] == "allowed"
+        body = _body(result)
+        assert body["backend"] == "z2m"
+        assert body["nodes"] == [
+            {"node_id": "coordinator", "kind": "coordinator", "type": "coordinator"},
+            {
+                "node_id": radio_env["z2m_bulb"],
+                "kind": "device",
+                "device_id": radio_env["z2m_bulb"],
+                "type": "router",
+            },
+        ]
+        assert body["links"] == [
+            {
+                "source": "coordinator",
+                "target": radio_env["z2m_bulb"],
+                "lqi": 211,
+                "relationship": "child",
+            }
+        ]
+        assert body["partial"] is True
+        assert body["routes_included"] is False
+        topic, request = broker.published[-1]
+        assert topic == "zigbee2mqtt/bridge/request/networkmap"
+        assert request["type"] == "raw" and request["routes"] is False
+        assert isinstance(request["transaction"], str)
+        text = _text(result)
+        for secret in (
+            Z2M_BULB_IEEE,
+            Z2M_LOCK_IEEE,
+            BRIDGE_INFO["coordinator"]["ieee_address"],
+            "Hidden Lock",
+            "secret model",
+            "networkAddress",
+            "destinationAddress",
+            "failed",
+        ):
+            assert secret not in text
+
+    async def test_both_backends_require_selection(self, hass, radio_env, broker):
+        hass.config.components.update({"mqtt", "zha"})
+        result = await _call_tool(
+            "scan_zigbee_topology",
+            {},
+            _light_token(cap_diagnostics="allow", cap_radio_write="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "Both Zigbee backends" in _text(result)
+        assert broker.published == []
+
+    async def test_zha_backend_scans_only_visible_routers(
+        self, hass, radio_env, broker, monkeypatch
+    ):
+        coordinator = SimpleNamespace(
+            ieee="00:12:4b:00:2e:1e:03:c7",
+            node_desc=SimpleNamespace(is_router=False),
+        )
+        visible_router = SimpleNamespace(
+            ieee=ZHA_BULB_IEEE, node_desc=SimpleNamespace(is_router=True)
+        )
+        visible_end_device = SimpleNamespace(
+            ieee=ZHA_TARGET_IEEE, node_desc=SimpleNamespace(is_router=False)
+        )
+        hidden_router = SimpleNamespace(
+            ieee="00:99:99:99:99:99:99:99",
+            node_desc=SimpleNamespace(is_router=True),
+        )
+        neighbor = SimpleNamespace(
+            ieee=coordinator.ieee,
+            lqi=190,
+            relationship=SimpleNamespace(name="Parent"),
+            device_type=SimpleNamespace(name="Coordinator"),
+        )
+
+        class _Topology:
+            def __init__(self):
+                self.scanned = None
+                self.neighbors = {visible_router.ieee: [neighbor]}
+
+            async def scan(self, *, devices):
+                self.scanned = list(devices)
+
+        topology = _Topology()
+        app = SimpleNamespace(
+            _device=coordinator,
+            devices={
+                coordinator.ieee: coordinator,
+                visible_router.ieee: visible_router,
+                visible_end_device.ieee: visible_end_device,
+                hidden_router.ieee: hidden_router,
+            },
+            topology=topology,
+        )
+        monkeypatch.setattr(
+            radio,
+            "_get_zha_gateway",
+            lambda _hass: SimpleNamespace(application_controller=app),
+        )
+        raw = await radio.async_scan_zha_topology(
+            hass, {ZHA_BULB_IEEE.lower(), ZHA_TARGET_IEEE.lower()}
+        )
+        assert topology.scanned == [visible_router]
+        assert all(item["ieeeAddr"] != hidden_router.ieee for item in raw["nodes"])
+        projected = radio.project_zigbee_topology(
+            "zha",
+            raw,
+            {
+                ZHA_BULB_IEEE.lower(): radio_env["zha_bulb"],
+                ZHA_TARGET_IEEE.lower(): radio_env["zha_target"],
+            },
+        )
+        assert projected["links"] == [
+            {
+                "source": "coordinator",
+                "target": radio_env["zha_bulb"],
+                "lqi": 190,
+                "relationship": "parent",
+            }
+        ]
+        assert all("ieee" not in json.dumps(item).lower() for item in projected["nodes"])
+
+
 class TestGetRadioDevice:
     async def test_cap_deny(self, hass, radio_env, broker):
         res = await _call_tool(

@@ -1063,6 +1063,28 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "scan_zigbee_topology",
+        "description": (
+            "Actively scan one ZHA or Zigbee2MQTT mesh and return a registry-scoped topology map. The result contains "
+            "only accessible Home Assistant device IDs, one opaque coordinator node, directional neighbor links, LQI, "
+            "and allowlisted relationship values. IEEE and network addresses, friendly names, routes, inaccessible "
+            "nodes, hidden-node counts, and backend payloads are never returned. This query can make the Zigbee mesh "
+            "less responsive for roughly 10 seconds to 2 minutes. Requires both Diagnostics and Radio Management and "
+            "may require approval. When both backends exist, select one explicitly."
+        ),
+        "caps": ["cap_diagnostics", "cap_radio_write"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "backend": {
+                    "type": "string",
+                    "enum": ["z2m", "zha"],
+                    "description": "Zigbee backend to scan; required only when both are present.",
+                }
+            },
+        },
+    },
+    {
         "name": "permit_zigbee_join",
         "description": (
             "Open the Zigbee network for new devices to join for a number of seconds (default 60, max 254), "
@@ -3284,6 +3306,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "get_blueprint": _annot(True, False, True, open_world=True),
     "get_radio_network": _annot(True, False, True),
     "get_radio_device": _annot(True, False, True),
+    "scan_zigbee_topology": _annot(False, False, False),
     "list_areas": _annot(True, False, True),
     "list_floors": _annot(True, False, True),
     "list_zones": _annot(True, False, True),

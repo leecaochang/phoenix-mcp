@@ -719,6 +719,12 @@ PASS_THROUGH_EXEMPT_CAPS = frozenset({
 Z2M_BASE_TOPIC = "zigbee2mqtt"
 Z2M_REQUEST_TIMEOUT_SECONDS = 30.0
 Z2M_RETAINED_READ_TIMEOUT_SECONDS = 5.0
+# A topology request actively queries each router and Zigbee2MQTT documents a
+# normal completion window of ten seconds to two minutes. MCP's SSE keepalives
+# keep the client connection alive while this longer, approval-gated operation
+# runs; the ordinary 30-second radio timeout would turn healthy large meshes
+# into false failures.
+ZIGBEE_TOPOLOGY_SCAN_TIMEOUT_SECONDS = 125.0
 # Device options are a local config write, not a sleepy-device operation. Give
 # the correlated response a short window, then verify the retained config.
 Z2M_DEVICE_OPTIONS_RESPONSE_TIMEOUT_SECONDS = 5.0
@@ -1213,6 +1219,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}",
     "zigbee_group": "Change a Zigbee group",
     "zigbee_group.named": "{operation} Zigbee group {name}",
+    "zigbee_topology": "Scan Zigbee topology",
+    "zigbee_topology.backend": "Scan {backend} neighbor tables for the scoped Zigbee map",
     # System.
     "restart_ha": "Restart Home Assistant",
     # {file} rather than a literal configuration.yaml: these tools write any
@@ -1344,6 +1352,8 @@ _APPROVAL_SUMMARY_BODIES = {
     "zigbee_reporting.device": "This will change {cluster}.{attribute} reporting for {label}. Open Details to review the intervals.",
     "zigbee_group": "This will change which devices are controlled together as a Zigbee group. Open Details to review the membership.",
     "zigbee_group.named": "This will {operation} Zigbee group {name}. Open Details to review the exact membership change.",
+    "zigbee_topology": "This actively queries Zigbee routers. The mesh may be less responsive while the scan runs.",
+    "zigbee_topology.backend": "This actively queries Zigbee routers on {backend}. The mesh may be less responsive while the scan runs.",
     "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
     "integration.reconfigure": (
         "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. "

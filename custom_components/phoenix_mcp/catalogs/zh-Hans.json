@@ -111,7 +111,7 @@
       },
       "cap_radio_write": {
         "label": "无线电设备管理",
-        "description": "通过 Zigbee2MQTT 或 ZHA 配对、重新配置和移除 Zigbee 设备。"
+        "description": "通过 Zigbee2MQTT 或 ZHA 扫描拓扑并管理 Zigbee 设备。"
       },
       "cap_energy_write": {
         "label": "管理能源仪表盘",
@@ -887,6 +887,8 @@
       "zigbee_property.device": "更改 {label} 的 Zigbee2MQTT 属性 {property}",
       "zigbee_reporting": "配置 Zigbee 属性上报",
       "zigbee_reporting.device": "配置 {label} 的 {cluster}.{attribute} 上报",
+      "zigbee_topology": "扫描 Zigbee 拓扑",
+      "zigbee_topology.backend": "扫描 {backend} 邻居表以生成权限范围内的 Zigbee 拓扑图",
       "set_yaml_config.removing": "替换 {file}，移除顶层 {keys}",
       "patch_dashboard.set": "设置仪表盘“{label}”的 {path}",
       "patch_dashboard.append": "向仪表盘“{label}”的 {path} 追加内容",
@@ -1883,7 +1885,11 @@
       "zigbee_reporting.body": "这将更改 Zigbee 设备上报属性的频率。请在详细信息中查看间隔。",
       "zigbee_reporting.device.body": "这将更改 {label} 的 {cluster}.{attribute} 上报。请在详细信息中查看间隔。",
       "zigbee_reporting.device.title": "配置 {label} 的 {cluster}.{attribute} 上报",
-      "zigbee_reporting.title": "配置 Zigbee 属性上报"
+      "zigbee_reporting.title": "配置 Zigbee 属性上报",
+      "zigbee_topology.backend.body": "这将主动查询 {backend} 上的 Zigbee 路由器。扫描期间，网状网络的响应速度可能会降低。",
+      "zigbee_topology.backend.title": "扫描 {backend} 邻居表以生成权限范围内的 Zigbee 拓扑图",
+      "zigbee_topology.body": "这将主动查询 Zigbee 路由器。扫描期间，网状网络的响应速度可能会降低。",
+      "zigbee_topology.title": "扫描 Zigbee 拓扑"
     }
   },
   "notification": {

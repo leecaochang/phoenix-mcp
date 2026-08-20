@@ -10,9 +10,10 @@ covers one protocol, Zigbee, with two backends:
   access goes through two module-level seams (_mqtt_subscribe/_mqtt_publish)
   so tests can fake the broker without paho-mqtt.
 - "zha": driven through ws_dispatch for the clean read, binding, and group
-  commands, plus the zha.permit / zha.remove admin services and the reconfigure
-  task starter. Every dispatched write has a fixed command shape and resolves
-  its radio identifiers from registry-scoped objects upstream.
+  commands, plus the zha.permit / zha.remove admin services, the reconfigure
+  task starter, and a direct scoped zigpy topology scan (the HA websocket
+  topology command never returns a result). Every write or active scan has a
+  fixed shape and resolves its radio identifiers from registry-scoped objects.
 
 Every read is an ALLOWLIST projection, never a blocklist strip: both backends'
 raw payloads can carry network key material (zigpy NetworkBackup keys; Z2M
@@ -22,7 +23,8 @@ as new protocol branches; the tool schemas in mcp_view.py do not change.
 
 HA-coupling points (re-verify on HA and Z2M upgrades): the ZHA WS command
 names and zha_device_info field names, the zha.permit/zha.remove service
-schemas, and the Z2M bridge topic API (shapes verified against Z2M 2.x).
+schemas, zigpy's ControllerApplication.topology/devices/_device fields, and the
+Z2M bridge topic API including networkmap (shapes verified against Z2M 2.x).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
@@ -45,6 +48,7 @@ from .const import (
     Z2M_DEVICE_OPTIONS_RESPONSE_TIMEOUT_SECONDS,
     Z2M_REQUEST_TIMEOUT_SECONDS,
     Z2M_RETAINED_READ_TIMEOUT_SECONDS,
+    ZIGBEE_TOPOLOGY_SCAN_TIMEOUT_SECONDS,
 )
 from .ws_dispatch import (
     WsDispatchError,
@@ -85,6 +89,8 @@ _ZIGBEE_GROUP_MAX_MEMBERS = 256
 _ZIGBEE_GROUP_MAX_SCENES = 256
 _ZIGBEE_GROUP_NAME_MAX_LENGTH = 128
 _ZIGBEE_GROUP_MAX_ENTITY_IDS = 64
+_ZIGBEE_TOPOLOGY_MAX_NODES = 256
+_ZIGBEE_TOPOLOGY_MAX_LINKS = 1024
 _Z2M_DIRECT_PROPERTY_TYPES = frozenset(
     {"binary", "enum", "numeric", "text", "list", "composite"}
 )
@@ -369,6 +375,160 @@ def project_zha_network(raw: Any) -> dict[str, Any]:
             "nwk": _scalar(node_info.get("nwk")),
             "logical_type": _scalar(node_info.get("logical_type")),
         },
+    }
+
+
+def _topology_node_type(value: Any) -> str:
+    """Normalize backend node types to Phoenix's three-value vocabulary."""
+    compact = re.sub(r"[^a-z]", "", str(value).lower())
+    if compact == "coordinator":
+        return "coordinator"
+    if compact == "router":
+        return "router"
+    return "end_device"
+
+
+def _topology_relationship(value: Any) -> str | None:
+    """Allowlist one Zigbee neighbor relationship without backend enum drift."""
+    numeric = {0: "parent", 1: "child", 2: "sibling", 3: "other", 4: "previous_child"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return numeric.get(value)
+    compact = re.sub(r"[^a-z]", "_", str(value).lower()).strip("_")
+    aliases = {
+        "parent": "parent",
+        "child": "child",
+        "sibling": "sibling",
+        "none_of_the_above": "other",
+        "other": "other",
+        "previous_child": "previous_child",
+    }
+    return aliases.get(compact)
+
+
+def project_zigbee_topology(
+    backend: str,
+    raw: Any,
+    visible_ieee_map: dict[str, str],
+) -> dict[str, Any]:
+    """Project a raw topology to registry-scoped nodes and neighbor links.
+
+    Raw maps contain every IEEE/NWK address, Z2M friendly name, model, failure,
+    and optional routing-table entry. None of those cross this boundary. A
+    caller sees only device registry ids already reachable through its entity
+    scope, plus one opaque coordinator node. Links involving anything else are
+    omitted; ``partial`` says only that some topology could not be represented,
+    never how many hidden devices exist.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    source_nodes = raw.get("nodes")
+    source_links = raw.get("links")
+    nodes = source_nodes if isinstance(source_nodes, list) else []
+    links = source_links if isinstance(source_links, list) else []
+
+    scoped = {str(ieee).lower(): device_id for ieee, device_id in visible_ieee_map.items()}
+    refs: dict[str, str] = {}
+    projected_nodes: list[dict[str, Any]] = []
+    projected_device_ids: set[str] = set()
+    partial = not isinstance(source_nodes, list) or not isinstance(source_links, list)
+    coordinator_seen = False
+
+    for item in nodes:
+        if not isinstance(item, dict):
+            partial = True
+            continue
+        ieee = item.get("ieeeAddr", item.get("ieee"))
+        if not isinstance(ieee, str) or not ieee:
+            partial = True
+            continue
+        ieee_key = ieee.lower()
+        node_type = _topology_node_type(item.get("type", item.get("device_type")))
+        if node_type == "coordinator":
+            refs[ieee_key] = "coordinator"
+            if not coordinator_seen:
+                projected_nodes.append(
+                    {"node_id": "coordinator", "kind": "coordinator", "type": "coordinator"}
+                )
+                coordinator_seen = True
+            continue
+        device_id = scoped.get(ieee_key)
+        if device_id is None:
+            partial = True
+            continue
+        refs[ieee_key] = device_id
+        if device_id in projected_device_ids:
+            partial = True
+            continue
+        projected_device_ids.add(device_id)
+        projected_nodes.append(
+            {"node_id": device_id, "kind": "device", "device_id": device_id, "type": node_type}
+        )
+
+    projected_nodes.sort(key=lambda item: (item["kind"] != "coordinator", item["node_id"]))
+    if len(projected_nodes) > _ZIGBEE_TOPOLOGY_MAX_NODES:
+        projected_nodes = projected_nodes[:_ZIGBEE_TOPOLOGY_MAX_NODES]
+        partial = True
+    allowed_refs = {item["node_id"] for item in projected_nodes}
+
+    projected_links: list[dict[str, Any]] = []
+    seen_links: set[tuple[str, str, int | None, str | None]] = set()
+    for item in links:
+        if not isinstance(item, dict):
+            partial = True
+            continue
+        source_raw = item.get("source")
+        target_raw = item.get("target")
+        source_ieee = (
+            source_raw.get("ieeeAddr") if isinstance(source_raw, dict)
+            else item.get("sourceIeeeAddr", item.get("source_ieee"))
+        )
+        target_ieee = (
+            target_raw.get("ieeeAddr") if isinstance(target_raw, dict)
+            else item.get("targetIeeeAddr", item.get("target_ieee"))
+        )
+        if not isinstance(source_ieee, str) or not isinstance(target_ieee, str):
+            partial = True
+            continue
+        source = refs.get(source_ieee.lower())
+        target = refs.get(target_ieee.lower())
+        if source is None or target is None or source not in allowed_refs or target not in allowed_refs:
+            partial = True
+            continue
+        lqi_raw = item.get("lqi", item.get("linkquality"))
+        if isinstance(lqi_raw, str) and lqi_raw.isdigit():
+            lqi_raw = int(lqi_raw)
+        lqi = (
+            lqi_raw
+            if isinstance(lqi_raw, int) and not isinstance(lqi_raw, bool) and 0 <= lqi_raw <= 255
+            else None
+        )
+        relationship = _topology_relationship(item.get("relationship"))
+        key = (source, target, lqi, relationship)
+        if key in seen_links:
+            continue
+        seen_links.add(key)
+        link: dict[str, Any] = {"source": source, "target": target}
+        if lqi is not None:
+            link["lqi"] = lqi
+        if relationship is not None:
+            link["relationship"] = relationship
+        projected_links.append(link)
+
+    projected_links.sort(
+        key=lambda item: (
+            item["source"], item["target"], item.get("lqi", -1), item.get("relationship", "")
+        )
+    )
+    if len(projected_links) > _ZIGBEE_TOPOLOGY_MAX_LINKS:
+        projected_links = projected_links[:_ZIGBEE_TOPOLOGY_MAX_LINKS]
+        partial = True
+    return {
+        "backend": backend,
+        "nodes": projected_nodes,
+        "links": projected_links,
+        "node_count": len(projected_nodes),
+        "link_count": len(projected_links),
+        "partial": partial,
+        "routes_included": False,
     }
 
 
@@ -1655,6 +1815,140 @@ async def async_zha_device_info(hass: HomeAssistant, ieee: str) -> dict[str, Any
     except WsDispatchError as exc:
         raise RadioError(str(exc)) from exc
     return raw if isinstance(raw, dict) else {}
+
+
+async def async_scan_z2m_topology(hass: HomeAssistant) -> dict[str, Any]:
+    """Run Zigbee2MQTT's raw neighbor scan without requesting route tables."""
+    data = await async_z2m_request(
+        hass,
+        "networkmap",
+        {"type": "raw", "routes": False},
+        timeout=ZIGBEE_TOPOLOGY_SCAN_TIMEOUT_SECONDS,
+    )
+    value = data.get("value") if isinstance(data, dict) else None
+    if (
+        data.get("type") != "raw"
+        or data.get("routes") is not False
+        or not isinstance(value, dict)
+        or not isinstance(value.get("nodes"), list)
+        or not isinstance(value.get("links"), list)
+    ):
+        raise RadioError("Zigbee2MQTT returned an unsafe topology response.")
+    return value
+
+
+def _zha_device_type(device: Any, coordinator: Any) -> str:
+    if device is coordinator:
+        return "Coordinator"
+    node_desc = getattr(device, "node_desc", None)
+    if bool(getattr(node_desc, "is_router", False)):
+        return "Router"
+    return "EndDevice"
+
+
+def _get_zha_gateway(hass: HomeAssistant) -> Any:
+    """Resolve the live ZHA gateway behind one narrow, testable HA seam."""
+    from homeassistant.components.zha.helpers import get_zha_gateway  # noqa: PLC0415
+
+    return get_zha_gateway(hass)
+
+
+async def async_scan_zha_topology(
+    hass: HomeAssistant, visible_ieees: set[str]
+) -> dict[str, Any]:
+    """Scan only token-visible ZHA routers and return an internal raw map.
+
+    ZHA's websocket update command intentionally has no result and would always
+    time out through Phoenix's synthetic dispatcher. Calling zigpy's topology
+    object directly also lets us pass only visible devices instead of probing
+    every router on a partially scoped token. The returned IEEE values remain
+    internal and must pass through :func:`project_zigbee_topology`.
+    """
+    try:
+        gateway = _get_zha_gateway(hass)
+        app = gateway.application_controller
+        topology = app.topology
+        devices = list(app.devices.values())
+        coordinator = getattr(app, "_device", None)
+        visible = {ieee.lower() for ieee in visible_ieees}
+        scoped_devices = [
+            device
+            for device in devices
+            if str(getattr(device, "ieee", "")).lower() in visible
+        ]
+        scan_devices = [
+            device
+            for device in scoped_devices
+            if bool(getattr(getattr(device, "node_desc", None), "is_router", False))
+            or device is coordinator
+        ]
+        await asyncio.wait_for(
+            topology.scan(devices=scan_devices),
+            ZIGBEE_TOPOLOGY_SCAN_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - HA/zigpy internals vary by release
+        raise RadioError(f"ZHA topology scan failed: {exc}") from exc
+
+    nodes: list[dict[str, Any]] = []
+    if coordinator is not None:
+        nodes.append({"ieeeAddr": str(coordinator.ieee), "type": "Coordinator"})
+    nodes.extend(
+        {
+            "ieeeAddr": str(device.ieee),
+            "type": _zha_device_type(device, coordinator),
+        }
+        for device in scoped_devices
+        if device is not coordinator
+    )
+
+    links: list[dict[str, Any]] = []
+    for device in scan_devices:
+        target_ieee = str(device.ieee)
+        for neighbor in topology.neighbors.get(device.ieee, []):
+            links.append(
+                {
+                    "source": {"ieeeAddr": str(getattr(neighbor, "ieee", ""))},
+                    "target": {"ieeeAddr": target_ieee},
+                    "lqi": _scalar(getattr(neighbor, "lqi", None)),
+                    "relationship": _scalar(
+                        getattr(
+                            getattr(neighbor, "relationship", None),
+                            "name",
+                            getattr(neighbor, "relationship", None),
+                        )
+                    ),
+                }
+            )
+            neighbor_ieee = str(getattr(neighbor, "ieee", ""))
+            if neighbor_ieee and not any(
+                item["ieeeAddr"].lower() == neighbor_ieee.lower() for item in nodes
+            ):
+                nodes.append(
+                    {
+                        "ieeeAddr": neighbor_ieee,
+                        "type": _scalar(
+                            getattr(
+                                getattr(neighbor, "device_type", None),
+                                "name",
+                                getattr(neighbor, "device_type", "EndDevice"),
+                            )
+                        ),
+                    }
+                )
+    return {"nodes": nodes, "links": links}
+
+
+async def async_scan_zigbee_topology(
+    hass: HomeAssistant, backend: str, visible_ieees: set[str]
+) -> dict[str, Any]:
+    """Run one backend topology scan; caller owns scope projection."""
+    if backend == BACKEND_Z2M:
+        return await async_scan_z2m_topology(hass)
+    if backend == BACKEND_ZHA:
+        return await async_scan_zha_topology(hass, visible_ieees)
+    raise RadioError(f"Unknown Zigbee backend: {backend}")
 
 
 async def async_zigbee_groups(

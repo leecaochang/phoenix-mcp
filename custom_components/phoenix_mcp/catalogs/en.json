@@ -214,7 +214,7 @@
       },
       "cap_radio_write": {
         "label": "Radio management",
-        "description": "Pair, re-interview, and remove Zigbee devices through Zigbee2MQTT or ZHA."
+        "description": "Scan topology and manage Zigbee devices through Zigbee2MQTT or ZHA."
       },
       "cap_energy_write": {
         "label": "Manage Energy dashboard",
@@ -1469,7 +1469,9 @@
       "zigbee_remove": "Remove a Zigbee device",
       "zigbee_remove.device": "Remove Zigbee device {label} from the network",
       "zigbee_reporting": "Configure Zigbee attribute reporting",
-      "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}"
+      "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}",
+      "zigbee_topology": "Scan Zigbee topology",
+      "zigbee_topology.backend": "Scan {backend} neighbor tables for the scoped Zigbee map"
     },
     "version": {
       "card.added": "added {subject} ({where})",
@@ -1887,7 +1889,11 @@
       "zigbee_reporting.body": "This will change how frequently a Zigbee device reports an attribute. Open Details to review the intervals.",
       "zigbee_reporting.device.body": "This will change {cluster}.{attribute} reporting for {label}. Open Details to review the intervals.",
       "zigbee_reporting.device.title": "Configure {cluster}.{attribute} reporting for {label}",
-      "zigbee_reporting.title": "Configure Zigbee attribute reporting"
+      "zigbee_reporting.title": "Configure Zigbee attribute reporting",
+      "zigbee_topology.backend.body": "This actively queries Zigbee routers on {backend}. The mesh may be less responsive while the scan runs.",
+      "zigbee_topology.backend.title": "Scan {backend} neighbor tables for the scoped Zigbee map",
+      "zigbee_topology.body": "This actively queries Zigbee routers. The mesh may be less responsive while the scan runs.",
+      "zigbee_topology.title": "Scan Zigbee topology"
     }
   },
   "notification": {

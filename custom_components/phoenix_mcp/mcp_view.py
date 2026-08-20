@@ -111,6 +111,7 @@ from .tools.radio import (
     _execute_reconfigure_zigbee_device,
     _execute_remove_zigbee_device,
     _execute_remove_zigbee_group,
+    _execute_scan_zigbee_topology,
     _execute_set_zigbee_device_options,
     _execute_set_zigbee_device_property,
     _execute_set_zigbee_binding,
@@ -122,6 +123,7 @@ from .tools.radio import (
     _tool_permit_zigbee_join,
     _tool_reconfigure_zigbee_device,
     _tool_remove_zigbee_device,
+    _tool_scan_zigbee_topology,
     _tool_set_zigbee_device_options,
     _tool_set_zigbee_device_property,
     _tool_set_zigbee_binding,
@@ -8868,6 +8870,7 @@ _register_executor("set_device", _execute_set_device)
 _register_executor("remove_device", _execute_remove_device)
 _register_executor("delete_entity", _execute_delete_entity)
 _register_executor("permit_zigbee_join", _execute_permit_zigbee_join)
+_register_executor("scan_zigbee_topology", _execute_scan_zigbee_topology)
 _register_executor("reconfigure_zigbee_device", _execute_reconfigure_zigbee_device)
 _register_executor("remove_zigbee_device", _execute_remove_zigbee_device)
 _register_executor("set_zigbee_device_options", _execute_set_zigbee_device_options)
@@ -8955,6 +8958,7 @@ _register_tool("delete_entity", _tool_delete_entity)
 _register_tool("get_radio_network", _tool_get_radio_network)
 _register_tool("get_radio_device", _tool_get_radio_device)
 _register_tool("get_zigbee_groups", _tool_get_zigbee_groups)
+_register_tool("scan_zigbee_topology", _tool_scan_zigbee_topology)
 _register_tool("permit_zigbee_join", _tool_permit_zigbee_join)
 _register_tool("reconfigure_zigbee_device", _tool_reconfigure_zigbee_device)
 _register_tool("remove_zigbee_device", _tool_remove_zigbee_device)
