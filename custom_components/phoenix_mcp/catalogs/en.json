@@ -1455,6 +1455,8 @@
       "write_file": "Write file '{path}'",
       "zigbee_binding": "Change a Zigbee device binding",
       "zigbee_binding.devices": "{operation} Zigbee binding from {source} to {target}",
+      "zigbee_group": "Change a Zigbee group",
+      "zigbee_group.named": "{operation} Zigbee group {name}",
       "zigbee_options": "Change Zigbee2MQTT device options",
       "zigbee_options.device": "Change Zigbee2MQTT options ({keys}) for {label}",
       "zigbee_permit": "Open the Zigbee network for joining",
@@ -1462,12 +1464,12 @@
       "zigbee_permit.open": "Open the Zigbee network for joining for {duration} seconds",
       "zigbee_property": "Change a Zigbee2MQTT exposed property",
       "zigbee_property.device": "Change Zigbee2MQTT property {property} for {label}",
-      "zigbee_reporting": "Configure Zigbee attribute reporting",
-      "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}",
       "zigbee_reconfigure": "Reconfigure a Zigbee device",
       "zigbee_reconfigure.device": "Reconfigure (re-interview) Zigbee device {label}",
       "zigbee_remove": "Remove a Zigbee device",
-      "zigbee_remove.device": "Remove Zigbee device {label} from the network"
+      "zigbee_remove.device": "Remove Zigbee device {label} from the network",
+      "zigbee_reporting": "Configure Zigbee attribute reporting",
+      "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}"
     },
     "version": {
       "card.added": "added {subject} ({where})",
@@ -1481,6 +1483,7 @@
       "device.changed": "changed: {fields}",
       "device.removed": "device registry entry removed",
       "device.zigbee_binding": "{operation} Zigbee binding to {target}",
+      "device.zigbee_group": "{operation} Zigbee group: {name}",
       "device.zigbee_options": "changed Zigbee2MQTT options: {keys}",
       "device.zigbee_property": "changed Zigbee2MQTT property: {property}",
       "device.zigbee_reporting": "configured Zigbee reporting: {cluster}.{attribute}",
@@ -1855,6 +1858,10 @@
       "zigbee_binding.devices.body": "This will {operation} direct Zigbee control from {source} to {target}. Open Details to review the exact relationship.",
       "zigbee_binding.devices.title": "{operation} Zigbee binding from {source} to {target}",
       "zigbee_binding.title": "Change a Zigbee device binding",
+      "zigbee_group.body": "This will change which devices are controlled together as a Zigbee group. Open Details to review the membership.",
+      "zigbee_group.named.body": "This will {operation} Zigbee group {name}. Open Details to review the exact membership change.",
+      "zigbee_group.named.title": "{operation} Zigbee group {name}",
+      "zigbee_group.title": "Change a Zigbee group",
       "zigbee_options.body": "This will change Zigbee2MQTT device options. Open Details to review the proposed values.",
       "zigbee_options.device.body": "This will change Zigbee2MQTT device options for {label}. Open Details to review the proposed values.",
       "zigbee_options.device.title": "Change Zigbee2MQTT options ({keys}) for {label}",
@@ -1869,10 +1876,6 @@
       "zigbee_property.device.body": "This will directly change property {property} for {label}. Open Details to review the proposed value.",
       "zigbee_property.device.title": "Change Zigbee2MQTT property {property} for {label}",
       "zigbee_property.title": "Change a Zigbee2MQTT exposed property",
-      "zigbee_reporting.body": "This will change how frequently a Zigbee device reports an attribute. Open Details to review the intervals.",
-      "zigbee_reporting.device.body": "This will change {cluster}.{attribute} reporting for {label}. Open Details to review the intervals.",
-      "zigbee_reporting.device.title": "Configure {cluster}.{attribute} reporting for {label}",
-      "zigbee_reporting.title": "Configure Zigbee attribute reporting",
       "zigbee_reconfigure.body": "This will interview the Zigbee device again. It may be briefly unresponsive. Battery devices must be awake.",
       "zigbee_reconfigure.device.body": "This will interview {label} again. It may be briefly unresponsive. Battery devices must be awake.",
       "zigbee_reconfigure.device.title": "Reconfigure (re-interview) Zigbee device {label}",
@@ -1880,7 +1883,11 @@
       "zigbee_remove.body": "This will remove the Zigbee device from the network. The change cannot be undone from this approval.",
       "zigbee_remove.device.body": "This will remove {label} from the Zigbee network. The change cannot be undone from this approval.",
       "zigbee_remove.device.title": "Remove Zigbee device {label} from the network",
-      "zigbee_remove.title": "Remove a Zigbee device"
+      "zigbee_remove.title": "Remove a Zigbee device",
+      "zigbee_reporting.body": "This will change how frequently a Zigbee device reports an attribute. Open Details to review the intervals.",
+      "zigbee_reporting.device.body": "This will change {cluster}.{attribute} reporting for {label}. Open Details to review the intervals.",
+      "zigbee_reporting.device.title": "Configure {cluster}.{attribute} reporting for {label}",
+      "zigbee_reporting.title": "Configure Zigbee attribute reporting"
     }
   },
   "notification": {

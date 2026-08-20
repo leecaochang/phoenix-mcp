@@ -48,10 +48,11 @@ DEFAULT_TIMEOUT = 10.0
 # releases, and reconfigure/topology never call send_result (guaranteed
 # timeout). Permit and remove go through the zha.permit / zha.remove admin
 # services instead; reconfigure goes through async_zha_reconfigure_device below.
-# zha/devices/bind and zha/devices/unbind are the narrow exception: both await
-# ZHA's own compatible-cluster binding helper and then call send_result without
-# registering a subscription. Phoenix resolves both IEEE arguments from scoped
-# device-registry entries; callers never provide either address.
+# zha/devices/bind, zha/devices/unbind, and the group CRUD commands are the
+# narrow exceptions: they await ZHA's own operation and then call send_result
+# without registering a subscription. Phoenix resolves every IEEE and numeric
+# group id from scoped registry entities; callers never provide either kind of
+# radio identifier.
 _HELPER_DOMAINS = (
     "input_boolean", "input_number", "input_text",
     "input_select", "input_datetime", "counter", "timer",
@@ -68,7 +69,9 @@ ALLOWED_WS_COMMANDS: frozenset[str] = frozenset(
         # permanent semantics. Phoenix adds capability, scope, approval, and
         # timed-restoration gates before reaching this command.
         "logger/integration_log_level",
-        "zha/device", "zha/network/settings",
+        "zha/device", "zha/network/settings", "zha/groups",
+        "zha/devices/groupable", "zha/group/add", "zha/group/remove",
+        "zha/group/members/add", "zha/group/members/remove",
         "zha/devices/bind", "zha/devices/unbind",
         # Blueprint authoring. HA's own handlers do the whole job: blueprint/save
         # parses the YAML, builds a Blueprint against the domain schema, refuses an

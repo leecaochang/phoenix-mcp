@@ -6,9 +6,10 @@ never confused inside a module that shares its name.
 
 Every tool resolves through the token's permission tree before touching a
 radio: `_resolve_radio_device` returns a device only when the token can see it,
-so a device lookup cannot become an oracle for the rest of the mesh. The four
-mutating tools are Confirm-eligible and each builds a diff naming the specific
-device, because "remove device" on a mesh is not reversible from here.
+so a device lookup cannot become an oracle for the rest of the mesh. Every
+mutating tool is Confirm-eligible and builds a registry-scoped diff naming its
+specific devices or group, because radio topology changes are not reversible
+from here.
 
 mcp_view owns the transport, the dispatch registry and the executor registry, and
 imports the names it registers or calls from here. The dependency runs one way:
@@ -30,7 +31,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.core import HomeAssistant
 
-from ..const import CAP_CONFIRM, CAP_DENY, PROXY_TIMEOUT_SECONDS
+from ..const import CAP_CONFIRM, CAP_DENY, PROXY_TIMEOUT_SECONDS, Z2M_BASE_TOPIC
 from ..data import PhoenixData
 from ..mesa import (
     async_apply_mesa_to_call,
@@ -138,6 +139,40 @@ class _ResolvedZigbeeReportingChange:
     before: dict[str, Any]
     before_hash: str
     desired: dict[str, Any]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedZigbeeGroup:
+    """One group resolved from an accessible HA group entity."""
+
+    backend: str
+    entity_id: str
+    entity_ids: tuple[str, ...]
+    configuration: dict[str, Any]
+    content_hash: str
+    visible_members: tuple[tuple[str, int], ...]
+    hidden_member_count: int
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedZigbeeGroupChange:
+    """A conflict-checked group create, membership, or removal change."""
+
+    tool_name: str
+    operation: str
+    backend: str
+    name: str
+    group: _ResolvedZigbeeGroup | None
+    members: tuple[_ResolvedRadioDevice, ...]
+    endpoints: tuple[int, ...]
+    before_hash: str | None
+    mesa_entities: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedGroupMembers:
+    devices: tuple[_ResolvedRadioDevice, ...]
+    endpoints: tuple[int, ...]
 
 
 def _z2m_root_property_groups(entry: dict[str, Any]) -> dict[str, list[set[str]]]:
@@ -578,6 +613,508 @@ def _same_radio_network(
     source_entries = set(getattr(source.device, "config_entries", ()) or ())
     target_entries = set(getattr(target.device, "config_entries", ()) or ())
     return bool(source_entries & target_entries)
+
+
+def _mqtt_discovery_payload(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
+    """Return one MQTT entity's live discovery payload, or fail closed."""
+    try:
+        from homeassistant.components.mqtt.const import ATTR_DISCOVERY_PAYLOAD  # noqa: PLC0415
+        from homeassistant.components.mqtt.models import DATA_MQTT  # noqa: PLC0415
+    except ImportError:
+        return None
+    mqtt_data = hass.data.get(DATA_MQTT)
+    debug_entities = getattr(mqtt_data, "debug_info_entities", None)
+    entity_info = debug_entities.get(entity_id) if isinstance(debug_entities, dict) else None
+    discovery_data = entity_info.get("discovery_data") if isinstance(entity_info, dict) else None
+    payload = (
+        discovery_data.get(ATTR_DISCOVERY_PAYLOAD)
+        if isinstance(discovery_data, dict)
+        else None
+    )
+    return payload if isinstance(payload, dict) else None
+
+
+def _z2m_group_entity_ids(
+    hass: HomeAssistant, name: str, accessible: set[str]
+) -> tuple[str, ...]:
+    """Resolve a retained Z2M group to exact HA MQTT discovery entities."""
+    registry = er.async_get(hass)
+    exact_topic = f"{Z2M_BASE_TOPIC}/{name}"
+    found = []
+    for entity_id in accessible:
+        entry = registry.async_get(entity_id)
+        if entry is None or entry.platform != "mqtt" or entry.disabled_by is not None:
+            continue
+        payload = _mqtt_discovery_payload(hass, entity_id)
+        if payload is not None and payload.get("state_topic") == exact_topic:
+            found.append(entity_id)
+    return tuple(sorted(found))
+
+
+def _group_entity_ids(
+    hass: HomeAssistant,
+    backend: str,
+    configuration: dict[str, Any],
+    accessible: set[str],
+) -> tuple[str, ...]:
+    if backend == radio_backend.BACKEND_Z2M:
+        return _z2m_group_entity_ids(hass, configuration["name"], accessible)
+    entity_ids = configuration.get("entity_ids")
+    if not isinstance(entity_ids, list):
+        return ()
+    return tuple(
+        sorted(
+            entity_id
+            for entity_id in entity_ids
+            if isinstance(entity_id, str) and entity_id in accessible
+        )
+    )
+
+
+def _scoped_zigbee_device_map(
+    hass: HomeAssistant, accessible: set[str]
+) -> dict[tuple[str, str], str]:
+    """Map (backend, IEEE) to one visible registry device, failing collisions closed."""
+    entity_registry = er.async_get(hass)
+    visible_device_ids = {
+        entry.device_id
+        for entity_id in accessible
+        if (entry := entity_registry.async_get(entity_id)) is not None
+        and entry.device_id is not None
+    }
+    device_registry = dr.async_get(hass)
+    candidates: dict[tuple[str, str], set[str]] = {}
+    for device_id in visible_device_ids:
+        device = device_registry.async_get(device_id)
+        detected = (
+            radio_backend.zigbee_backend_for_device(device)
+            if device is not None
+            else None
+        )
+        if detected is None:
+            continue
+        backend, ieee = detected
+        candidates.setdefault((backend, ieee.lower()), set()).add(device_id)
+    return {
+        key: next(iter(device_ids))
+        for key, device_ids in candidates.items()
+        if len(device_ids) == 1
+    }
+
+
+def _resolved_group_view(
+    hass: HomeAssistant,
+    backend: str,
+    configuration: dict[str, Any],
+    accessible: set[str],
+) -> _ResolvedZigbeeGroup | None:
+    """Build one scoped group view; no accessible HA group entity means absent."""
+    entity_ids = _group_entity_ids(hass, backend, configuration, accessible)
+    if not entity_ids:
+        return None
+    visible_map = _scoped_zigbee_device_map(hass, accessible)
+    visible_members: list[tuple[str, int]] = []
+    hidden = 0
+    for member in configuration["members"]:
+        device_id = visible_map.get((backend, member["ieee"].lower()))
+        if device_id is None:
+            hidden += 1
+        else:
+            visible_members.append((device_id, member["endpoint"]))
+    visible_members.sort()
+    return _ResolvedZigbeeGroup(
+        backend=backend,
+        entity_id=entity_ids[0],
+        entity_ids=entity_ids,
+        configuration=configuration,
+        content_hash=radio_backend.zigbee_group_hash(backend, configuration),
+        visible_members=tuple(visible_members),
+        hidden_member_count=hidden,
+    )
+
+
+async def _scoped_zigbee_groups(
+    token: TokenRecord, hass: HomeAssistant
+) -> tuple[list[_ResolvedZigbeeGroup], list[dict[str, str]]]:
+    """Read every present backend and retain only accessible group entities."""
+    accessible = set(_accessible_entity_ids(token, hass))
+    groups: list[_ResolvedZigbeeGroup] = []
+    errors: list[dict[str, str]] = []
+    for backend in radio_backend.present_zigbee_backends(hass):
+        try:
+            configurations = await radio_backend.async_zigbee_groups(hass, backend)
+        except RadioError as exc:
+            errors.append({"backend": backend, "error": str(exc)})
+            continue
+        for configuration in configurations:
+            resolved = _resolved_group_view(
+                hass, backend, configuration, accessible
+            )
+            if resolved is not None:
+                groups.append(resolved)
+    groups.sort(key=lambda item: (item.backend, item.configuration["name"], item.entity_id))
+    return groups, errors
+
+
+async def _scoped_groupable_members(
+    token: TokenRecord, hass: HomeAssistant
+) -> list[dict[str, Any]]:
+    """Project exact groupable endpoints for visible devices on both backends."""
+    accessible = set(_accessible_entity_ids(token, hass))
+    visible = _scoped_zigbee_device_map(hass, accessible)
+    by_key: dict[tuple[str, str], set[int]] = {}
+    if radio_backend.BACKEND_Z2M in radio_backend.present_zigbee_backends(hass):
+        try:
+            raw_devices = await radio_backend.async_z2m_retained(
+                hass, "bridge/devices"
+            )
+        except RadioError:
+            raw_devices = []
+        for entry in raw_devices if isinstance(raw_devices, list) else []:
+            ieee = entry.get("ieee_address") if isinstance(entry, dict) else None
+            device_id = (
+                visible.get((radio_backend.BACKEND_Z2M, ieee.lower()))
+                if isinstance(ieee, str)
+                else None
+            )
+            if device_id is None:
+                continue
+            try:
+                configuration = radio_backend.z2m_radio_configuration(entry)
+            except radio_backend.Z2MRadioConfigurationError:
+                continue
+            endpoints = {
+                endpoint["endpoint"]
+                for endpoint in configuration["endpoints"]
+                if "genGroups" in endpoint["input_clusters"]
+            }
+            if endpoints:
+                by_key[(radio_backend.BACKEND_Z2M, device_id)] = endpoints
+    if radio_backend.BACKEND_ZHA in radio_backend.present_zigbee_backends(hass):
+        try:
+            raw_groupable = await radio_backend.async_zha_groupable_devices(hass)
+        except RadioError:
+            raw_groupable = []
+        for item in raw_groupable:
+            device = item.get("device")
+            ieee = device.get("ieee") if isinstance(device, dict) else None
+            endpoint = item.get("endpoint_id")
+            device_id = (
+                visible.get((radio_backend.BACKEND_ZHA, ieee.lower()))
+                if isinstance(ieee, str)
+                else None
+            )
+            if (
+                device_id is not None
+                and isinstance(endpoint, int)
+                and not isinstance(endpoint, bool)
+                and 1 <= endpoint <= 254
+            ):
+                by_key.setdefault((radio_backend.BACKEND_ZHA, device_id), set()).add(
+                    endpoint
+                )
+    return [
+        {"backend": backend, "device_id": device_id, "endpoints": sorted(endpoints)}
+        for (backend, device_id), endpoints in sorted(by_key.items())
+    ]
+
+
+def _project_zigbee_group(group: _ResolvedZigbeeGroup) -> dict[str, Any]:
+    """Project one group without any group id, IEEE address, or MQTT topic."""
+    return {
+        "backend": group.backend,
+        "name": group.configuration["name"],
+        "group_entity_ids": list(group.entity_ids),
+        "members": [
+            {"device_id": device_id, "endpoint": endpoint}
+            for device_id, endpoint in group.visible_members
+        ],
+        "hidden_member_count": group.hidden_member_count,
+        "scene_count": len(group.configuration.get("scenes", [])),
+        "content_hash": group.content_hash,
+        "fully_scoped": group.hidden_member_count == 0,
+    }
+
+
+async def _resolve_zigbee_group(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    tool: str,
+    *,
+    require_write: bool,
+) -> _ResolvedZigbeeGroup | tuple[dict, str, str]:
+    """Resolve a caller's HA group entity to one exact backend group."""
+    entity_id = args.get("group_entity_id")
+    if not isinstance(entity_id, str) or not entity_id:
+        return _tool_error("group_entity_id is required."), "invalid_request", tool
+    permission = resolve(entity_id, token, hass)
+    if permission not in {Permission.READ, Permission.WRITE}:
+        return _tool_error("Group not found."), "not_found", entity_id
+    if require_write and permission != Permission.WRITE:
+        return (
+            _tool_error("Read-only access to this group; membership changes need write access."),
+            "denied",
+            entity_id,
+        )
+    groups, _errors = await _scoped_zigbee_groups(token, hass)
+    matches = [group for group in groups if entity_id in group.entity_ids]
+    if len(matches) != 1:
+        return _tool_error("Group not found."), "not_found", entity_id
+    return dataclasses.replace(matches[0], entity_id=entity_id)
+
+
+async def _groupable_endpoints(
+    hass: HomeAssistant,
+    backend: str,
+    devices: tuple[_ResolvedRadioDevice, ...],
+) -> dict[str, set[int]]:
+    """Return exact groupable endpoints for already-scoped devices."""
+    if backend == radio_backend.BACKEND_Z2M:
+        result: dict[str, set[int]] = {}
+        for device in devices:
+            entry = await radio_backend.async_z2m_device_entry(hass, device.ieee)
+            if entry is None:
+                raise RadioError("A selected device is no longer on the Zigbee network.")
+            configuration = radio_backend.z2m_radio_configuration(entry)
+            result[device.ieee.lower()] = {
+                endpoint["endpoint"]
+                for endpoint in configuration["endpoints"]
+                if "genGroups" in endpoint["input_clusters"]
+            }
+        return result
+    raw = await radio_backend.async_zha_groupable_devices(hass)
+    wanted = {device.ieee.lower() for device in devices}
+    result = {ieee: set() for ieee in wanted}
+    for item in raw:
+        raw_device = item.get("device")
+        ieee = raw_device.get("ieee") if isinstance(raw_device, dict) else None
+        endpoint = item.get("endpoint_id")
+        if isinstance(ieee, str) and ieee.lower() in wanted:
+            if (
+                isinstance(endpoint, bool)
+                or not isinstance(endpoint, int)
+                or not 1 <= endpoint <= 254
+            ):
+                continue
+            result[ieee.lower()].add(endpoint)
+    return result
+
+
+def _group_member_args(args: dict) -> list[dict[str, Any]] | None:
+    members = args.get("members")
+    if not isinstance(members, list) or not 1 <= len(members) <= 32:
+        return None
+    return members if all(isinstance(item, dict) for item in members) else None
+
+
+async def _resolve_group_members(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    tool: str,
+    *,
+    require_groupable: bool = True,
+) -> _ResolvedGroupMembers | tuple[dict, str, str]:
+    raw_members = _group_member_args(args)
+    if raw_members is None:
+        return _tool_error("members must contain 1 to 32 device/endpoint objects."), "invalid_request", tool
+    devices: list[_ResolvedRadioDevice] = []
+    endpoints: list[int] = []
+    seen: set[tuple[str, int]] = set()
+    for index, item in enumerate(raw_members):
+        resolved = _resolve_radio_device(
+            {"device_id": item.get("device_id")}, token, hass, tool, require_write=True
+        )
+        if isinstance(resolved, tuple):
+            return resolved
+        endpoint = item.get("endpoint")
+        if isinstance(endpoint, bool) or not isinstance(endpoint, int) or not 1 <= endpoint <= 254:
+            return _tool_error(f"members[{index}].endpoint must be an integer from 1 to 254."), "invalid_request", tool
+        key = (resolved.device.id, endpoint)
+        if key in seen:
+            return _tool_error("members must not contain duplicates."), "invalid_request", tool
+        seen.add(key)
+        devices.append(resolved)
+        endpoints.append(endpoint)
+    first = devices[0]
+    if any(not _same_radio_network(first, device) for device in devices[1:]):
+        return _tool_error("All members must belong to the same Zigbee network."), "invalid_request", tool
+    if require_groupable:
+        try:
+            allowed = await _groupable_endpoints(hass, first.backend, tuple(devices))
+        except (RadioError, radio_backend.Z2MRadioConfigurationError) as exc:
+            return _tool_error(str(exc)), "invalid_request", tool
+        for device, endpoint in zip(devices, endpoints, strict=True):
+            if endpoint not in allowed.get(device.ieee.lower(), set()):
+                return (
+                    _tool_error(
+                        f"Endpoint {endpoint} is not groupable on device {device.device.id}."
+                    ),
+                    "invalid_request",
+                    tool,
+                )
+    return _ResolvedGroupMembers(tuple(devices), tuple(endpoints))
+
+
+def _group_mesa_entities(
+    token: TokenRecord,
+    hass: HomeAssistant,
+    group_entity_id: str | None,
+    devices: tuple[_ResolvedRadioDevice, ...],
+) -> tuple[str, ...]:
+    anchors = set(
+        _radio_mesa_entities(token, hass, {device.device.id for device in devices})
+    )
+    if group_entity_id is not None:
+        anchors.add(group_entity_id)
+    return tuple(sorted(anchors))
+
+
+async def _resolve_create_zigbee_group(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZigbeeGroupChange | tuple[dict, str, str]:
+    tool = "create_zigbee_group"
+    try:
+        name = radio_backend.validate_zigbee_group_name(args.get("name"))
+    except radio_backend.ZigbeeGroupConfigurationError as exc:
+        return _tool_error(str(exc)), "invalid_request", tool
+    resolved_members = await _resolve_group_members(args, token, hass, tool)
+    if isinstance(resolved_members, tuple):
+        return resolved_members
+    devices, endpoints = resolved_members.devices, resolved_members.endpoints
+    backend = devices[0].backend
+    if backend == radio_backend.BACKEND_Z2M and name.lower() == "bridge":
+        return (
+            _tool_error("bridge is reserved by Zigbee2MQTT and cannot be used as a group name."),
+            "invalid_request",
+            tool,
+        )
+    try:
+        current = await radio_backend.async_zigbee_groups(hass, backend)
+    except RadioError as exc:
+        return _tool_error(str(exc)), "invalid_request", tool
+    if any(group["name"] == name for group in current):
+        return _tool_error("A Zigbee group with that name already exists."), "invalid_request", tool
+    return _ResolvedZigbeeGroupChange(
+        tool_name=tool,
+        operation="create",
+        backend=backend,
+        name=name,
+        group=None,
+        members=devices,
+        endpoints=endpoints,
+        before_hash=None,
+        mesa_entities=_group_mesa_entities(token, hass, None, devices),
+    )
+
+
+async def _resolve_set_zigbee_group_members(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZigbeeGroupChange | tuple[dict, str, str]:
+    tool = "set_zigbee_group_members"
+    operation = args.get("operation")
+    if operation not in {"add", "remove"}:
+        return _tool_error("operation must be add or remove."), "invalid_request", tool
+    group = await _resolve_zigbee_group(args, token, hass, tool, require_write=True)
+    if isinstance(group, tuple):
+        return group
+    expected_hash = args.get("expected_hash")
+    if not _valid_content_hash(expected_hash):
+        return _tool_error("expected_hash must be the lowercase content_hash from get_zigbee_groups."), "invalid_request", tool
+    if expected_hash != group.content_hash:
+        return (
+            _tool_error("The Zigbee group changed after it was read. Call get_zigbee_groups again and retry."),
+            "invalid_request",
+            group.entity_id,
+        )
+    resolved_members = await _resolve_group_members(
+        args,
+        token,
+        hass,
+        tool,
+        require_groupable=operation == "add",
+    )
+    if isinstance(resolved_members, tuple):
+        return resolved_members
+    devices, endpoints = resolved_members.devices, resolved_members.endpoints
+    if any(device.backend != group.backend for device in devices):
+        return _tool_error("Group and members must use the same Zigbee backend."), "invalid_request", group.entity_id
+    current = {
+        (member["ieee"].lower(), member["endpoint"])
+        for member in group.configuration["members"]
+    }
+    requested = {
+        (device.ieee.lower(), endpoint)
+        for device, endpoint in zip(devices, endpoints, strict=True)
+    }
+    if operation == "add" and current & requested:
+        return _tool_error("One or more selected endpoints are already group members."), "invalid_request", group.entity_id
+    if operation == "remove" and requested - current:
+        return _tool_error("One or more selected endpoints are not group members."), "invalid_request", group.entity_id
+    if operation == "remove" and requested == current:
+        return (
+            _tool_error("Removing every member would leave an unanchored group; use remove_zigbee_group instead."),
+            "invalid_request",
+            group.entity_id,
+        )
+    return _ResolvedZigbeeGroupChange(
+        tool_name=tool,
+        operation=operation,
+        backend=group.backend,
+        name=group.configuration["name"],
+        group=group,
+        members=devices,
+        endpoints=endpoints,
+        before_hash=group.content_hash,
+        mesa_entities=_group_mesa_entities(token, hass, group.entity_id, devices),
+    )
+
+
+async def _resolve_remove_zigbee_group(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZigbeeGroupChange | tuple[dict, str, str]:
+    tool = "remove_zigbee_group"
+    group = await _resolve_zigbee_group(args, token, hass, tool, require_write=True)
+    if isinstance(group, tuple):
+        return group
+    expected_hash = args.get("expected_hash")
+    if not _valid_content_hash(expected_hash) or expected_hash != group.content_hash:
+        return (
+            _tool_error("The Zigbee group changed after it was read. Call get_zigbee_groups again and retry with its content_hash."),
+            "invalid_request",
+            group.entity_id,
+        )
+    if group.hidden_member_count:
+        return (
+            _tool_error("The group has members outside this token's scope and cannot be removed safely."),
+            "denied",
+            group.entity_id,
+        )
+    devices: list[_ResolvedRadioDevice] = []
+    endpoints: list[int] = []
+    for device_id, endpoint in group.visible_members:
+        resolved = _resolve_radio_device(
+            {"device_id": device_id}, token, hass, tool, require_write=True
+        )
+        if isinstance(resolved, tuple):
+            return resolved
+        devices.append(resolved)
+        endpoints.append(endpoint)
+    device_tuple = tuple(devices)
+    return _ResolvedZigbeeGroupChange(
+        tool_name=tool,
+        operation="remove",
+        backend=group.backend,
+        name=group.configuration["name"],
+        group=group,
+        members=device_tuple,
+        endpoints=tuple(endpoints),
+        before_hash=group.content_hash,
+        mesa_entities=_group_mesa_entities(
+            token, hass, group.entity_id, device_tuple
+        ),
+    )
 
 
 async def _resolve_zigbee_binding_change(
@@ -1072,6 +1609,105 @@ async def _build_diff_set_zigbee_binding(
     }
 
 
+def _group_change_states(
+    change: _ResolvedZigbeeGroupChange,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Build safe before/after approval states from registry identifiers only."""
+    selected = [
+        {"device_id": device.device.id, "endpoint": endpoint}
+        for device, endpoint in zip(change.members, change.endpoints, strict=True)
+    ]
+    if change.group is None:
+        return None, {"name": change.name, "members": selected}
+    before_members = [
+        {"device_id": device_id, "endpoint": endpoint}
+        for device_id, endpoint in change.group.visible_members
+    ]
+    before = {
+        "name": change.name,
+        "group_entity_id": change.group.entity_id,
+        "members": before_members,
+        "hidden_member_count": change.group.hidden_member_count,
+    }
+    if change.tool_name == "remove_zigbee_group":
+        return before, None
+    selected_keys = {(item["device_id"], item["endpoint"]) for item in selected}
+    if change.operation == "add":
+        after_members = before_members + selected
+    else:
+        after_members = [
+            item
+            for item in before_members
+            if (item["device_id"], item["endpoint"]) not in selected_keys
+        ]
+    after_members.sort(key=lambda item: (item["device_id"], item["endpoint"]))
+    return before, {**before, "members": after_members}
+
+
+async def _build_diff_zigbee_group(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    tool_name: str,
+    change: _ResolvedZigbeeGroupChange | None = None,
+) -> dict:
+    resolver = {
+        "create_zigbee_group": _resolve_create_zigbee_group,
+        "set_zigbee_group_members": _resolve_set_zigbee_group_members,
+        "remove_zigbee_group": _resolve_remove_zigbee_group,
+    }[tool_name]
+    resolved = change or await resolver(args, token, hass)
+    if isinstance(resolved, tuple):
+        return {
+            "kind": "config_diff",
+            **_summary("zigbee_group"),
+            "before": "null",
+            "after": "null",
+            "preview": {},
+        }
+    change = resolved
+    before, after = _group_change_states(change)
+    preview: dict[str, Any] = {
+        "backend": change.backend,
+        "operation": change.operation,
+        "member_count": len(change.members),
+        "warning": (
+            "Zigbee group membership changes which devices respond together even when Home Assistant is unavailable."
+        ),
+    }
+    if change.before_hash:
+        preview["content_hash"] = change.before_hash
+    mesa_note = _mesa_confirm_annotation(
+        token,
+        hass,
+        [("zigbee", f"group_{change.operation}", list(change.mesa_entities))],
+    )
+    if mesa_note:
+        preview["mesa"] = mesa_note
+    target = (
+        {
+            "type": "entity",
+            "id": change.group.entity_id,
+            "label": change.name,
+        }
+        if change.group is not None
+        else {
+            "type": "device",
+            "id": change.members[0].device.id,
+            "label": change.name,
+        }
+    )
+    return {
+        "kind": "config_diff",
+        **_summary("zigbee_group.named", operation=change.operation, name=change.name),
+        "target": target,
+        "before": _truncate(json.dumps(before, indent=2)),
+        "after": _truncate(json.dumps(after, indent=2)),
+        "preview": preview,
+    }
+
+
 async def _build_diff_configure_zigbee_reporting(
     args: dict,
     token: TokenRecord,
@@ -1170,6 +1806,27 @@ async def _tool_get_radio_network(
         _tool_success(json.dumps({"networks": networks}, default=str)),
         "allowed",
         "get_radio_network",
+    )
+
+
+async def _tool_get_zigbee_groups(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> tuple[dict, str, str]:
+    """MCP tool: scoped group membership and groupable endpoint inventory."""
+    if effective_cap(token, "cap_diagnostics") == CAP_DENY:
+        return _tool_error("Forbidden."), "denied", "get_zigbee_groups"
+    groups, errors = await _scoped_zigbee_groups(token, hass)
+    candidates = await _scoped_groupable_members(token, hass)
+    body: dict[str, Any] = {
+        "groups": [_project_zigbee_group(group) for group in groups],
+        "groupable_members": candidates,
+    }
+    if errors:
+        body["backend_errors"] = errors
+    return (
+        _tool_success(json.dumps(body, default=str)),
+        "allowed",
+        "get_zigbee_groups",
     )
 
 
@@ -2068,6 +2725,272 @@ async def _execute_configure_zigbee_reporting(
         ),
         "allowed",
         change.device.id,
+    )
+
+
+_GROUP_CHANGE_RESOLVERS = {
+    "create_zigbee_group": _resolve_create_zigbee_group,
+    "set_zigbee_group_members": _resolve_set_zigbee_group_members,
+    "remove_zigbee_group": _resolve_remove_zigbee_group,
+}
+
+
+async def _tool_zigbee_group_change(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    *,
+    tool_name: str,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Shared dual-capability and MESA gate for group topology changes."""
+    caps = ("cap_radio_write", "cap_physical_control")
+    if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool_name
+    resolver = _GROUP_CHANGE_RESOLVERS[tool_name]
+    pre = await resolver(args, token, hass)
+    if isinstance(pre, tuple):
+        return pre
+    pre_diff = await _build_diff_zigbee_group(
+        args, token, hass, tool_name=tool_name, change=pre
+    )
+    mesa_outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        token,
+        domain="zigbee",
+        service=f"group_{pre.operation}",
+        service_data={
+            "operation": pre.operation,
+            "name": pre.name,
+            "members": [
+                {"device_id": device.device.id, "endpoint": endpoint}
+                for device, endpoint in zip(pre.members, pre.endpoints, strict=True)
+            ],
+        },
+        entities=list(pre.mesa_entities),
+        request_id=request_id or tool_name,
+        client_ip=client_ip,
+        session_id=request_id or tool_name,
+        confirm_approved=False,
+        approval_tool_name=tool_name,
+        approval_args=args,
+        approval_diff=pre_diff,
+        require_all=True,
+    )
+    if mesa_outcome.blocked:
+        fire_mesa_blocked_event(hass, token, mesa_outcome.blocked)
+    if mesa_outcome.decision == "pending":
+        return await _pending_or_inline(hass, data, token, mesa_outcome.approval)
+    if mesa_outcome.decision == "deny":
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool_name
+    if mesa_outcome.warnings:
+        _mesa_advisory_ctx.set(True)
+    if not _approved_exec_ctx.get():
+        for cap in caps:
+            if effective_cap(token, cap) != CAP_CONFIRM:
+                continue
+            blocked = await _gate(
+                cap,
+                token,
+                hass,
+                data,
+                tool_name=tool_name,
+                args=args,
+                request_id=request_id,
+                client_ip=client_ip,
+                diff=pre_diff,
+            )
+            if blocked is not None:
+                return blocked
+    return await _execute_zigbee_group_change(
+        args,
+        token,
+        hass,
+        data,
+        tool_name=tool_name,
+        request_id=request_id,
+        client_ip=client_ip,
+    )
+
+
+async def _execute_zigbee_group_change(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    *,
+    tool_name: str,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Revalidate, execute, exactly confirm, and audit one group change."""
+    if any(
+        effective_cap(token, cap) == CAP_DENY
+        for cap in ("cap_radio_write", "cap_physical_control")
+    ):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool_name
+    change = await _GROUP_CHANGE_RESOLVERS[tool_name](args, token, hass)
+    if isinstance(change, tuple):
+        return change
+    diff = await _build_diff_zigbee_group(
+        args, token, hass, tool_name=tool_name, change=change
+    )
+    mesa_outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        token,
+        domain="zigbee",
+        service=f"group_{change.operation}",
+        service_data={
+            "operation": change.operation,
+            "name": change.name,
+            "members": [
+                {"device_id": device.device.id, "endpoint": endpoint}
+                for device, endpoint in zip(change.members, change.endpoints, strict=True)
+            ],
+        },
+        entities=list(change.mesa_entities),
+        request_id=request_id or tool_name,
+        client_ip=client_ip,
+        session_id=request_id or tool_name,
+        confirm_approved=_approved_exec_ctx.get(),
+        approval_tool_name=tool_name,
+        approval_args=args,
+        approval_diff=diff,
+        require_all=True,
+    )
+    if mesa_outcome.blocked:
+        fire_mesa_blocked_event(hass, token, mesa_outcome.blocked)
+    if mesa_outcome.decision == "pending":
+        return await _pending_or_inline(hass, data, token, mesa_outcome.approval)
+    if mesa_outcome.decision == "deny":
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", tool_name
+    if mesa_outcome.warnings:
+        _mesa_advisory_ctx.set(True)
+
+    try:
+        if change.operation == "create":
+            after_configuration = await radio_backend.async_create_zigbee_group(
+                hass,
+                backend=change.backend,
+                name=change.name,
+                members=tuple(
+                    (device.ieee, endpoint)
+                    for device, endpoint in zip(
+                        change.members, change.endpoints, strict=True
+                    )
+                ),
+            )
+        elif tool_name == "set_zigbee_group_members" and change.group is not None:
+            after_configuration = await radio_backend.async_set_zigbee_group_members(
+                hass,
+                backend=change.backend,
+                group=change.group.configuration,
+                operation=change.operation,
+                members=tuple(
+                    (device.ieee, endpoint)
+                    for device, endpoint in zip(
+                        change.members, change.endpoints, strict=True
+                    )
+                ),
+            )
+        elif tool_name == "remove_zigbee_group" and change.group is not None:
+            await radio_backend.async_remove_zigbee_group(
+                hass, backend=change.backend, group=change.group.configuration
+            )
+            after_configuration = None
+        else:
+            raise RadioError("Unsupported Zigbee group change.")
+    except (RadioError, radio_backend.ZigbeeGroupConfigurationError) as exc:
+        target_id = change.group.entity_id if change.group else change.members[0].device.id
+        return _tool_error(str(exc)), "invalid_request", target_id
+
+    before_state, after_state = _group_change_states(change)
+    after_hash = (
+        radio_backend.zigbee_group_hash(change.backend, after_configuration)
+        if after_configuration is not None
+        else None
+    )
+    target_id = change.group.entity_id if change.group else change.members[0].device.id
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=target_id,
+        action=(
+            "create"
+            if tool_name == "create_zigbee_group"
+            else "delete"
+            if tool_name == "remove_zigbee_group"
+            else "edit"
+        ),
+        before={
+            "snapshot_type": "zigbee_group",
+            "restorable": False,
+            "state": before_state,
+            "content_hash": change.before_hash,
+        },
+        after={
+            "snapshot_type": "zigbee_group",
+            "restorable": False,
+            "state": after_state,
+            "content_hash": after_hash,
+        },
+        alias=change.name,
+        summary=_version_summary(
+            "device.zigbee_group", operation=change.operation, name=change.name
+        ),
+    )
+    body: dict[str, Any] = {
+        "success": True,
+        "backend": change.backend,
+        "operation": change.operation,
+        "name": change.name,
+        "content_hash": after_hash,
+        "confirmation": (
+            "retained_group_state"
+            if change.backend == radio_backend.BACKEND_Z2M
+            else "zha_operation_complete"
+        ),
+        "message": "Zigbee group change completed and confirmed.",
+    }
+    if change.group is not None:
+        body["group_entity_id"] = change.group.entity_id
+    if mesa_outcome.warnings:
+        body["mesa_advisory"] = mesa_outcome.warnings
+    return _tool_success(json.dumps(body)), "allowed", target_id
+
+
+async def _execute_create_zigbee_group(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    return await _execute_zigbee_group_change(
+        args, token, hass, data, tool_name="create_zigbee_group",
+        request_id=request_id, client_ip=client_ip,
+    )
+
+
+async def _execute_set_zigbee_group_members(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    return await _execute_zigbee_group_change(
+        args, token, hass, data, tool_name="set_zigbee_group_members",
+        request_id=request_id, client_ip=client_ip,
+    )
+
+
+async def _execute_remove_zigbee_group(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    return await _execute_zigbee_group_change(
+        args, token, hass, data, tool_name="remove_zigbee_group",
+        request_id=request_id, client_ip=client_ip,
     )
 
 

@@ -1211,6 +1211,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "zigbee_binding.devices": "{operation} Zigbee binding from {source} to {target}",
     "zigbee_reporting": "Configure Zigbee attribute reporting",
     "zigbee_reporting.device": "Configure {cluster}.{attribute} reporting for {label}",
+    "zigbee_group": "Change a Zigbee group",
+    "zigbee_group.named": "{operation} Zigbee group {name}",
     # System.
     "restart_ha": "Restart Home Assistant",
     # {file} rather than a literal configuration.yaml: these tools write any
@@ -1340,6 +1342,8 @@ _APPROVAL_SUMMARY_BODIES = {
     "zigbee_binding.devices": "This will {operation} direct Zigbee control from {source} to {target}. Open Details to review the exact relationship.",
     "zigbee_reporting": "This will change how frequently a Zigbee device reports an attribute. Open Details to review the intervals.",
     "zigbee_reporting.device": "This will change {cluster}.{attribute} reporting for {label}. Open Details to review the intervals.",
+    "zigbee_group": "This will change which devices are controlled together as a Zigbee group. Open Details to review the membership.",
+    "zigbee_group.named": "This will {operation} Zigbee group {name}. Open Details to review the exact membership change.",
     "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
     "integration.reconfigure": (
         "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. "
@@ -1492,6 +1496,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "device.zigbee_property": "changed Zigbee2MQTT property: {property}",
     "device.zigbee_binding": "{operation} Zigbee binding to {target}",
     "device.zigbee_reporting": "configured Zigbee reporting: {cluster}.{attribute}",
+    "device.zigbee_group": "{operation} Zigbee group: {name}",
     "config_entry.removed": "integration removed",
     "card.added": "added {subject} ({where})",
     "card.edited": "edited {subject} ({where})",

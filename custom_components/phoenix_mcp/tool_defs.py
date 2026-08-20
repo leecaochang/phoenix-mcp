@@ -1309,6 +1309,115 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "get_zigbee_groups",
+        "description": (
+            "List ZHA and Zigbee2MQTT groups anchored by Home Assistant group entities this token can access. Returns "
+            "group entity IDs, scoped member device IDs/endpoints, hidden-member counts, scene counts, exact content "
+            "hashes, and the visible devices/endpoints eligible for grouping. Raw Zigbee group IDs, IEEE addresses, "
+            "MQTT topics, and inaccessible members are never returned. Use the content hash for every existing-group write."
+        ),
+        "cap": "cap_diagnostics",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "create_zigbee_group",
+        "description": (
+            "Create one non-empty ZHA or Zigbee2MQTT group. The backend is inferred from 1 to 32 WRITE-accessible "
+            "member device registry IDs; every endpoint must be listed by get_zigbee_groups.groupable_members, and all "
+            "members must share one network. Phoenix allocates the raw group ID and resolves IEEE addresses internally. "
+            "The name is a bounded display name, not a topic, and MQTT topic characters are rejected. Requires Radio "
+            "Management, Physical Control, inherited MESA, and may require approval."
+        ),
+        "caps": ["cap_radio_write", "cap_physical_control"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string", "minLength": 1, "maxLength": 128,
+                    "description": "Display name for the new group; not an MQTT topic.",
+                },
+                "members": {
+                    "type": "array", "minItems": 1, "maxItems": 32,
+                    "description": "Initial WRITE-accessible device endpoints from groupable_members.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "device_id": {"type": "string"},
+                            "endpoint": {"type": "integer", "minimum": 1, "maximum": 254},
+                        },
+                        "required": ["device_id", "endpoint"],
+                    },
+                },
+            },
+            "required": ["name", "members"],
+        },
+    },
+    {
+        "name": "set_zigbee_group_members",
+        "description": (
+            "Add or remove 1 to 32 scoped device endpoints from an existing ZHA or Zigbee2MQTT group. Address the "
+            "group by an accessible Home Assistant group_entity_id and pass its latest content_hash. Member devices "
+            "must be WRITE-accessible on the same backend; add endpoints must be listed by get_zigbee_groups. Removal "
+            "always preserves unrelated Zigbee2MQTT reporting. Requires Radio Management, Physical Control, inherited "
+            "MESA, and may require approval. Raw group IDs and IEEE addresses are never accepted."
+        ),
+        "caps": ["cap_radio_write", "cap_physical_control"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "group_entity_id": {
+                    "type": "string",
+                    "description": "Accessible Home Assistant entity representing the Zigbee group.",
+                },
+                "operation": {
+                    "type": "string", "enum": ["add", "remove"],
+                    "description": "Whether to add or remove the selected endpoints.",
+                },
+                "members": {
+                    "type": "array", "minItems": 1, "maxItems": 32,
+                    "description": "WRITE-accessible device endpoints to add or remove.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "device_id": {"type": "string"},
+                            "endpoint": {"type": "integer", "minimum": 1, "maximum": 254},
+                        },
+                        "required": ["device_id", "endpoint"],
+                    },
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "Latest content_hash for the group from get_zigbee_groups.",
+                },
+            },
+            "required": ["group_entity_id", "operation", "members", "expected_hash"],
+        },
+    },
+    {
+        "name": "remove_zigbee_group",
+        "description": (
+            "Remove one existing ZHA or Zigbee2MQTT group by an accessible Home Assistant group_entity_id and its "
+            "latest content_hash. Phoenix refuses removal when any current member is hidden or not WRITE-accessible, "
+            "and Zigbee2MQTT force removal is never used. Requires Radio Management, Physical Control, inherited MESA "
+            "across the group and every member, and may require approval."
+        ),
+        "caps": ["cap_radio_write", "cap_physical_control"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "group_entity_id": {
+                    "type": "string",
+                    "description": "Accessible Home Assistant entity representing the Zigbee group.",
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "Latest content_hash for the group from get_zigbee_groups.",
+                },
+            },
+            "required": ["group_entity_id", "expected_hash"],
+        },
+    },
+    {
         "name": "restart_ha",
         "description": "Restart Home Assistant.",
         "cap": "cap_restart",
@@ -3280,6 +3389,10 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "set_zigbee_device_property": _annot(False, True, True),
     "set_zigbee_binding": _annot(False, True, True),
     "configure_zigbee_reporting": _annot(False, True, True),
+    "get_zigbee_groups": _annot(True, False, True),
+    "create_zigbee_group": _annot(False, True, True),
+    "set_zigbee_group_members": _annot(False, True, True),
+    "remove_zigbee_group": _annot(False, True, True),
     # Native HA MCP tools.
     "GetLiveContext": _annot(True, False, True),
     "GetDateTime": _annot(True, False, True),

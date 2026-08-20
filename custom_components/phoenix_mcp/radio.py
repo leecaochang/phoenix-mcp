@@ -1,18 +1,18 @@
 """Radio network management: protocol/backend detection, projections, and ops.
 
-Phoenix MCP's radio tool surface (get_radio_network, get_radio_device, and the
-Zigbee write tools) is protocol-generic at the tool layer and backend-specific
-here. v1 covers one protocol, Zigbee, with two backends:
+Phoenix MCP's radio tool surface (network, device, and group reads plus Zigbee
+writes) is protocol-generic at the tool layer and backend-specific here. v1
+covers one protocol, Zigbee, with two backends:
 
 - "z2m" (Zigbee2MQTT): driven over Z2M's MQTT request/response topics
   (<base>/bridge/request/... answered on <base>/bridge/response/...) and
   retained state topics (<base>/bridge/info, <base>/bridge/devices). The MQTT
   access goes through two module-level seams (_mqtt_subscribe/_mqtt_publish)
   so tests can fake the broker without paho-mqtt.
-- "zha": driven through ws_dispatch (the two clean read commands) plus the
-  zha.permit / zha.remove admin services and the reconfigure task starter in
-  ws_dispatch. The write-side ZHA WS commands are deliberately not dispatched
-  (see the ALLOWED_WS_COMMANDS comment in ws_dispatch.py).
+- "zha": driven through ws_dispatch for the clean read, binding, and group
+  commands, plus the zha.permit / zha.remove admin services and the reconfigure
+  task starter. Every dispatched write has a fixed command shape and resolves
+  its radio identifiers from registry-scoped objects upstream.
 
 Every read is an ALLOWLIST projection, never a blocklist strip: both backends'
 raw payloads can carry network key material (zigpy NetworkBackup keys; Z2M
@@ -80,6 +80,11 @@ _Z2M_RADIO_MAX_BINDINGS = 128
 _Z2M_RADIO_MAX_REPORTINGS = 128
 _Z2M_RADIO_MAX_NAME = 128
 _Z2M_RADIO_MAX_REQUEST_CLUSTERS = 16
+_ZIGBEE_GROUP_MAX_GROUPS = 256
+_ZIGBEE_GROUP_MAX_MEMBERS = 256
+_ZIGBEE_GROUP_MAX_SCENES = 256
+_ZIGBEE_GROUP_NAME_MAX_LENGTH = 128
+_ZIGBEE_GROUP_MAX_ENTITY_IDS = 64
 _Z2M_DIRECT_PROPERTY_TYPES = frozenset(
     {"binary", "enum", "numeric", "text", "list", "composite"}
 )
@@ -99,6 +104,10 @@ class Z2MPropertyValidationError(ValueError):
 
 class Z2MRadioConfigurationError(ValueError):
     """Zigbee2MQTT endpoint, binding, or reporting metadata is unsafe."""
+
+
+class ZigbeeGroupConfigurationError(ValueError):
+    """A Zigbee group payload or requested change is unsafe or malformed."""
 
 
 # ---------------------------------------------------------------------------
@@ -1067,6 +1076,162 @@ def z2m_radio_configuration_hash(configuration: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def validate_zigbee_group_name(value: Any) -> str:
+    """Validate a user-facing group name without accepting an MQTT topic."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > _ZIGBEE_GROUP_NAME_MAX_LENGTH
+        or any(char in value for char in ("\x00", "/", "+", "#"))
+    ):
+        raise ZigbeeGroupConfigurationError(
+            "name must be 1 to 128 characters with no surrounding whitespace or MQTT topic characters."
+        )
+    return value
+
+
+def _zigbee_group_id(value: Any) -> int:
+    """Validate a backend-provided Zigbee group id."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        raise ZigbeeGroupConfigurationError("Zigbee group id is malformed.")
+    return value
+
+
+def _zigbee_group_ieee(value: Any) -> str:
+    """Bound one backend-provided IEEE address for internal resolution only."""
+    if not isinstance(value, str) or not value or len(value) > 32 or "\x00" in value:
+        raise ZigbeeGroupConfigurationError("Zigbee group member address is malformed.")
+    return value.lower()
+
+
+def _zigbee_group_members(raw: Any, *, zha: bool) -> list[dict[str, Any]]:
+    """Normalize one bounded backend member list."""
+    if not isinstance(raw, list) or len(raw) > _ZIGBEE_GROUP_MAX_MEMBERS:
+        raise ZigbeeGroupConfigurationError("Zigbee group members are missing or too large.")
+    members: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ZigbeeGroupConfigurationError("Zigbee group member is malformed.")
+        if zha:
+            device = item.get("device")
+            ieee = device.get("ieee") if isinstance(device, dict) else None
+            endpoint = item.get("endpoint_id")
+        else:
+            ieee = item.get("ieee_address")
+            endpoint = item.get("endpoint")
+        key = (
+            _zigbee_group_ieee(ieee),
+            _z2m_endpoint_id(endpoint, "Zigbee group member endpoint"),
+        )
+        if key in seen:
+            raise ZigbeeGroupConfigurationError("Zigbee group contains a duplicate member.")
+        seen.add(key)
+        members.append({"ieee": key[0], "endpoint": key[1]})
+    members.sort(key=lambda item: (item["ieee"], item["endpoint"]))
+    return members
+
+
+def normalize_z2m_group(raw: Any) -> dict[str, Any]:
+    """Normalize the complete Z2M group slice used for CAS and mutation."""
+    if not isinstance(raw, dict):
+        raise ZigbeeGroupConfigurationError("Zigbee2MQTT group is malformed.")
+    scenes = raw.get("scenes")
+    if not isinstance(scenes, list) or len(scenes) > _ZIGBEE_GROUP_MAX_SCENES:
+        raise ZigbeeGroupConfigurationError("Zigbee2MQTT group scenes are missing or too large.")
+    normalized_scenes: list[dict[str, Any]] = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            raise ZigbeeGroupConfigurationError("Zigbee2MQTT group scene is malformed.")
+        scene_id = scene.get("id")
+        scene_name = scene.get("name")
+        if (
+            isinstance(scene_id, bool)
+            or not isinstance(scene_id, int)
+            or not 0 <= scene_id <= 255
+            or not isinstance(scene_name, str)
+            or len(scene_name) > _ZIGBEE_GROUP_NAME_MAX_LENGTH
+            or "\x00" in scene_name
+        ):
+            raise ZigbeeGroupConfigurationError("Zigbee2MQTT group scene is malformed.")
+        normalized_scenes.append({"id": scene_id, "name": scene_name})
+    normalized_scenes.sort(key=lambda item: (item["id"], item["name"]))
+    return {
+        "id": _zigbee_group_id(raw.get("id")),
+        "name": validate_zigbee_group_name(raw.get("friendly_name")),
+        "members": _zigbee_group_members(raw.get("members"), zha=False),
+        "scenes": normalized_scenes,
+    }
+
+
+def normalize_zha_group(raw: Any) -> dict[str, Any]:
+    """Normalize the complete ZHA group slice used for CAS and mutation."""
+    if not isinstance(raw, dict):
+        raise ZigbeeGroupConfigurationError("ZHA group is malformed.")
+    members = _zigbee_group_members(raw.get("members"), zha=True)
+    entity_ids: set[str] = set()
+    for item in raw.get("members", []):
+        entities = item.get("entities") if isinstance(item, dict) else None
+        if not isinstance(entities, list) or len(entities) > _ZIGBEE_GROUP_MAX_ENTITY_IDS:
+            raise ZigbeeGroupConfigurationError("ZHA group entity metadata is malformed or too large.")
+        for entity in entities:
+            entity_id = entity.get("entity_id") if isinstance(entity, dict) else None
+            if (
+                not isinstance(entity_id, str)
+                or not entity_id
+                or len(entity_id) > 255
+                or "\x00" in entity_id
+            ):
+                raise ZigbeeGroupConfigurationError("ZHA group entity metadata is malformed.")
+            entity_ids.add(entity_id)
+            if len(entity_ids) > _ZIGBEE_GROUP_MAX_ENTITY_IDS:
+                raise ZigbeeGroupConfigurationError("ZHA group has too many entity anchors.")
+    return {
+        "id": _zigbee_group_id(raw.get("group_id")),
+        "name": validate_zigbee_group_name(raw.get("name")),
+        "members": members,
+        "scenes": [],
+        "entity_ids": sorted(entity_ids),
+    }
+
+
+def zigbee_group_hash(backend: str, configuration: dict[str, Any]) -> str:
+    """Return a stable full-state hash without exposing radio identifiers."""
+    canonical = json.dumps(
+        {
+            "backend": backend,
+            "id": configuration.get("id"),
+            "name": configuration.get("name"),
+            "members": configuration.get("members"),
+            "scenes": configuration.get("scenes"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def normalize_zigbee_groups(backend: str, raw: Any) -> list[dict[str, Any]]:
+    """Normalize a bounded full group list from one backend."""
+    if not isinstance(raw, list) or len(raw) > _ZIGBEE_GROUP_MAX_GROUPS:
+        raise ZigbeeGroupConfigurationError("Zigbee group list is missing or too large.")
+    if backend == BACKEND_Z2M:
+        normalizer = normalize_z2m_group
+    elif backend == BACKEND_ZHA:
+        normalizer = normalize_zha_group
+    else:
+        raise ZigbeeGroupConfigurationError(f"Unknown Zigbee backend: {backend}")
+    groups = [normalizer(item) for item in raw]
+    ids = [item["id"] for item in groups]
+    names = [item["name"] for item in groups]
+    if len(ids) != len(set(ids)) or len(names) != len(set(names)):
+        raise ZigbeeGroupConfigurationError("Zigbee group list contains duplicate identities.")
+    groups.sort(key=lambda item: item["id"])
+    return groups
+
+
 def project_z2m_radio_configuration(
     entry: Any,
     *,
@@ -1490,6 +1655,321 @@ async def async_zha_device_info(hass: HomeAssistant, ieee: str) -> dict[str, Any
     except WsDispatchError as exc:
         raise RadioError(str(exc)) from exc
     return raw if isinstance(raw, dict) else {}
+
+
+async def async_zigbee_groups(
+    hass: HomeAssistant, backend: str
+) -> list[dict[str, Any]]:
+    """Read and normalize the complete group state for one Zigbee backend."""
+    try:
+        if backend == BACKEND_Z2M:
+            raw = await async_z2m_retained(hass, "bridge/groups")
+        elif backend == BACKEND_ZHA:
+            raw = await async_ws_command(hass, "zha/groups", {})
+        else:
+            raise RadioError(f"Unknown Zigbee backend: {backend}")
+        return normalize_zigbee_groups(backend, raw)
+    except (WsDispatchError, ZigbeeGroupConfigurationError) as exc:
+        raise RadioError(f"Unsafe or unavailable {backend} group state: {exc}") from exc
+
+
+async def async_zha_groupable_devices(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Read ZHA's groupable device endpoints for scoped projection upstream."""
+    try:
+        raw = await async_ws_command(hass, "zha/devices/groupable", {})
+    except WsDispatchError as exc:
+        raise RadioError(str(exc)) from exc
+    if not isinstance(raw, list) or len(raw) > _ZIGBEE_GROUP_MAX_MEMBERS:
+        raise RadioError("ZHA groupable device payload is malformed or too large.")
+    return [item for item in raw if isinstance(item, dict)]
+
+
+async def _async_confirm_zigbee_group(
+    hass: HomeAssistant,
+    backend: str,
+    predicate: Callable[[list[dict[str, Any]]], bool],
+    *,
+    timeout: float = Z2M_RETAINED_READ_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """Poll backend group state until an exact mutation predicate holds."""
+    deadline = hass.loop.time() + timeout
+    while True:
+        groups = await async_zigbee_groups(hass, backend)
+        if predicate(groups):
+            return groups
+        remaining = deadline - hass.loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        await asyncio.sleep(min(0.25, remaining))
+
+
+def _group_by_id(groups: list[dict[str, Any]], group_id: int) -> dict[str, Any] | None:
+    return next((group for group in groups if group["id"] == group_id), None)
+
+
+async def async_create_zigbee_group(
+    hass: HomeAssistant,
+    *,
+    backend: str,
+    name: str,
+    members: tuple[tuple[str, int], ...],
+) -> dict[str, Any]:
+    """Create a non-empty group and exactly confirm its resolved membership."""
+    name = validate_zigbee_group_name(name)
+    if not members or len(members) > _ZIGBEE_GROUP_MAX_MEMBERS:
+        raise ZigbeeGroupConfigurationError("A group needs 1 to 256 members.")
+    normalized_members = tuple(
+        (_zigbee_group_ieee(ieee), _z2m_endpoint_id(endpoint, "member endpoint"))
+        for ieee, endpoint in members
+    )
+    if len(normalized_members) != len(set(normalized_members)):
+        raise ZigbeeGroupConfigurationError("Group members must not contain duplicates.")
+
+    if backend == BACKEND_ZHA:
+        payload_members = [
+            {"ieee": ieee, "endpoint_id": endpoint}
+            for ieee, endpoint in normalized_members
+        ]
+        try:
+            raw = await async_ws_command(
+                hass,
+                "zha/group/add",
+                {"group_name": name, "members": payload_members},
+                timeout=Z2M_REQUEST_TIMEOUT_SECONDS,
+            )
+            created = normalize_zha_group(raw)
+        except (WsDispatchError, ZigbeeGroupConfigurationError) as exc:
+            raise RadioError("ZHA could not safely create and confirm the group.") from exc
+        expected = set(normalized_members)
+        if created["name"] != name or {
+            (item["ieee"], item["endpoint"]) for item in created["members"]
+        } != expected:
+            raise RadioError("ZHA returned a mismatched group after creation.")
+        return created
+
+    if backend != BACKEND_Z2M:
+        raise RadioError(f"Unknown Zigbee backend: {backend}")
+    try:
+        response = await async_z2m_request(
+            hass, "group/add", {"friendly_name": name}
+        )
+    except (RadioError, TimeoutError) as exc:
+        raise RadioError(
+            "Zigbee2MQTT could not create the group. Read groups before retrying."
+        ) from exc
+    group_id = _zigbee_group_id(response.get("id"))
+    if response.get("friendly_name") != name:
+        raise RadioError("Zigbee2MQTT returned a mismatched group after creation.")
+    added: list[tuple[str, int]] = []
+    try:
+        for ieee, endpoint in normalized_members:
+            await async_z2m_request(
+                hass,
+                "group/members/add",
+                {"group": group_id, "device": ieee, "endpoint": endpoint},
+            )
+            added.append((ieee, endpoint))
+    except Exception as exc:  # noqa: BLE001 - compensate a partially-created group
+        rollback_failed = False
+        for ieee, endpoint in reversed(added):
+            try:
+                await async_z2m_request(
+                    hass,
+                    "group/members/remove",
+                    {
+                        "group": group_id,
+                        "device": ieee,
+                        "endpoint": endpoint,
+                        "skip_disable_reporting": True,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                rollback_failed = True
+        try:
+            await async_z2m_request(
+                hass, "group/remove", {"id": group_id, "force": False}
+            )
+        except Exception:  # noqa: BLE001
+            rollback_failed = True
+        suffix = " Cleanup was incomplete; inspect groups before retrying." if rollback_failed else " The empty group was rolled back."
+        raise RadioError(f"Zigbee2MQTT could not add every requested member.{suffix}") from exc
+
+    expected = set(normalized_members)
+    try:
+        groups = await _async_confirm_zigbee_group(
+            hass,
+            backend,
+            lambda current: (
+                (group := _group_by_id(current, group_id)) is not None
+                and group["name"] == name
+                and {(item["ieee"], item["endpoint"]) for item in group["members"]}
+                == expected
+            ),
+        )
+    except TimeoutError as exc:
+        raise RadioError(
+            "Timed out waiting for Zigbee2MQTT to confirm the new group. Read groups again before retrying."
+        ) from exc
+    confirmed_created = _group_by_id(groups, group_id)
+    assert confirmed_created is not None
+    return confirmed_created
+
+
+async def async_set_zigbee_group_members(
+    hass: HomeAssistant,
+    *,
+    backend: str,
+    group: dict[str, Any],
+    operation: str,
+    members: tuple[tuple[str, int], ...],
+) -> dict[str, Any]:
+    """Add/remove exact members and confirm the complete resulting group state."""
+    if operation not in {"add", "remove"}:
+        raise ZigbeeGroupConfigurationError("operation must be add or remove.")
+    group_id = _zigbee_group_id(group.get("id"))
+    normalized = tuple(
+        (_zigbee_group_ieee(ieee), _z2m_endpoint_id(endpoint, "member endpoint"))
+        for ieee, endpoint in members
+    )
+    if not normalized or len(normalized) != len(set(normalized)):
+        raise ZigbeeGroupConfigurationError("members must be a non-empty list without duplicates.")
+    before = {(item["ieee"], item["endpoint"]) for item in group["members"]}
+    requested = set(normalized)
+    expected = before | requested if operation == "add" else before - requested
+    if operation == "remove" and not expected:
+        raise ZigbeeGroupConfigurationError(
+            "Removing every member would leave an unanchored group; remove the group instead."
+        )
+    expected_configuration = {
+        **group,
+        "members": [
+            {"ieee": ieee, "endpoint": endpoint}
+            for ieee, endpoint in sorted(expected)
+        ],
+    }
+    expected_hash = zigbee_group_hash(backend, expected_configuration)
+
+    if backend == BACKEND_ZHA:
+        try:
+            raw = await async_ws_command(
+                hass,
+                f"zha/group/members/{operation}",
+                {
+                    "group_id": group_id,
+                    "members": [
+                        {"ieee": ieee, "endpoint_id": endpoint}
+                        for ieee, endpoint in normalized
+                    ],
+                },
+                timeout=Z2M_REQUEST_TIMEOUT_SECONDS,
+            )
+            after = normalize_zha_group(raw)
+        except (WsDispatchError, ZigbeeGroupConfigurationError) as exc:
+            raise RadioError(
+                "ZHA could not confirm the complete group membership change. Read groups before retrying because some endpoints may have changed."
+            ) from exc
+        if zigbee_group_hash(backend, after) != expected_hash:
+            raise RadioError("ZHA returned a mismatched group membership result.")
+        return after
+
+    if backend != BACKEND_Z2M:
+        raise RadioError(f"Unknown Zigbee backend: {backend}")
+    applied: list[tuple[str, int]] = []
+    try:
+        for ieee, endpoint in normalized:
+            payload: dict[str, Any] = {
+                "group": group_id,
+                "device": ieee,
+                "endpoint": endpoint,
+            }
+            if operation == "remove":
+                payload["skip_disable_reporting"] = True
+            await async_z2m_request(hass, f"group/members/{operation}", payload)
+            applied.append((ieee, endpoint))
+    except Exception as exc:  # noqa: BLE001 - compensate a partial batch
+        inverse = "remove" if operation == "add" else "add"
+        rollback_failed = False
+        for ieee, endpoint in reversed(applied):
+            payload = {
+                "group": group_id,
+                "device": ieee,
+                "endpoint": endpoint,
+            }
+            if inverse == "remove":
+                payload["skip_disable_reporting"] = True
+            try:
+                await async_z2m_request(
+                    hass, f"group/members/{inverse}", payload
+                )
+            except Exception:  # noqa: BLE001
+                rollback_failed = True
+        suffix = (
+            " Rollback was incomplete; read groups before retrying."
+            if rollback_failed
+            else " The completed endpoints were rolled back."
+        )
+        raise RadioError(
+            f"Zigbee2MQTT could not change every requested group member.{suffix}"
+        ) from exc
+    try:
+        groups = await _async_confirm_zigbee_group(
+            hass,
+            backend,
+            lambda current: (
+                (updated := _group_by_id(current, group_id)) is not None
+                and zigbee_group_hash(backend, updated) == expected_hash
+            ),
+        )
+    except TimeoutError as exc:
+        raise RadioError(
+            "Timed out waiting for Zigbee2MQTT to confirm group membership. Read groups again before retrying."
+        ) from exc
+    confirmed_after = _group_by_id(groups, group_id)
+    assert confirmed_after is not None
+    return confirmed_after
+
+
+async def async_remove_zigbee_group(
+    hass: HomeAssistant, *, backend: str, group: dict[str, Any]
+) -> None:
+    """Remove one resolved group without force and confirm that it is absent."""
+    group_id = _zigbee_group_id(group.get("id"))
+    if backend == BACKEND_ZHA:
+        try:
+            raw = await async_ws_command(
+                hass,
+                "zha/group/remove",
+                {"group_ids": [group_id]},
+                timeout=Z2M_REQUEST_TIMEOUT_SECONDS,
+            )
+            groups = normalize_zigbee_groups(backend, raw)
+        except (WsDispatchError, ZigbeeGroupConfigurationError) as exc:
+            raise RadioError("ZHA could not safely remove and confirm the group.") from exc
+        if _group_by_id(groups, group_id) is not None:
+            raise RadioError("ZHA did not confirm group removal.")
+        return
+    if backend != BACKEND_Z2M:
+        raise RadioError(f"Unknown Zigbee backend: {backend}")
+    try:
+        response = await async_z2m_request(
+            hass, "group/remove", {"id": group_id, "force": False}
+        )
+    except (RadioError, TimeoutError) as exc:
+        raise RadioError(
+            "Zigbee2MQTT could not remove the group. Read groups before retrying."
+        ) from exc
+    if response.get("id") != group_id or response.get("force") is not False:
+        raise RadioError("Zigbee2MQTT returned a mismatched group removal result.")
+    try:
+        await _async_confirm_zigbee_group(
+            hass,
+            backend,
+            lambda groups: _group_by_id(groups, group_id) is None,
+        )
+    except TimeoutError as exc:
+        raise RadioError(
+            "Timed out waiting for Zigbee2MQTT to confirm group removal. Read groups again before retrying."
+        ) from exc
 
 
 async def async_permit_join(

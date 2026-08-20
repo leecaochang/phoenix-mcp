@@ -105,22 +105,27 @@ from .tools.integration_reconfigure import (
     async_run_reconfigure_flow,
 )
 from .tools.radio import (
+    _execute_create_zigbee_group,
     _execute_configure_zigbee_reporting,
     _execute_permit_zigbee_join,
     _execute_reconfigure_zigbee_device,
     _execute_remove_zigbee_device,
+    _execute_remove_zigbee_group,
     _execute_set_zigbee_device_options,
     _execute_set_zigbee_device_property,
     _execute_set_zigbee_binding,
+    _execute_set_zigbee_group_members,
     _tool_configure_zigbee_reporting,
     _tool_get_radio_device,
     _tool_get_radio_network,
+    _tool_get_zigbee_groups,
     _tool_permit_zigbee_join,
     _tool_reconfigure_zigbee_device,
     _tool_remove_zigbee_device,
     _tool_set_zigbee_device_options,
     _tool_set_zigbee_device_property,
     _tool_set_zigbee_binding,
+    _tool_zigbee_group_change,
 )
 from .tools.energy import (
     _execute_edit_energy_config,
@@ -8869,6 +8874,9 @@ _register_executor("set_zigbee_device_options", _execute_set_zigbee_device_optio
 _register_executor("set_zigbee_device_property", _execute_set_zigbee_device_property)
 _register_executor("set_zigbee_binding", _execute_set_zigbee_binding)
 _register_executor("configure_zigbee_reporting", _execute_configure_zigbee_reporting)
+_register_executor("create_zigbee_group", _execute_create_zigbee_group)
+_register_executor("set_zigbee_group_members", _execute_set_zigbee_group_members)
+_register_executor("remove_zigbee_group", _execute_remove_zigbee_group)
 _register_executor("HassSetPosition", _execute_hass_set_position)
 _register_executor("HassStopMoving", _execute_hass_stop_moving)
 _register_executor("HassTurnOn", _execute_hass_turn_on)
@@ -8946,6 +8954,7 @@ _register_tool("remove_device", _tool_remove_device)
 _register_tool("delete_entity", _tool_delete_entity)
 _register_tool("get_radio_network", _tool_get_radio_network)
 _register_tool("get_radio_device", _tool_get_radio_device)
+_register_tool("get_zigbee_groups", _tool_get_zigbee_groups)
 _register_tool("permit_zigbee_join", _tool_permit_zigbee_join)
 _register_tool("reconfigure_zigbee_device", _tool_reconfigure_zigbee_device)
 _register_tool("remove_zigbee_device", _tool_remove_zigbee_device)
@@ -8953,6 +8962,18 @@ _register_tool("set_zigbee_device_options", _tool_set_zigbee_device_options)
 _register_tool("set_zigbee_device_property", _tool_set_zigbee_device_property)
 _register_tool("set_zigbee_binding", _tool_set_zigbee_binding)
 _register_tool("configure_zigbee_reporting", _tool_configure_zigbee_reporting)
+_register_tool(
+    "create_zigbee_group", _tool_zigbee_group_change,
+    tool_name="create_zigbee_group",
+)
+_register_tool(
+    "set_zigbee_group_members", _tool_zigbee_group_change,
+    tool_name="set_zigbee_group_members",
+)
+_register_tool(
+    "remove_zigbee_group", _tool_zigbee_group_change,
+    tool_name="remove_zigbee_group",
+)
 _register_tool("create_script", _tool_create_script)
 _register_tool("edit_script", _tool_edit_script)
 _register_tool("delete_script", _tool_delete_script)

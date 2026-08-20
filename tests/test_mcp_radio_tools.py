@@ -1,6 +1,6 @@
-"""Tests for the radio management tools (get_radio_network, get_radio_device,
-permit_zigbee_join, reconfigure_zigbee_device, set_zigbee_binding,
-configure_zigbee_reporting, set_zigbee_device_options, and remove_zigbee_device).
+"""Tests for the radio management tools (network/device/group reads, pairing,
+reconfiguration, binding, reporting, options, direct properties, group
+management, and device removal).
 
 The Z2M backend is exercised against a fake MQTT broker monkeypatched over
 radio.py's two seams (_mqtt_subscribe/_mqtt_publish), so no paho client is
@@ -38,6 +38,8 @@ Z2M_BULB_IEEE = "0x00158d0001112222"
 Z2M_LOCK_IEEE = "0x00158d0009998888"
 ZHA_BULB_IEEE = "00:11:22:33:44:55:66:77"
 ZHA_TARGET_IEEE = "00:11:22:33:44:55:66:88"
+Z2M_GROUP_NAME = "Test Zigbee Group"
+Z2M_GROUP_ID = 42
 
 BRIDGE_INFO = {
     "version": "2.12.1",
@@ -170,7 +172,7 @@ def broker(monkeypatch) -> FakeBroker:
                     "bindings": [],
                     "configured_reportings": [],
                     "clusters": {
-                        "input": ["genOnOff", "genLevelCtrl"],
+                        "input": ["genOnOff", "genLevelCtrl", "genGroups"],
                         "output": ["genOnOff", "genLevelCtrl"],
                     },
                 }
@@ -221,7 +223,7 @@ def broker(monkeypatch) -> FakeBroker:
                     "bindings": [],
                     "configured_reportings": [],
                     "clusters": {
-                        "input": ["genOnOff"],
+                        "input": ["genOnOff", "genGroups"],
                         "output": [],
                     },
                 }
@@ -234,6 +236,14 @@ def broker(monkeypatch) -> FakeBroker:
         "led_mode": "auto",
         "temperature": 21.5,
     })
+    fake.retained["zigbee2mqtt/bridge/groups"] = json.dumps([
+        {
+            "id": Z2M_GROUP_ID,
+            "friendly_name": Z2M_GROUP_NAME,
+            "scenes": [],
+            "members": [{"ieee_address": Z2M_BULB_IEEE, "endpoint": 1}],
+        }
+    ])
     fake.responders["permit_join"] = lambda req: {"status": "ok", "data": {"time": req.get("time")}}
     fake.responders["device/configure"] = lambda req: {"status": "ok", "data": {"id": req.get("id")}}
     fake.responders["device/remove"] = lambda req: {"status": "ok", "data": {"id": req.get("id")}}
@@ -300,6 +310,50 @@ def broker(monkeypatch) -> FakeBroker:
 
     fake.responders["device/reporting/configure"] = _reporting
 
+    def _group_add(req):
+        groups = json.loads(fake.retained["zigbee2mqtt/bridge/groups"])
+        group_id = max((group["id"] for group in groups), default=0) + 1
+        groups.append({
+            "id": group_id,
+            "friendly_name": req["friendly_name"],
+            "scenes": [],
+            "members": [],
+        })
+        fake.retained["zigbee2mqtt/bridge/groups"] = json.dumps(groups)
+        return {
+            "status": "ok",
+            "data": {"id": group_id, "friendly_name": req["friendly_name"]},
+        }
+
+    def _group_member(req, operation):
+        groups = json.loads(fake.retained["zigbee2mqtt/bridge/groups"])
+        group = next(group for group in groups if group["id"] == req["group"])
+        member = {"ieee_address": req["device"], "endpoint": req["endpoint"]}
+        if operation == "add":
+            group["members"].append(member)
+        else:
+            group["members"].remove(member)
+        fake.retained["zigbee2mqtt/bridge/groups"] = json.dumps(groups)
+        return {
+            "status": "ok",
+            "data": {
+                "group": req["group"],
+                "device": req["device"],
+                "endpoint": req["endpoint"],
+            },
+        }
+
+    def _group_remove(req):
+        groups = json.loads(fake.retained["zigbee2mqtt/bridge/groups"])
+        groups = [group for group in groups if group["id"] != req["id"]]
+        fake.retained["zigbee2mqtt/bridge/groups"] = json.dumps(groups)
+        return {"status": "ok", "data": {"id": req["id"], "force": req["force"]}}
+
+    fake.responders["group/add"] = _group_add
+    fake.responders["group/members/add"] = lambda req: _group_member(req, "add")
+    fake.responders["group/members/remove"] = lambda req: _group_member(req, "remove")
+    fake.responders["group/remove"] = _group_remove
+
     def _device_options(req):
         info = json.loads(fake.retained["zigbee2mqtt/bridge/info"])
         own = info["config"]["devices"][Z2M_BULB_IEEE]
@@ -355,6 +409,11 @@ def radio_env(hass: HomeAssistant):
     zha_bulb = _device({("zha", ZHA_BULB_IEEE)}, "ZHA Bulb")
     zha_target = _device({("zha", ZHA_TARGET_IEEE)}, "ZHA Target")
     plain = _device({("mqtt", "some_other_thing")}, "Plain Device")
+    z2m_group = _device(
+        {("mqtt", "zigbee2mqtt_group_42")},
+        Z2M_GROUP_NAME,
+        via_device_id=bridge.id,
+    )
 
     def _entity(domain, uid, device, object_id):
         e = ent_reg.async_get_or_create(
@@ -377,6 +436,8 @@ def radio_env(hass: HomeAssistant):
         "bridge_eid": _entity("light", "u4", bridge, "bridge_glow"),
         "plain": plain.id,
         "plain_eid": _entity("light", "u5", plain, "plain_bulb"),
+        "z2m_group": z2m_group.id,
+        "z2m_group_eid": _entity("light", "u7", z2m_group, "test_zigbee_group"),
     }
     hass.data[DATA_MQTT] = SimpleNamespace(
         debug_info_entities={
@@ -389,7 +450,16 @@ def radio_env(hass: HomeAssistant):
                         "brightness": True,
                     }
                 }
-            }
+            },
+            result["z2m_group_eid"]: {
+                "discovery_data": {
+                    ATTR_DISCOVERY_PAYLOAD: {
+                        "schema": "json",
+                        "state_topic": f"zigbee2mqtt/{Z2M_GROUP_NAME}",
+                        "command_topic": f"zigbee2mqtt/{Z2M_GROUP_NAME}/set",
+                    }
+                }
+            },
         }
     )
     return result
@@ -2070,7 +2140,510 @@ class TestRemoveZigbeeDevice:
         assert broker.published == []
 
 
+class TestZigbeeGroups:
+    async def _z2m_group(self, hass, radio_env, token):
+        hass.config.components.add("mqtt")
+        result = await _call_tool("get_zigbee_groups", {}, token, hass, _data())
+        assert result[1] == "allowed"
+        groups = _body(result)["groups"]
+        return next(group for group in groups if group["name"] == Z2M_GROUP_NAME)
+
+    async def test_read_projects_registry_ids_without_radio_identifiers(
+        self, hass, radio_env, broker
+    ):
+        group = await self._z2m_group(
+            hass, radio_env, _light_token(cap_diagnostics="allow")
+        )
+        assert group["group_entity_ids"] == [radio_env["z2m_group_eid"]]
+        assert group["members"] == [{"device_id": radio_env["z2m_bulb"], "endpoint": 1}]
+        assert group["hidden_member_count"] == 0
+        assert len(group["content_hash"]) == 64
+        rendered = json.dumps(group)
+        assert Z2M_BULB_IEEE not in rendered
+        assert f'"id": {Z2M_GROUP_ID}' not in rendered
+        assert "zigbee2mqtt/" not in rendered
+
+    async def test_read_redacts_inaccessible_members(self, hass, radio_env, broker):
+        groups = json.loads(broker.retained["zigbee2mqtt/bridge/groups"])
+        groups[0]["members"].append(
+            {"ieee_address": Z2M_LOCK_IEEE, "endpoint": 1}
+        )
+        broker.retained["zigbee2mqtt/bridge/groups"] = json.dumps(groups)
+        group = await self._z2m_group(
+            hass, radio_env, _light_token(cap_diagnostics="allow")
+        )
+        assert group["hidden_member_count"] == 1
+        assert group["fully_scoped"] is False
+        assert Z2M_LOCK_IEEE not in json.dumps(group)
+        assert radio_env["z2m_lock"] not in json.dumps(group)
+
+    async def test_create_allocates_id_and_resolves_member_ieee_internally(
+        self, hass, radio_env, broker
+    ):
+        hass.config.components.add("mqtt")
+        token = _z2m_pair_token(
+            cap_radio_write="allow", cap_physical_control="allow"
+        )
+        result = await _call_tool(
+            "create_zigbee_group",
+            {
+                "name": "New Safe Group",
+                "members": [{"device_id": radio_env["z2m_lock"], "endpoint": 1}],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "allowed"
+        body = _body(result)
+        assert body["name"] == "New Safe Group" and len(body["content_hash"]) == 64
+        assert Z2M_LOCK_IEEE not in json.dumps(body)
+        paths = [topic.rsplit("/request/", 1)[-1] for topic, _ in broker.published]
+        assert paths[-2:] == ["group/add", "group/members/add"]
+        assert "id" not in next(
+            request for topic, request in broker.published if topic.endswith("group/add")
+        )
+
+    async def test_create_rejects_topic_name_without_publish(
+        self, hass, radio_env, broker
+    ):
+        hass.config.components.add("mqtt")
+        result = await _call_tool(
+            "create_zigbee_group",
+            {
+                "name": "unsafe/topic",
+                "members": [{"device_id": radio_env["z2m_bulb"], "endpoint": 1}],
+            },
+            _light_token(cap_radio_write="allow", cap_physical_control="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert broker.published == []
+
+    async def test_create_rejects_reserved_bridge_name_without_publish(
+        self, hass, radio_env, broker
+    ):
+        hass.config.components.add("mqtt")
+        result = await _call_tool(
+            "create_zigbee_group",
+            {
+                "name": "bridge",
+                "members": [{"device_id": radio_env["z2m_bulb"], "endpoint": 1}],
+            },
+            _light_token(cap_radio_write="allow", cap_physical_control="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert broker.published == []
+
+    async def test_membership_add_and_remove_preserves_reporting(
+        self, hass, radio_env, broker
+    ):
+        token = _z2m_pair_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        group = await self._z2m_group(hass, radio_env, token)
+        add = await _call_tool(
+            "set_zigbee_group_members",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "operation": "add",
+                "members": [{"device_id": radio_env["z2m_lock"], "endpoint": 1}],
+                "expected_hash": group["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert add[1] == "allowed"
+        add_hash = _body(add)["content_hash"]
+        remove = await _call_tool(
+            "set_zigbee_group_members",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "operation": "remove",
+                "members": [{"device_id": radio_env["z2m_lock"], "endpoint": 1}],
+                "expected_hash": add_hash,
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert remove[1] == "allowed"
+        topic, payload = broker.published[-1]
+        assert topic.endswith("group/members/remove")
+        assert payload["skip_disable_reporting"] is True
+        assert Z2M_LOCK_IEEE not in json.dumps(_body(remove))
+
+    async def test_membership_cannot_remove_last_anchor(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        group = await self._z2m_group(hass, radio_env, token)
+        broker.published.clear()
+        result = await _call_tool(
+            "set_zigbee_group_members",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "operation": "remove",
+                "members": [
+                    {"device_id": radio_env["z2m_bulb"], "endpoint": 1}
+                ],
+                "expected_hash": group["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "remove_zigbee_group" in _text(result)
+        assert broker.published == []
+
+    async def test_backend_error_does_not_echo_radio_identifiers(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        group = await self._z2m_group(hass, radio_env, token)
+        broker.published.clear()
+        broker.responders["group/remove"] = lambda _req: {
+            "status": "error",
+            "error": f"failed {Z2M_BULB_IEEE} at zigbee2mqtt/private",
+        }
+        result = await _call_tool(
+            "remove_zigbee_group",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "expected_hash": group["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert Z2M_BULB_IEEE not in _text(result)
+        assert "zigbee2mqtt/" not in _text(result)
+
+    async def test_visible_device_mapping_is_backend_qualified(
+        self, hass, radio_env, broker
+    ):
+        registry = dr.async_get(hass)
+        collision = registry.async_get_or_create(
+            config_entry_id="e_radio",
+            identifiers={("zha", Z2M_BULB_IEEE)},
+            name="Same address on ZHA",
+        )
+        entity = er.async_get(hass).async_get_or_create(
+            "light",
+            "mqtt",
+            "same_address_on_zha",
+            config_entry=MockConfigEntry(domain="mqtt", entry_id="e_radio"),
+            device_id=collision.id,
+        )
+        hass.states.async_set(entity.entity_id, "on", {})
+        mapping = radio_tools._scoped_zigbee_device_map(
+            hass, {radio_env["z2m_bulb_eid"], entity.entity_id}
+        )
+        assert mapping[(radio.BACKEND_Z2M, Z2M_BULB_IEEE)] == radio_env["z2m_bulb"]
+        assert mapping[(radio.BACKEND_ZHA, Z2M_BULB_IEEE)] == collision.id
+
+    async def test_stale_hash_and_hidden_member_removal_fail_before_publish(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        await self._z2m_group(hass, radio_env, token)
+        broker.published.clear()
+        stale = await _call_tool(
+            "remove_zigbee_group",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "expected_hash": "0" * 64,
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert stale[1] == "invalid_request" and broker.published == []
+
+        groups = json.loads(broker.retained["zigbee2mqtt/bridge/groups"])
+        groups[0]["members"].append(
+            {"ieee_address": Z2M_LOCK_IEEE, "endpoint": 1}
+        )
+        broker.retained["zigbee2mqtt/bridge/groups"] = json.dumps(groups)
+        hidden = await self._z2m_group(hass, radio_env, token)
+        denied = await _call_tool(
+            "remove_zigbee_group",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "expected_hash": hidden["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert denied[1] == "denied" and broker.published == []
+
+    async def test_remove_never_forces_z2m(self, hass, radio_env, broker):
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        group = await self._z2m_group(hass, radio_env, token)
+        broker.published.clear()
+        result = await _call_tool(
+            "remove_zigbee_group",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "expected_hash": group["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "allowed"
+        topic, payload = broker.published[-1]
+        assert topic.endswith("group/remove") and payload["force"] is False
+
+    async def test_confirmation_redacts_radio_ids_and_revalidates_hash(
+        self, hass, radio_env, broker
+    ):
+        token = _z2m_pair_token(
+            cap_diagnostics="allow",
+            cap_radio_write="confirm",
+            cap_physical_control="allow",
+        )
+        group = await self._z2m_group(hass, radio_env, token)
+        broker.published.clear()
+        data, store = _appr_data()
+        result = await _call_tool(
+            "set_zigbee_group_members",
+            {
+                "group_entity_id": radio_env["z2m_group_eid"],
+                "operation": "add",
+                "members": [{"device_id": radio_env["z2m_lock"], "endpoint": 1}],
+                "expected_hash": group["content_hash"],
+            },
+            token,
+            hass,
+            data,
+        )
+        assert result[1] == "pending_approval"
+        assert broker.published == []
+        approval = store._p[0]
+        assert approval["tool_name"] == "set_zigbee_group_members"
+        rendered = json.dumps(approval["diff"])
+        assert Z2M_BULB_IEEE not in rendered
+        assert Z2M_LOCK_IEEE not in rendered
+        assert "zigbee2mqtt/" not in rendered
+        assert f'"id": {Z2M_GROUP_ID}' not in rendered
+
+        groups = json.loads(broker.retained["zigbee2mqtt/bridge/groups"])
+        groups[0]["scenes"].append({"id": 9, "name": "Concurrent change"})
+        broker.retained["zigbee2mqtt/bridge/groups"] = json.dumps(groups)
+        executed = await async_execute_approved_tool(
+            "set_zigbee_group_members", approval["args"], token, hass, data
+        )
+        assert executed[1] == "invalid_request"
+        assert broker.published == []
+
+    async def test_zha_group_lifecycle_uses_registry_ids(
+        self, hass, radio_env, broker, monkeypatch
+    ):
+        hass.config.components.add("zha")
+        entry = MockConfigEntry(domain="zha", entry_id="e_zha_groups")
+        entry.add_to_hass(hass)
+        group_entity = er.async_get(hass).async_get_or_create(
+            "light",
+            "zha",
+            "light_zha_group_0x002a",
+            config_entry=entry,
+            device_id=radio_env["zha_bulb"],
+            suggested_object_id="zha_test_group",
+        )
+        hass.states.async_set(group_entity.entity_id, "off", {})
+        members = [
+            {
+                "endpoint_id": 1,
+                "device": {
+                    "ieee": ZHA_BULB_IEEE,
+                    "device_reg_id": radio_env["zha_bulb"],
+                },
+                "entities": [{"entity_id": group_entity.entity_id}],
+            }
+        ]
+
+        calls = []
+
+        async def _ws(_hass, command, payload, **kwargs):
+            calls.append((command, payload))
+            if command == "zha/groups":
+                return [{"group_id": 42, "name": "ZHA Test", "members": members}]
+            if command == "zha/devices/groupable":
+                return [
+                    {"endpoint_id": 1, "device": {"ieee": ZHA_BULB_IEEE}},
+                    {"endpoint_id": 1, "device": {"ieee": ZHA_TARGET_IEEE}},
+                ]
+            if command == "zha/group/add":
+                return {
+                    "group_id": 43,
+                    "name": payload["group_name"],
+                    "members": [
+                        {
+                            "endpoint_id": payload["members"][0]["endpoint_id"],
+                            "device": {
+                                "ieee": str(payload["members"][0]["ieee"]),
+                                "device_reg_id": radio_env["zha_target"],
+                            },
+                            "entities": [],
+                        }
+                    ],
+                }
+            if command == "zha/group/members/add":
+                members.append(
+                    {
+                        "endpoint_id": payload["members"][0]["endpoint_id"],
+                        "device": {
+                            "ieee": str(payload["members"][0]["ieee"]),
+                            "device_reg_id": radio_env["zha_target"],
+                        },
+                        "entities": [{"entity_id": group_entity.entity_id}],
+                    }
+                )
+                return {"group_id": 42, "name": "ZHA Test", "members": members}
+            if command == "zha/group/remove":
+                return []
+            raise AssertionError(command)
+
+        monkeypatch.setattr(radio, "async_ws_command", _ws)
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        read = await _call_tool("get_zigbee_groups", {}, token, hass, _data())
+        zha_group = next(
+            group for group in _body(read)["groups"] if group["backend"] == "zha"
+        )
+        assert zha_group["members"] == [
+            {"device_id": radio_env["zha_bulb"], "endpoint": 1}
+        ]
+        created = await _call_tool(
+            "create_zigbee_group",
+            {
+                "name": "ZHA New Group",
+                "members": [
+                    {"device_id": radio_env["zha_target"], "endpoint": 1}
+                ],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert created[1] == "allowed"
+        create_payload = next(
+            payload for command, payload in calls if command == "zha/group/add"
+        )
+        assert "group_id" not in create_payload
+        assert ZHA_TARGET_IEEE not in json.dumps(_body(created))
+        changed = await _call_tool(
+            "set_zigbee_group_members",
+            {
+                "group_entity_id": group_entity.entity_id,
+                "operation": "add",
+                "members": [{"device_id": radio_env["zha_target"], "endpoint": 1}],
+                "expected_hash": zha_group["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert changed[1] == "allowed"
+        assert ZHA_TARGET_IEEE not in json.dumps(_body(changed))
+        removed = await _call_tool(
+            "remove_zigbee_group",
+            {
+                "group_entity_id": group_entity.entity_id,
+                "expected_hash": _body(changed)["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert removed[1] == "allowed"
+        remove_payload = next(
+            payload for command, payload in calls if command == "zha/group/remove"
+        )
+        assert remove_payload == {"group_ids": [42]}
+
+
 class TestRadioZ2mPlumbing:
+    async def test_backend_refuses_removing_every_group_member(
+        self, hass, broker
+    ):
+        group = radio.normalize_zigbee_groups(
+            radio.BACKEND_Z2M,
+            json.loads(broker.retained["zigbee2mqtt/bridge/groups"]),
+        )[0]
+        with pytest.raises(
+            radio.ZigbeeGroupConfigurationError, match="remove the group instead"
+        ):
+            await radio.async_set_zigbee_group_members(
+                hass,
+                backend=radio.BACKEND_Z2M,
+                group=group,
+                operation="remove",
+                members=((Z2M_BULB_IEEE, 1),),
+            )
+
+    async def test_group_member_batch_rolls_back_completed_endpoints(
+        self, hass, broker
+    ):
+        group = radio.normalize_zigbee_groups(
+            radio.BACKEND_Z2M,
+            json.loads(broker.retained["zigbee2mqtt/bridge/groups"]),
+        )[0]
+        original = broker.responders["group/members/add"]
+        calls = 0
+
+        def _fail_second(req):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                return {"status": "error", "error": "sleepy endpoint"}
+            return original(req)
+
+        broker.responders["group/members/add"] = _fail_second
+        with pytest.raises(radio.RadioError, match="rolled back"):
+            await radio.async_set_zigbee_group_members(
+                hass,
+                backend=radio.BACKEND_Z2M,
+                group=group,
+                operation="add",
+                members=((Z2M_LOCK_IEEE, 1), ("0x00158d0000001234", 1)),
+            )
+        retained = json.loads(broker.retained["zigbee2mqtt/bridge/groups"])[0]
+        assert retained["members"] == [
+            {"ieee_address": Z2M_BULB_IEEE, "endpoint": 1}
+        ]
+        rollback = broker.published[-1][1]
+        assert rollback["skip_disable_reporting"] is True
+
     async def test_device_options_uses_short_response_window(self, hass, monkeypatch):
         request = AsyncMock(return_value={})
         monkeypatch.setattr(radio, "async_z2m_request", request)
