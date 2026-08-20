@@ -1039,8 +1039,11 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "get_radio_device",
         "description": (
             "Radio-level diagnostics for one device: signal quality (LQI/RSSI), availability, last seen, "
-            "power source, interview state, and (ZHA backend) mesh neighbors. device_id is Phoenix MCP's registry "
-            "id from list_devices/get_device. The radio protocol and backend are detected automatically."
+            "power source, interview state, and (ZHA backend) mesh neighbors. For Zigbee2MQTT devices it also "
+            "returns bounded capability exposes plus converter-option definitions, effective values, and a "
+            "content hash used by set_zigbee_device_options. Prefer ordinary Home Assistant entities when a "
+            "capability is represented there. device_id is Phoenix MCP's registry id from list_devices/get_device. "
+            "The radio protocol and backend are detected automatically."
         ),
         "cap": "cap_diagnostics",
         "inputSchema": {
@@ -1104,6 +1107,36 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "type": "object",
             "properties": {"device_id": {"type": "string", "description": "Zigbee device registry ID to remove."}},
             "required": ["device_id"],
+        },
+    },
+    {
+        "name": "set_zigbee_device_options",
+        "description": (
+            "Change Zigbee2MQTT converter options declared for one device. Read get_radio_device first and pass "
+            "its options.content_hash as expected_hash. Only keys declared in options.definitions are accepted, "
+            "and every value is validated against its type, enum, bounds, step, and nested structure. This does "
+            "not write ordinary exposed control properties, accept MQTT topics or friendly names, or restart "
+            "Zigbee2MQTT. Requires WRITE access to the device's entities and cap_radio_write, and may require "
+            "admin confirmation. Zigbee2MQTT devices only."
+        ),
+        "cap": "cap_radio_write",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "Zigbee2MQTT device registry ID to update.",
+                },
+                "options": {
+                    "type": "object",
+                    "description": "Non-empty partial map of converter-option property names to new values.",
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "Lowercase options.content_hash from the latest get_radio_device result.",
+                },
+            },
+            "required": ["device_id", "options", "expected_hash"],
         },
     },
     {
@@ -3074,6 +3107,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "permit_zigbee_join": _annot(False, False, False),
     "reconfigure_zigbee_device": _annot(False, True, True),
     "remove_zigbee_device": _annot(False, True, True),
+    "set_zigbee_device_options": _annot(False, True, True),
     # Native HA MCP tools.
     "GetLiveContext": _annot(True, False, True),
     "GetDateTime": _annot(True, False, True),

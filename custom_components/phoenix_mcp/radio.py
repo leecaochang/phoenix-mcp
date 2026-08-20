@@ -28,9 +28,12 @@ schemas, and the Z2M bridge topic API (shapes verified against Z2M 2.x).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import uuid
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant, callback
@@ -39,6 +42,7 @@ from homeassistant.helpers import device_registry as dr
 
 from .const import (
     Z2M_BASE_TOPIC,
+    Z2M_DEVICE_OPTIONS_RESPONSE_TIMEOUT_SECONDS,
     Z2M_REQUEST_TIMEOUT_SECONDS,
     Z2M_RETAINED_READ_TIMEOUT_SECONDS,
 )
@@ -57,9 +61,25 @@ ZIGBEE_BACKENDS = (BACKEND_Z2M, BACKEND_ZHA)
 _Z2M_DEVICE_ID_PREFIX = "zigbee2mqtt_0x"
 _Z2M_BRIDGE_ID_PREFIX = "zigbee2mqtt_bridge_"
 
+# Zigbee2MQTT converter definitions are third-party data and can be extended by
+# local converters. Keep both the published projection and accepted option
+# payloads bounded independently of the general MCP response limit.
+_Z2M_EXPOSE_MAX_ITEMS = 64
+_Z2M_EXPOSE_MAX_DEPTH = 4
+_Z2M_EXPOSE_MAX_VALUES = 64
+_Z2M_EXPOSE_MAX_STRING = 512
+_Z2M_OPTION_MAX_CHANGES = 32
+_Z2M_OPTION_MAX_CONTAINER_ITEMS = 64
+_Z2M_OPTION_MAX_DEPTH = 4
+_Z2M_OPTION_MAX_STRING = 1024
+
 
 class RadioError(Exception):
     """A radio backend operation failed or the backend is unavailable."""
+
+
+class Z2MOptionValidationError(ValueError):
+    """A requested Zigbee2MQTT converter option does not match its definition."""
 
 
 # ---------------------------------------------------------------------------
@@ -324,14 +344,360 @@ def project_zha_network(raw: Any) -> dict[str, Any]:
     }
 
 
-def project_z2m_device(entry: Any) -> dict[str, Any]:
+def _bounded_expose_scalar(value: Any) -> Any:
+    """Return one bounded JSON scalar from an expose definition, else None."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value if not isinstance(value, float) or math.isfinite(value) else None
+    if isinstance(value, str):
+        return value[:_Z2M_EXPOSE_MAX_STRING]
+    return None
+
+
+def _project_z2m_expose(
+    raw: Any, *, depth: int, budget: list[int]
+) -> dict[str, Any] | None:
+    """Allowlist one Z2M expose object under a shared item budget."""
+    if not isinstance(raw, dict) or depth > _Z2M_EXPOSE_MAX_DEPTH or budget[0] <= 0:
+        return None
+    budget[0] -= 1
+    out: dict[str, Any] = {}
+    for key in (
+        "type",
+        "name",
+        "label",
+        "property",
+        "category",
+        "access",
+        "value_on",
+        "value_off",
+        "value_toggle",
+        "value_min",
+        "value_max",
+        "value_step",
+        "unit",
+        "endpoint",
+        "length_min",
+        "length_max",
+        "description",
+    ):
+        if key in raw:
+            value = _bounded_expose_scalar(raw.get(key))
+            if value is not None:
+                out[key] = value
+
+    values = raw.get("values")
+    if isinstance(values, list):
+        projected_values = []
+        for value in values[:_Z2M_EXPOSE_MAX_VALUES]:
+            scalar = _bounded_expose_scalar(value)
+            if scalar is not None:
+                projected_values.append(scalar)
+        out["values"] = projected_values
+        if len(values) > len(projected_values):
+            out["values_truncated"] = True
+
+    presets = raw.get("presets")
+    if isinstance(presets, list):
+        projected_presets = []
+        for preset in presets[:_Z2M_EXPOSE_MAX_VALUES]:
+            if not isinstance(preset, dict):
+                continue
+            item = {}
+            for key in ("name", "value", "description"):
+                if key in preset:
+                    scalar = _bounded_expose_scalar(preset.get(key))
+                    if scalar is not None:
+                        item[key] = scalar
+            if item:
+                projected_presets.append(item)
+        if projected_presets:
+            out["presets"] = projected_presets
+        if len(presets) > len(projected_presets):
+            out["presets_truncated"] = True
+
+    item_type = raw.get("item_type")
+    if isinstance(item_type, dict):
+        projected_item = _project_z2m_expose(
+            item_type, depth=depth + 1, budget=budget
+        )
+        if projected_item is not None:
+            out["item_type"] = projected_item
+        else:
+            out["item_type_truncated"] = True
+
+    features = raw.get("features")
+    if isinstance(features, list):
+        projected_features = []
+        for feature in features:
+            projected = _project_z2m_expose(
+                feature, depth=depth + 1, budget=budget
+            )
+            if projected is None:
+                break
+            projected_features.append(projected)
+        out["features"] = projected_features
+        out["features_total"] = len(features)
+        if len(projected_features) < len(features):
+            out["features_truncated"] = True
+    return out or None
+
+
+def project_z2m_expose_list(raw: Any) -> dict[str, Any]:
+    """Return a bounded, recursively allowlisted Z2M expose list."""
+    source = raw if isinstance(raw, list) else []
+    budget = [_Z2M_EXPOSE_MAX_ITEMS]
+    items = []
+    for item in source:
+        projected = _project_z2m_expose(item, depth=0, budget=budget)
+        if projected is None:
+            break
+        items.append(projected)
+    return {
+        "items": items,
+        "total": len(source),
+        "truncated": len(items) < len(source),
+    }
+
+
+def _option_definition_map(entry: Any) -> dict[str, dict[str, Any]]:
+    """Map converter option property names to their raw expose definitions."""
+    entry = entry if isinstance(entry, dict) else {}
+    definition = entry.get("definition")
+    options = definition.get("options") if isinstance(definition, dict) else None
+    result: dict[str, dict[str, Any]] = {}
+    duplicates: set[str] = set()
+    for item in options if isinstance(options, list) else []:
+        if not isinstance(item, dict):
+            continue
+        prop = item.get("property")
+        if not isinstance(prop, str) or not prop or len(prop) > 128:
+            continue
+        if prop in result:
+            duplicates.add(prop)
+        else:
+            result[prop] = item
+    for prop in duplicates:
+        result.pop(prop, None)
+    return result
+
+
+def _normalize_option_value(value: Any, *, depth: int = 0) -> Any:
+    """Normalize one current/requested option value to bounded JSON data."""
+    if depth > _Z2M_OPTION_MAX_DEPTH:
+        raise Z2MOptionValidationError("Option values may not be nested that deeply.")
+    if value is None or isinstance(value, (str, bool, int, float)):
+        if isinstance(value, str) and len(value) > _Z2M_OPTION_MAX_STRING:
+            raise Z2MOptionValidationError("Option text is too long.")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise Z2MOptionValidationError("Option numbers must be finite.")
+        return value
+    if isinstance(value, list):
+        if len(value) > _Z2M_OPTION_MAX_CONTAINER_ITEMS:
+            raise Z2MOptionValidationError("Option lists are too large.")
+        return [_normalize_option_value(item, depth=depth + 1) for item in value]
+    if isinstance(value, dict):
+        if len(value) > _Z2M_OPTION_MAX_CONTAINER_ITEMS:
+            raise Z2MOptionValidationError("Option objects are too large.")
+        out = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key or len(key) > 128:
+                raise Z2MOptionValidationError("Option object keys must be short strings.")
+            out[key] = _normalize_option_value(item, depth=depth + 1)
+        return out
+    raise Z2MOptionValidationError("Option values must be JSON-compatible.")
+
+
+def z2m_options_hash(options: dict[str, Any]) -> str:
+    """Stable content hash for the managed converter-option slice."""
+    canonical = json.dumps(
+        options, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def z2m_effective_device_options(
+    info: Any, entry: Any, ieee: str
+) -> dict[str, Any]:
+    """Reconstruct Z2M Device.options and select converter-defined options.
+
+    Zigbee2MQTT's Device.options getter merges config.device_options with the
+    device's own config.devices[ieee] block. bridge/info publishes that
+    default-expanded config after removing its known secrets. We select only
+    properties declared by definition.options, so the rest of the bridge config
+    never crosses Phoenix's allowlist boundary.
+    """
+    info = info if isinstance(info, dict) else {}
+    config = info.get("config") if isinstance(info.get("config"), dict) else {}
+    defaults = config.get("device_options")
+    devices = config.get("devices")
+    own = None
+    if isinstance(devices, dict):
+        own = devices.get(ieee)
+        if own is None:
+            own = next(
+                (value for key, value in devices.items() if str(key).lower() == ieee.lower()),
+                None,
+            )
+    merged = {
+        **(defaults if isinstance(defaults, dict) else {}),
+        **(own if isinstance(own, dict) else {}),
+    }
+    values = {}
+    for prop in _option_definition_map(entry):
+        if prop in merged:
+            values[prop] = _normalize_option_value(merged[prop])
+    return values
+
+
+def _same_scalar(left: Any, right: Any) -> bool:
+    """Strict scalar equality, avoiding True == 1 and False == 0."""
+    return type(left) is type(right) and left == right
+
+
+def _validate_option_value(value: Any, schema: dict[str, Any], path: str) -> Any:
+    value = _normalize_option_value(value)
+    kind = schema.get("type")
+    if kind == "binary":
+        if "value_on" not in schema or "value_off" not in schema:
+            raise Z2MOptionValidationError(
+                f"{path} has no usable binary value definition."
+            )
+        binary_allowed = [schema.get("value_on"), schema.get("value_off")]
+        if not any(_same_scalar(value, candidate) for candidate in binary_allowed):
+            raise Z2MOptionValidationError(
+                f"{path} must equal the option's value_on or value_off value."
+            )
+        return value
+    if kind == "enum":
+        enum_allowed = schema.get("values")
+        if not isinstance(enum_allowed, list) or not any(
+            _same_scalar(value, candidate) for candidate in enum_allowed
+        ):
+            raise Z2MOptionValidationError(f"{path} is not one of the allowed values.")
+        return value
+    if kind == "numeric":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise Z2MOptionValidationError(f"{path} must be a number.")
+        for field, relation in (("value_min", "minimum"), ("value_max", "maximum")):
+            bound = schema.get(field)
+            if isinstance(bound, (int, float)) and not isinstance(bound, bool):
+                if field == "value_min" and value < bound:
+                    raise Z2MOptionValidationError(f"{path} is below its {relation} of {bound}.")
+                if field == "value_max" and value > bound:
+                    raise Z2MOptionValidationError(f"{path} is above its {relation} of {bound}.")
+        step = schema.get("value_step")
+        if isinstance(step, (int, float)) and not isinstance(step, bool) and step > 0:
+            origin = schema.get("value_min", 0)
+            try:
+                quotient = (Decimal(str(value)) - Decimal(str(origin))) / Decimal(str(step))
+            except (InvalidOperation, ValueError):
+                raise Z2MOptionValidationError(f"{path} does not match its numeric step.") from None
+            if quotient != quotient.to_integral_value():
+                raise Z2MOptionValidationError(f"{path} does not match its numeric step of {step}.")
+        return value
+    if kind == "text":
+        if not isinstance(value, str):
+            raise Z2MOptionValidationError(f"{path} must be text.")
+        minimum, maximum = schema.get("length_min"), schema.get("length_max")
+        if isinstance(minimum, int) and len(value) < minimum:
+            raise Z2MOptionValidationError(
+                f"{path} needs at least {minimum} characters."
+            )
+        if isinstance(maximum, int) and len(value) > maximum:
+            raise Z2MOptionValidationError(
+                f"{path} allows at most {maximum} characters."
+            )
+        return value
+    if kind == "list":
+        if not isinstance(value, list):
+            raise Z2MOptionValidationError(f"{path} must be a list.")
+        minimum, maximum = schema.get("length_min"), schema.get("length_max")
+        if isinstance(minimum, int) and len(value) < minimum:
+            raise Z2MOptionValidationError(f"{path} needs at least {minimum} items.")
+        if isinstance(maximum, int) and len(value) > maximum:
+            raise Z2MOptionValidationError(f"{path} allows at most {maximum} items.")
+        item_schema = schema.get("item_type")
+        if not isinstance(item_schema, dict):
+            raise Z2MOptionValidationError(f"{path} has no usable item definition.")
+        return [
+            _validate_option_value(item, item_schema, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if kind == "composite":
+        if not isinstance(value, dict) or not value:
+            raise Z2MOptionValidationError(f"{path} must be a non-empty object.")
+        features = schema.get("features")
+        feature_map = {}
+        for feature in features if isinstance(features, list) else []:
+            if not isinstance(feature, dict):
+                continue
+            key = feature.get("property") or feature.get("name")
+            if isinstance(key, str) and key and key not in feature_map:
+                feature_map[key] = feature
+        unknown = sorted(set(value) - set(feature_map))
+        if unknown:
+            raise Z2MOptionValidationError(
+                f"{path} contains unknown fields: {', '.join(unknown)}."
+            )
+        return {
+            key: _validate_option_value(item, feature_map[key], f"{path}.{key}")
+            for key, item in value.items()
+        }
+    raise Z2MOptionValidationError(
+        f"{path} uses unsupported option type {kind!r}."
+    )
+
+
+def validate_z2m_option_changes(entry: Any, changes: Any) -> dict[str, Any]:
+    """Validate a non-empty partial converter-option update."""
+    if not isinstance(changes, dict) or not changes:
+        raise Z2MOptionValidationError("options must be a non-empty object.")
+    if len(changes) > _Z2M_OPTION_MAX_CHANGES:
+        raise Z2MOptionValidationError(
+            f"options may change at most {_Z2M_OPTION_MAX_CHANGES} properties at once."
+        )
+    definitions = _option_definition_map(entry)
+    unknown = sorted(
+        str(key) for key in changes if not isinstance(key, str) or key not in definitions
+    )
+    if unknown:
+        raise Z2MOptionValidationError(
+            f"Unknown or ambiguous converter options: {', '.join(unknown)}."
+        )
+    return {
+        key: _validate_option_value(value, definitions[key], f"options.{key}")
+        for key, value in changes.items()
+    }
+
+
+def project_z2m_option_values(entry: Any, values: Any) -> dict[str, Any]:
+    """Select and normalize converter-defined values from a Z2M options object."""
+    if not isinstance(values, dict):
+        raise Z2MOptionValidationError("Zigbee2MQTT returned no resulting options.")
+    definitions = _option_definition_map(entry)
+    return {
+        key: _normalize_option_value(value)
+        for key, value in values.items()
+        if key in definitions
+    }
+
+
+def project_z2m_device(
+    entry: Any, *, current_options: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Project one bridge/devices entry to the safe per-device view.
 
     Z2M has no per-device neighbor data without a whole-network map scan, so
     the Z2M view carries interview/definition metadata only.
     """
     entry = entry if isinstance(entry, dict) else {}
-    definition = entry.get("definition") or {}
+    definition = (
+        entry.get("definition")
+        if isinstance(entry.get("definition"), dict)
+        else {}
+    )
     projected = {
         "protocol": "zigbee",
         "backend": BACKEND_Z2M,
@@ -350,6 +716,13 @@ def project_z2m_device(entry: Any) -> dict[str, Any]:
     for key in ("interview_state", "interview_completed", "interviewing"):
         if entry.get(key) is not None:
             projected[key] = _scalar(entry.get(key))
+    projected["exposes"] = project_z2m_expose_list(definition.get("exposes"))
+    values = current_options if isinstance(current_options, dict) else {}
+    projected["options"] = {
+        "definitions": project_z2m_expose_list(definition.get("options")),
+        "values": values,
+        "content_hash": z2m_options_hash(values),
+    }
     return projected
 
 
@@ -460,6 +833,81 @@ async def async_z2m_device_entry(hass: HomeAssistant, ieee: str) -> dict[str, An
     return None
 
 
+async def _async_z2m_device_snapshot_with_info(
+    hass: HomeAssistant, ieee: str
+) -> tuple[dict[str, Any] | None, dict[str, Any], str, dict[str, Any]]:
+    """Read one Z2M device, effective options, hash, and the source info."""
+    devices, info = await asyncio.gather(
+        async_z2m_retained(hass, "bridge/devices"),
+        async_z2m_retained(hass, "bridge/info"),
+    )
+    if not isinstance(devices, list):
+        raise RadioError("Unexpected Zigbee2MQTT device list payload.")
+    entry = next(
+        (
+            item
+            for item in devices
+            if isinstance(item, dict)
+            and str(item.get("ieee_address")).lower() == ieee.lower()
+        ),
+        None,
+    )
+    if entry is None:
+        return None, {}, z2m_options_hash({}), info if isinstance(info, dict) else {}
+    try:
+        options = z2m_effective_device_options(info, entry, ieee)
+    except Z2MOptionValidationError as exc:
+        raise RadioError(f"Unsafe Zigbee2MQTT option payload: {exc}") from exc
+    return entry, options, z2m_options_hash(options), info if isinstance(info, dict) else {}
+
+
+async def async_z2m_device_snapshot(
+    hass: HomeAssistant, ieee: str
+) -> tuple[dict[str, Any] | None, dict[str, Any], str]:
+    """Read one Z2M device plus its effective converter options and hash."""
+    entry, options, content_hash, _info = await _async_z2m_device_snapshot_with_info(
+        hass, ieee
+    )
+    return entry, options, content_hash
+
+
+async def async_confirm_z2m_device_options(
+    hass: HomeAssistant,
+    ieee: str,
+    expected: dict[str, Any],
+    *,
+    timeout: float = Z2M_RETAINED_READ_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], dict[str, Any], str, bool]:
+    """Confirm requested options from retained state after a missing response.
+
+    Zigbee2MQTT's correlated bridge response remains the primary confirmation.
+    This bounded fallback exists because the option write can be persisted to
+    bridge/info even when Phoenix never receives that response. Only an exact,
+    type-preserving match of every requested converter option counts as success.
+    """
+    deadline = hass.loop.time() + timeout
+    expected_hash = z2m_options_hash(expected)
+    while True:
+        remaining = deadline - hass.loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        async with asyncio.timeout(remaining):
+            entry, current, current_hash, info = (
+                await _async_z2m_device_snapshot_with_info(hass, ieee)
+            )
+        if entry is None:
+            raise RadioError("Device is no longer on the Zigbee network.")
+        if all(key in current for key in expected):
+            requested_slice = {key: current[key] for key in expected}
+            if z2m_options_hash(requested_slice) == expected_hash:
+                restart_required = bool(info.get("restart_required"))
+                return entry, current, current_hash, restart_required
+        remaining = deadline - hass.loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        await asyncio.sleep(min(0.25, remaining))
+
+
 async def async_zha_device_info(hass: HomeAssistant, ieee: str) -> dict[str, Any]:
     """Read one device's zha_device_info via the zha/device WS command."""
     try:
@@ -522,3 +970,15 @@ async def async_remove_device(hass: HomeAssistant, backend: str, ieee: str) -> d
             raise RadioError("ZHA is not available.") from exc
         return {"backend": backend, "removed": True}
     raise RadioError(f"Unknown Zigbee backend: {backend}")
+
+
+async def async_set_z2m_device_options(
+    hass: HomeAssistant, ieee: str, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Change converter-defined options for one Z2M device by IEEE address."""
+    return await async_z2m_request(
+        hass,
+        "device/options",
+        {"id": ieee, "options": options},
+        timeout=Z2M_DEVICE_OPTIONS_RESPONSE_TIMEOUT_SECONDS,
+    )

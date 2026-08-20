@@ -790,6 +790,7 @@
       "entity.changed": "已更改：{fields}",
       "entity.removed": "注册表条目已移除",
       "device.changed": "已更改：{fields}",
+      "device.zigbee_options": "已更改 Zigbee2MQTT 选项：{keys}",
       "device.removed": "设备注册表条目已移除",
       "loc.card": "第 {index} 个卡片",
       "loc.section": "第 {index} 个分区",
@@ -872,6 +873,8 @@
       "zigbee_reconfigure.device": "重新配置 Zigbee 设备 {label}",
       "zigbee_remove": "移除一个 Zigbee 设备",
       "zigbee_remove.device": "将 Zigbee 设备 {label} 从网络中移除",
+      "zigbee_options": "更改 Zigbee2MQTT 设备选项",
+      "zigbee_options.device": "更改 {label} 的 Zigbee2MQTT 选项（{keys}）",
       "set_yaml_config.removing": "替换 {file}，移除顶层 {keys}",
       "patch_dashboard.set": "设置仪表盘“{label}”的 {path}",
       "patch_dashboard.append": "向仪表盘“{label}”的 {path} 追加内容",
@@ -1848,7 +1851,11 @@
       "zigbee_remove.body": "这将从网络中移除Zigbee设备。无法通过此批准撤销更改。",
       "zigbee_remove.device.body": "这将从Zigbee网络中移除{label}。无法通过此批准撤销更改。",
       "zigbee_remove.device.title": "将 Zigbee 设备 {label} 从网络中移除",
-      "zigbee_remove.title": "移除一个 Zigbee 设备"
+      "zigbee_remove.title": "移除一个 Zigbee 设备",
+      "zigbee_options.body": "这将更改Zigbee2MQTT设备选项。请在详细信息中查看建议值。",
+      "zigbee_options.device.body": "这将更改{label}的Zigbee2MQTT设备选项。请在详细信息中查看建议值。",
+      "zigbee_options.device.title": "更改 {label} 的 Zigbee2MQTT 选项（{keys}）",
+      "zigbee_options.title": "更改 Zigbee2MQTT 设备选项"
     }
   },
   "notification": {

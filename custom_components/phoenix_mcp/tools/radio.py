@@ -6,10 +6,9 @@ never confused inside a module that shares its name.
 
 Every tool resolves through the token's permission tree before touching a
 radio: `_resolve_radio_device` returns a device only when the token can see it,
-so a device lookup cannot become an oracle for the rest of the mesh. The three
-mutating tools (permit join, reconfigure, remove) are Confirm-eligible and each
-builds a diff naming the specific device, because "remove device" on a mesh is
-not reversible from here.
+so a device lookup cannot become an oracle for the rest of the mesh. The four
+mutating tools are Confirm-eligible and each builds a diff naming the specific
+device, because "remove device" on a mesh is not reversible from here.
 
 mcp_view owns the transport, the dispatch registry and the executor registry, and
 imports the names it registers or calls from here. The dependency runs one way:
@@ -34,9 +33,20 @@ from ..const import CAP_DENY, PROXY_TIMEOUT_SECONDS
 from ..data import PhoenixData
 from ..mesa import entity_control_mode
 from ..radio import RadioError
-from ..helpers import diff_summary_fields as _summary, effective_cap
+from ..helpers import (
+    diff_summary_fields as _summary,
+    effective_cap,
+    version_summary_fields as _version_summary,
+)
 from .discovery import _accessible_entity_ids
-from ..tool_common import _CAP_FORBIDDEN_MESSAGE, _gate, _tool_error, _tool_success
+from ..tool_common import (
+    _CAP_FORBIDDEN_MESSAGE,
+    _gate,
+    _record_version,
+    _tool_error,
+    _tool_success,
+    _truncate,
+)
 from ..policy_engine import Permission, resolve
 from ..token_store import TokenRecord
 from .. import radio as radio_backend
@@ -51,6 +61,19 @@ class _ResolvedRadioDevice:
     device: Any
     backend: str
     ieee: str
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedZ2MOptionChange:
+    """One validated, conflict-checked Zigbee2MQTT option update."""
+
+    device: Any
+    ieee: str
+    entry: dict[str, Any]
+    before: dict[str, Any]
+    after: dict[str, Any]
+    changes: dict[str, Any]
+    before_hash: str
 
 
 def _resolve_radio_device(
@@ -96,6 +119,84 @@ def _resolve_radio_device(
         )
     backend, ieee = detected
     return _ResolvedRadioDevice(device=device, backend=backend, ieee=ieee)
+
+
+async def _resolve_z2m_option_change(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZ2MOptionChange | tuple[dict, str, str]:
+    """Resolve, validate, and conflict-check a converter-option update."""
+    tool = "set_zigbee_device_options"
+    resolved = _resolve_radio_device(
+        args, token, hass, tool, require_write=True
+    )
+    if isinstance(resolved, tuple):
+        return resolved
+    if resolved.backend != radio_backend.BACKEND_Z2M:
+        return (
+            _tool_error("Device options are available only for Zigbee2MQTT devices."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    expected_hash = args.get("expected_hash")
+    if (
+        not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+        or any(char not in "0123456789abcdef" for char in expected_hash)
+    ):
+        return (
+            _tool_error(
+                "expected_hash must be the lowercase content_hash returned by get_radio_device."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    try:
+        entry, before, before_hash = await radio_backend.async_z2m_device_snapshot(
+            hass, resolved.ieee
+        )
+    except RadioError as exc:
+        return (
+            _tool_error(f"Failed to read Zigbee2MQTT device options: {exc}"),
+            "invalid_request",
+            resolved.device.id,
+        )
+    if entry is None:
+        return (
+            _tool_error("Device is not on the Zigbee network."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    if expected_hash != before_hash:
+        return (
+            _tool_error(
+                "Zigbee2MQTT device options changed after they were read. "
+                "Call get_radio_device again and retry with its new content_hash."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    try:
+        changes = radio_backend.validate_z2m_option_changes(
+            entry, args.get("options")
+        )
+    except radio_backend.Z2MOptionValidationError as exc:
+        return _tool_error(str(exc)), "invalid_request", resolved.device.id
+    after = {**before, **changes}
+    if after == before:
+        return (
+            _tool_error("The requested Zigbee2MQTT options are already current."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    return _ResolvedZ2MOptionChange(
+        device=resolved.device,
+        ieee=resolved.ieee,
+        entry=entry,
+        before=before,
+        after=after,
+        changes=changes,
+        before_hash=before_hash,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -206,6 +307,52 @@ async def _build_diff_reconfigure_zigbee_device(
     }
 
 
+async def _build_diff_set_zigbee_device_options(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    change: _ResolvedZ2MOptionChange | None = None,
+) -> dict:
+    if change is None:
+        resolved_change = await _resolve_z2m_option_change(args, token, hass)
+    else:
+        resolved_change = change
+    if isinstance(resolved_change, tuple):
+        return {
+            "kind": "config_diff",
+            **_summary("zigbee_options"),
+            "before": "{}",
+            "after": "{}",
+            "preview": {},
+        }
+    change = resolved_change
+    label = change.device.name_by_user or change.device.name or change.ieee
+    keys = sorted(change.changes)
+    return {
+        "kind": "config_diff",
+        **_summary(
+            "zigbee_options.device", label=label, keys=", ".join(keys)
+        ),
+        "target": {
+            "type": "device",
+            "id": change.device.id,
+            "label": label,
+        },
+        "before": _truncate(json.dumps(change.before, indent=2, default=str)),
+        "after": _truncate(json.dumps(change.after, indent=2, default=str)),
+        "preview": {
+            "backend": radio_backend.BACKEND_Z2M,
+            "changed_keys": keys,
+            "content_hash": change.before_hash,
+            "warning": (
+                "Some options require a Zigbee2MQTT restart. Phoenix reports that "
+                "requirement but does not restart Zigbee2MQTT automatically."
+            ),
+        },
+    }
+
+
 async def _build_diff_remove_zigbee_device(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> dict:
@@ -266,12 +413,16 @@ async def _tool_get_radio_device(
     device, backend, ieee = resolved.device, resolved.backend, resolved.ieee
     try:
         if backend == radio_backend.BACKEND_Z2M:
-            entry = await radio_backend.async_z2m_device_entry(hass, ieee)
+            entry, current_options, _options_hash = (
+                await radio_backend.async_z2m_device_snapshot(hass, ieee)
+            )
             if entry is None:
                 # Registered in HA but unknown to Z2M (a stale discovery
                 # leftover). The token already sees the device, so no oracle.
                 return _tool_error("Device is not on the Zigbee network."), "invalid_request", device.id
-            projected = radio_backend.project_z2m_device(entry)
+            projected = radio_backend.project_z2m_device(
+                entry, current_options=current_options
+            )
         else:
             raw = await radio_backend.async_zha_device_info(hass, ieee)
             accessible = _accessible_entity_ids(token, hass)
@@ -398,6 +549,161 @@ async def _execute_reconfigure_zigbee_device(
         _tool_success(json.dumps({"success": True, "ieee": ieee, "backend": backend, "message": message})),
         "allowed",
         device.id,
+    )
+
+
+async def _tool_set_zigbee_device_options(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData,
+    request_id: str = "", client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: change Z2M converter options (Confirm-eligible)."""
+    if effective_cap(token, "cap_radio_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_zigbee_device_options"
+    pre = await _resolve_z2m_option_change(args, token, hass)
+    if isinstance(pre, tuple):
+        return pre
+    blocked = await _gate(
+        "cap_radio_write",
+        token,
+        hass,
+        data,
+        tool_name="set_zigbee_device_options",
+        args=args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda: _build_diff_set_zigbee_device_options(
+            args, token, hass, change=pre
+        ),
+    )
+    if blocked is not None:
+        return blocked
+    return await _execute_set_zigbee_device_options(args, token, hass, data)
+
+
+async def _execute_set_zigbee_device_options(
+    args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
+) -> tuple[dict, str, str]:
+    """Apply one validated option update and record its bounded history."""
+    change = await _resolve_z2m_option_change(args, token, hass)
+    if isinstance(change, tuple):
+        return change
+    confirmation = "response"
+    try:
+        async with asyncio.timeout(PROXY_TIMEOUT_SECONDS):
+            result = await radio_backend.async_set_z2m_device_options(
+                hass, change.ieee, change.changes
+            )
+    except RadioError as exc:
+        return _tool_error(str(exc)), "invalid_request", change.device.id
+    except TimeoutError:
+        try:
+            _entry, retained_after, _retained_hash, restart_required = (
+                await radio_backend.async_confirm_z2m_device_options(
+                    hass, change.ieee, change.changes
+                )
+            )
+        except (RadioError, TimeoutError):
+            return (
+                _tool_error(
+                    "Timed out waiting for Zigbee2MQTT to confirm the option change, "
+                    "and the requested values were not visible in retained state. "
+                    "Call get_radio_device before retrying because the change may apply later."
+                ),
+                "invalid_request",
+                change.device.id,
+            )
+        result = {
+            "to": retained_after,
+            "restart_required": restart_required,
+        }
+        confirmation = "retained_state"
+
+    raw_to = result.get("to")
+    try:
+        after = radio_backend.project_z2m_option_values(change.entry, raw_to)
+        if not isinstance(raw_to, dict) or any(
+            key not in raw_to for key in change.changes
+        ):
+            raise radio_backend.Z2MOptionValidationError(
+                "Zigbee2MQTT returned no value for a requested option."
+            )
+        confirmed = radio_backend.validate_z2m_option_changes(
+            change.entry,
+            {key: raw_to[key] for key in change.changes},
+        )
+    except radio_backend.Z2MOptionValidationError as exc:
+        _LOGGER.error(
+            "set_zigbee_device_options received an unsafe result for %s: %s",
+            change.ieee,
+            exc,
+        )
+        return (
+            _tool_error(
+                "Zigbee2MQTT applied the request but returned an unsafe or incomplete result. "
+                "Call get_radio_device to verify the current options."
+            ),
+            "invalid_request",
+            change.device.id,
+        )
+    if confirmed != change.changes:
+        return (
+            _tool_error(
+                "Zigbee2MQTT did not confirm every requested option value. "
+                "Call get_radio_device to verify the current options."
+            ),
+            "invalid_request",
+            change.device.id,
+        )
+    after_hash = radio_backend.z2m_options_hash(after)
+    label = change.device.name_by_user or change.device.name or change.ieee
+    snapshot_before = {
+        "snapshot_type": "zigbee_device_options",
+        "restorable": False,
+        "options": change.before,
+        "content_hash": change.before_hash,
+    }
+    snapshot_after = {
+        "snapshot_type": "zigbee_device_options",
+        "restorable": False,
+        "options": after,
+        "content_hash": after_hash,
+    }
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=change.device.id,
+        action="edit",
+        before=snapshot_before,
+        after=snapshot_after,
+        alias=label,
+        summary=_version_summary(
+            "device.zigbee_options", keys=", ".join(sorted(change.changes))
+        ),
+    )
+    restart_required = bool(result.get("restart_required"))
+    return (
+        _tool_success(
+            json.dumps(
+                {
+                    "success": True,
+                    "backend": radio_backend.BACKEND_Z2M,
+                    "device_id": change.device.id,
+                    "changed": change.changes,
+                    "options": after,
+                    "content_hash": after_hash,
+                    "restart_required": restart_required,
+                    "confirmation": confirmation,
+                    "message": (
+                        "Options changed. Restart Zigbee2MQTT to apply every change."
+                        if restart_required
+                        else "Options changed."
+                    ),
+                }
+            )
+        ),
+        "allowed",
+        change.device.id,
     )
 
 

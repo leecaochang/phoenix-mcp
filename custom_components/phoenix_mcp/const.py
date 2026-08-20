@@ -719,6 +719,9 @@ PASS_THROUGH_EXEMPT_CAPS = frozenset({
 Z2M_BASE_TOPIC = "zigbee2mqtt"
 Z2M_REQUEST_TIMEOUT_SECONDS = 30.0
 Z2M_RETAINED_READ_TIMEOUT_SECONDS = 5.0
+# Device options are a local config write, not a sleepy-device operation. Give
+# the correlated response a short window, then verify the retained config.
+Z2M_DEVICE_OPTIONS_RESPONSE_TIMEOUT_SECONDS = 5.0
 
 # ESPHome Device Builder commands. Phoenix MCP speaks the add-on's multiplexed
 # WebSocket API at <dashboard url>/ws for validation, for the
@@ -1200,6 +1203,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "zigbee_reconfigure.device": "Reconfigure (re-interview) Zigbee device {label}",
     "zigbee_remove": "Remove a Zigbee device",
     "zigbee_remove.device": "Remove Zigbee device {label} from the network",
+    "zigbee_options": "Change Zigbee2MQTT device options",
+    "zigbee_options.device": "Change Zigbee2MQTT options ({keys}) for {label}",
     # System.
     "restart_ha": "Restart Home Assistant",
     # {file} rather than a literal configuration.yaml: these tools write any
@@ -1321,6 +1326,8 @@ _APPROVAL_SUMMARY_BODIES = {
     "zigbee_reconfigure.device": "This will interview {label} again. It may be briefly unresponsive. Battery devices must be awake.",
     "zigbee_remove": "This will remove the Zigbee device from the network. The change cannot be undone from this approval.",
     "zigbee_remove.device": "This will remove {label} from the Zigbee network. The change cannot be undone from this approval.",
+    "zigbee_options": "This will change Zigbee2MQTT device options. Open Details to review the proposed values.",
+    "zigbee_options.device": "This will change Zigbee2MQTT device options for {label}. Open Details to review the proposed values.",
     "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
     "integration.reconfigure": (
         "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. "
@@ -1469,6 +1476,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "entity.changed": "changed: {fields}",
     "device.removed": "device registry entry removed",
     "device.changed": "changed: {fields}",
+    "device.zigbee_options": "changed Zigbee2MQTT options: {keys}",
     "config_entry.removed": "integration removed",
     "card.added": "added {subject} ({where})",
     "card.edited": "edited {subject} ({where})",

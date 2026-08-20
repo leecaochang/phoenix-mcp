@@ -108,11 +108,13 @@ from .tools.radio import (
     _execute_permit_zigbee_join,
     _execute_reconfigure_zigbee_device,
     _execute_remove_zigbee_device,
+    _execute_set_zigbee_device_options,
     _tool_get_radio_device,
     _tool_get_radio_network,
     _tool_permit_zigbee_join,
     _tool_reconfigure_zigbee_device,
     _tool_remove_zigbee_device,
+    _tool_set_zigbee_device_options,
 )
 from .tools.energy import (
     _execute_edit_energy_config,
@@ -5065,7 +5067,7 @@ async def async_restore_version(
         if resource_type == "device":
             if target.get("restorable") is False:
                 return _tool_error(
-                    "Device removal versions are audit records and cannot be restored."
+                    "This device version is an audit record and cannot be restored automatically."
                 ), "invalid_request", "async_restore_version"
             fields = {
                 key: target[key]
@@ -8857,6 +8859,7 @@ _register_executor("delete_entity", _execute_delete_entity)
 _register_executor("permit_zigbee_join", _execute_permit_zigbee_join)
 _register_executor("reconfigure_zigbee_device", _execute_reconfigure_zigbee_device)
 _register_executor("remove_zigbee_device", _execute_remove_zigbee_device)
+_register_executor("set_zigbee_device_options", _execute_set_zigbee_device_options)
 _register_executor("HassSetPosition", _execute_hass_set_position)
 _register_executor("HassStopMoving", _execute_hass_stop_moving)
 _register_executor("HassTurnOn", _execute_hass_turn_on)
@@ -8937,6 +8940,7 @@ _register_tool("get_radio_device", _tool_get_radio_device)
 _register_tool("permit_zigbee_join", _tool_permit_zigbee_join)
 _register_tool("reconfigure_zigbee_device", _tool_reconfigure_zigbee_device)
 _register_tool("remove_zigbee_device", _tool_remove_zigbee_device)
+_register_tool("set_zigbee_device_options", _tool_set_zigbee_device_options)
 _register_tool("create_script", _tool_create_script)
 _register_tool("edit_script", _tool_edit_script)
 _register_tool("delete_script", _tool_delete_script)

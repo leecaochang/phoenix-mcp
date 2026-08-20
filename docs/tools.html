@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 126 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 127 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 126 of its own, 149 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 127 of its own, 150 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 149 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 150 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -241,7 +241,7 @@
 
           <article class="tool" data-cap="discovery" data-search="get_radio_network get_radio_device zigbee radio lqi rssi signal mesh neighbors channel z2m zha zigbee2mqtt">
             <div class="tool-head"><span class="tool-name">get_radio_network</span><span class="tool-name">get_radio_device</span><span class="badge badge-cap">Diagnostics</span></div>
-            <p class="tool-desc">Radio-network health (Zigbee2MQTT or ZHA, auto-detected). <code>get_radio_network</code> reports every radio network present: channel, PAN id, coordinator, and whether the pairing window is open. <code>get_radio_device</code> reports one device's signal quality (LQI/RSSI), availability, power source, interview state, and (ZHA) mesh neighbors, with out-of-scope neighbor identifiers redacted. Network keys never appear in any response.</p>
+            <p class="tool-desc">Radio-network health (Zigbee2MQTT or ZHA, auto-detected). <code>get_radio_network</code> reports every radio network present: channel, PAN id, coordinator, and whether the pairing window is open. <code>get_radio_device</code> reports one device's signal quality (LQI/RSSI), availability, power source, and interview state. ZHA adds scoped mesh neighbors. Zigbee2MQTT adds bounded converter capability and option definitions, effective declared option values, and a conflict-detection hash. Network keys, bridge configuration, bindings, clusters, and unknown upstream fields never appear.</p>
             <dl><dt>params</dt><dd><code>get_radio_network</code>: none; <code>get_radio_device</code>: <code>device_id</code></dd></dl>
           </article>
 
@@ -402,10 +402,10 @@
             <dl><dt>params</dt><dd><code>device_id</code> (required), optional <code>config_entry_id</code> when exactly one owner cannot be inferred</dd></dl>
           </article>
 
-          <article class="tool" data-cap="system" data-search="permit_zigbee_join reconfigure_zigbee_device remove_zigbee_device zigbee radio pair join z2m zha zigbee2mqtt">
-            <div class="tool-head"><span class="tool-name">permit_zigbee_join</span><span class="tool-name">reconfigure_zigbee_device</span><span class="tool-name">remove_zigbee_device</span><span class="badge badge-cap">Radio management</span></div>
-            <p class="tool-desc">Manage the Zigbee network (Zigbee2MQTT or ZHA, auto-detected). Open the pairing window for up to 254 seconds or close it with duration 0, re-interview a misbehaving device, or remove one from the network (re-pairing required to rejoin). Requires <code>cap_radio_write</code>; Confirm-eligible. Device-scoped writes need write access to at least one of the device's entities, and the coordinator can never be targeted.</p>
-            <dl><dt>params</dt><dd><code>permit_zigbee_join</code>: <code>duration</code> (0-254, default 60), optional <code>device_id</code> (router) and <code>backend</code>; others: <code>device_id</code></dd></dl>
+          <article class="tool" data-cap="system" data-search="permit_zigbee_join reconfigure_zigbee_device set_zigbee_device_options remove_zigbee_device zigbee radio pair join options converter z2m zha zigbee2mqtt">
+            <div class="tool-head"><span class="tool-name">permit_zigbee_join</span><span class="tool-name">reconfigure_zigbee_device</span><span class="tool-name">set_zigbee_device_options</span><span class="tool-name">remove_zigbee_device</span><span class="badge badge-cap">Radio management</span></div>
+            <p class="tool-desc">Manage the Zigbee network. Open or close the pairing window, re-interview a device, or remove one through Zigbee2MQTT or ZHA. For Zigbee2MQTT, <code>set_zigbee_device_options</code> changes only converter-declared options using the hash from <code>get_radio_device</code>; every value is checked against its converter definition and a required restart is reported without being performed. Requires <code>cap_radio_write</code>; Confirm-eligible. Device-scoped writes need write access to at least one of the device's entities, and the coordinator can never be targeted.</p>
+            <dl><dt>params</dt><dd><code>permit_zigbee_join</code>: <code>duration</code> (0-254, default 60), optional <code>device_id</code> (router) and <code>backend</code>; <code>set_zigbee_device_options</code>: <code>device_id</code>, partial <code>options</code>, and <code>expected_hash</code> from the latest read; reconfigure/remove: <code>device_id</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="system" data-search="restart_ha restart home assistant">

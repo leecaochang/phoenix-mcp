@@ -853,6 +853,7 @@
       "config_entry.reconfigure": "{subject} を再設定",
       "config_entry.removed": "インテグレーションを削除",
       "device.changed": "変更: {fields}",
+      "device.zigbee_options": "Zigbee2MQTT オプションを変更: {keys}",
       "device.removed": "デバイスレジストリエントリを削除",
       "energy.sources": "ソース {count} 個、デバイス {devices} 台",
       "entity.changed": "変更: {fields}",
@@ -1193,7 +1194,9 @@
       "zigbee_reconfigure": "Zigbee デバイスを再設定",
       "zigbee_reconfigure.device": "Zigbee デバイス {label} を再設定（再インタビュー）",
       "zigbee_remove": "Zigbee デバイスを削除",
-      "zigbee_remove.device": "Zigbee デバイス {label} をネットワークから削除"
+      "zigbee_remove.device": "Zigbee デバイス {label} をネットワークから削除",
+      "zigbee_options": "Zigbee2MQTT デバイスオプションを変更",
+      "zigbee_options.device": "{label} の Zigbee2MQTT オプション（{keys}）を変更"
     },
     "settings": {
       "addProviderFirst": "先に Agent Chat でプロバイダーアカウントを追加してください。",
@@ -1848,7 +1851,11 @@
       "zigbee_remove.body": "Zigbeeデバイスをネットワークから削除します。この承認から変更を元に戻すことはできません。",
       "zigbee_remove.device.body": "{label}をZigbeeネットワークから削除します。この承認から変更を元に戻すことはできません。",
       "zigbee_remove.device.title": "Zigbee デバイス {label} をネットワークから削除",
-      "zigbee_remove.title": "Zigbee デバイスを削除"
+      "zigbee_remove.title": "Zigbee デバイスを削除",
+      "zigbee_options.body": "Zigbee2MQTTデバイスオプションを変更します。詳細で提案された値を確認してください。",
+      "zigbee_options.device.body": "{label}のZigbee2MQTTデバイスオプションを変更します。詳細で提案された値を確認してください。",
+      "zigbee_options.device.title": "{label} の Zigbee2MQTT オプション（{keys}）を変更",
+      "zigbee_options.title": "Zigbee2MQTT デバイスオプションを変更"
     }
   },
   "notification": {
