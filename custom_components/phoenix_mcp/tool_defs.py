@@ -1041,14 +1041,22 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "Radio-level diagnostics for one device: signal quality (LQI/RSSI), availability, last seen, "
             "power source, interview state, and (ZHA backend) mesh neighbors. For Zigbee2MQTT devices it also "
             "returns bounded capability exposes plus converter-option definitions, effective values, and a "
-            "content hash used by set_zigbee_device_options. Prefer ordinary Home Assistant entities when a "
+            "content hash used by set_zigbee_device_options. For Zigbee2MQTT, direct_property_fallback lists only "
+            "readable exposes that MQTT discovery proves have no owning Home Assistant entity. Pass one listed "
+            "property to read its current value and conflict hash. Prefer ordinary Home Assistant entities when a "
             "capability is represented there. device_id is Phoenix MCP's registry id from list_devices/get_device. "
             "The radio protocol and backend are detected automatically."
         ),
         "cap": "cap_diagnostics",
         "inputSchema": {
             "type": "object",
-            "properties": {"device_id": {"type": "string", "description": "Device registry ID to inspect."}},
+            "properties": {
+                "device_id": {"type": "string", "description": "Device registry ID to inspect."},
+                "property": {
+                    "type": "string",
+                    "description": "Optional property from direct_property_fallback.properties to read exactly.",
+                },
+            },
             "required": ["device_id"],
         },
     },
@@ -1137,6 +1145,40 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
                 },
             },
             "required": ["device_id", "options", "expected_hash"],
+        },
+    },
+    {
+        "name": "set_zigbee_device_property",
+        "description": (
+            "Directly change one readable/writable Zigbee2MQTT exposed property only when Home Assistant MQTT "
+            "discovery proves no entity owns it. First call get_radio_device with property and pass property_read."
+            "content_hash as expected_hash. Values are validated against the converter expose definition and the "
+            "device state must exactly confirm the result. Requires WRITE access to the device plus both "
+            "cap_radio_write and cap_physical_control; either capability or MESA may require admin confirmation. "
+            "No MQTT topic, friendly name, IEEE address, or arbitrary payload is caller-controlled."
+        ),
+        "caps": ["cap_radio_write", "cap_physical_control"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "device_id": {
+                    "type": "string",
+                    "description": "Zigbee2MQTT device registry ID to update.",
+                },
+                "property": {
+                    "type": "string",
+                    "description": "Property returned in direct_property_fallback.properties.",
+                },
+                "value": {
+                    "type": ["string", "number", "integer", "boolean", "object", "array", "null"],
+                    "description": "New JSON value matching the property's exposed definition."
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "Lowercase property_read.content_hash from the latest get_radio_device result.",
+                },
+            },
+            "required": ["device_id", "property", "value", "expected_hash"],
         },
     },
     {
@@ -3108,6 +3150,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "reconfigure_zigbee_device": _annot(False, True, True),
     "remove_zigbee_device": _annot(False, True, True),
     "set_zigbee_device_options": _annot(False, True, True),
+    "set_zigbee_device_property": _annot(False, True, True),
     # Native HA MCP tools.
     "GetLiveContext": _annot(True, False, True),
     "GetDateTime": _annot(True, False, True),

@@ -23,15 +23,20 @@ import asyncio
 import dataclasses
 import json
 import logging
+import re
 
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.core import HomeAssistant
 
-from ..const import CAP_DENY, PROXY_TIMEOUT_SECONDS
+from ..const import CAP_CONFIRM, CAP_DENY, PROXY_TIMEOUT_SECONDS
 from ..data import PhoenixData
-from ..mesa import entity_control_mode
+from ..mesa import (
+    async_apply_mesa_to_call,
+    entity_control_mode,
+    fire_mesa_blocked_event,
+)
 from ..radio import RadioError
 from ..helpers import (
     diff_summary_fields as _summary,
@@ -41,7 +46,11 @@ from ..helpers import (
 from .discovery import _accessible_entity_ids
 from ..tool_common import (
     _CAP_FORBIDDEN_MESSAGE,
+    _approved_exec_ctx,
     _gate,
+    _mesa_advisory_ctx,
+    _mesa_confirm_annotation,
+    _pending_or_inline,
     _record_version,
     _tool_error,
     _tool_success,
@@ -74,6 +83,177 @@ class _ResolvedZ2MOptionChange:
     after: dict[str, Any]
     changes: dict[str, Any]
     before_hash: str
+
+
+@dataclasses.dataclass(frozen=True)
+class _Z2MPropertyCoverage:
+    """HA MQTT discovery ownership for one device's exposed properties."""
+
+    owners: dict[str, tuple[str, ...]]
+    ambiguous: frozenset[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResolvedZ2MPropertyChange:
+    """One validated, conflict-checked direct exposed-property update."""
+
+    device: Any
+    ieee: str
+    entry: dict[str, Any]
+    property_name: str
+    schema: dict[str, Any]
+    before: Any
+    after: Any
+    before_hash: str
+    mesa_entities: tuple[str, ...]
+
+
+def _z2m_root_property_groups(entry: dict[str, Any]) -> dict[str, list[set[str]]]:
+    """Group recursive property leaves by each top-level expose type."""
+    definition = entry.get("definition") if isinstance(entry, dict) else None
+    exposes = definition.get("exposes") if isinstance(definition, dict) else None
+    groups: dict[str, list[set[str]]] = {}
+
+    def _properties(item: Any, depth: int = 0) -> set[str]:
+        if not isinstance(item, dict) or depth > 4:
+            return set()
+        found = set()
+        prop = item.get("property")
+        if isinstance(prop, str) and prop:
+            found.add(prop)
+        raw_features = item.get("features")
+        features = raw_features if isinstance(raw_features, list) else []
+        for feature in features:
+            found.update(_properties(feature, depth + 1))
+        return found
+
+    for root in exposes if isinstance(exposes, list) else []:
+        if not isinstance(root, dict) or not isinstance(root.get("type"), str):
+            continue
+        props = _properties(root)
+        if props:
+            groups.setdefault(root["type"], []).append(props)
+    return groups
+
+
+def _z2m_property_coverage(
+    hass: HomeAssistant, device_id: str, entry: dict[str, Any]
+) -> _Z2MPropertyCoverage:
+    """Index exact HA MQTT discovery ownership, failing closed on ambiguity."""
+    # Private MQTT runtime detail, kept lazy so a compatibility drift cannot
+    # prevent Phoenix itself from loading. Any failure below becomes ambiguity.
+    try:
+        from homeassistant.components.mqtt.const import ATTR_DISCOVERY_PAYLOAD  # noqa: PLC0415
+        from homeassistant.components.mqtt.models import DATA_MQTT  # noqa: PLC0415
+    except ImportError:
+        return _Z2MPropertyCoverage({}, frozenset(radio_backend.z2m_exposed_property_map(entry)))
+    definitions = radio_backend.z2m_exposed_property_map(entry)
+    all_properties = set(definitions)
+    if not all_properties:
+        return _Z2MPropertyCoverage({}, frozenset())
+    owners: dict[str, set[str]] = {prop: set() for prop in definitions}
+    ambiguous: set[str] = set()
+    mqtt_data = hass.data.get(DATA_MQTT)
+    debug_entities = getattr(mqtt_data, "debug_info_entities", None)
+    if not isinstance(debug_entities, dict):
+        return _Z2MPropertyCoverage({}, frozenset(all_properties))
+
+    root_groups = _z2m_root_property_groups(entry)
+    entries = er.async_entries_for_device(
+        er.async_get(hass), device_id, include_disabled_entities=True
+    )
+    mqtt_entry_count = 0
+    for registry_entry in entries:
+        if registry_entry.platform != "mqtt":
+            continue
+        mqtt_entry_count += 1
+        if registry_entry.disabled_by is not None:
+            # Even if stale debug metadata remains, disabling an entity must
+            # never unlock a lower-level control path.
+            ambiguous.update(all_properties)
+            continue
+        entity_info = debug_entities.get(registry_entry.entity_id)
+        discovery_data = (
+            entity_info.get("discovery_data")
+            if isinstance(entity_info, dict)
+            else None
+        )
+        payload = (
+            discovery_data.get(ATTR_DISCOVERY_PAYLOAD)
+            if isinstance(discovery_data, dict)
+            else None
+        )
+        if not isinstance(payload, dict):
+            # Disabled/unloaded MQTT entities are deliberately a full block:
+            # disabling an HA entity must never unlock a lower-level bypass.
+            ambiguous.update(all_properties)
+            continue
+        serialized = json.dumps(payload, ensure_ascii=False, default=str)
+        recognized = {
+            prop
+            for prop in all_properties
+            if re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(prop)}(?![A-Za-z0-9_])",
+                serialized,
+            )
+        }
+        for prop in recognized:
+            owners[prop].add(registry_entry.entity_id)
+
+        matching_roots = root_groups.get(registry_entry.domain, [])
+        if len(matching_roots) == 1:
+            for prop in matching_roots[0]:
+                if prop in owners:
+                    owners[prop].add(registry_entry.entity_id)
+        elif len(matching_roots) > 1:
+            for prop in set().union(*matching_roots) - recognized:
+                ambiguous.add(prop)
+        elif not recognized:
+            # A device MQTT entity whose discovery payload cannot be related to
+            # any expose makes ownership indeterminate; fail closed.
+            ambiguous.update(all_properties)
+
+    if mqtt_entry_count == 0:
+        ambiguous.update(all_properties)
+
+    return _Z2MPropertyCoverage(
+        {prop: tuple(sorted(entity_ids)) for prop, entity_ids in owners.items() if entity_ids},
+        frozenset(ambiguous),
+    )
+
+
+def _property_fallback_summary(
+    hass: HomeAssistant, device_id: str, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Bounded inventory of exposes safe for direct fallback."""
+    definitions = radio_backend.z2m_exposed_property_map(entry)
+    coverage = _z2m_property_coverage(hass, device_id, entry)
+    items = []
+    for prop, schema in sorted(definitions.items()):
+        access = schema.get("access")
+        if (
+            not isinstance(access, int)
+            or isinstance(access, bool)
+            or not access & 1
+            or prop in coverage.owners
+            or prop in coverage.ambiguous
+        ):
+            continue
+        items.append(
+            {
+                "property": prop,
+                "readable": True,
+                "writable": bool(access & 2),
+                "definition": radio_backend.project_z2m_property_definition(schema),
+            }
+        )
+    return {
+        "status": "available" if items else "unavailable",
+        "properties": items,
+        "note": (
+            "Direct fallback is listed only when MQTT discovery proves no Home Assistant entity owns the property."
+        ),
+    }
 
 
 def _resolve_radio_device(
@@ -196,6 +376,133 @@ async def _resolve_z2m_option_change(
         after=after,
         changes=changes,
         before_hash=before_hash,
+    )
+
+
+async def _resolve_z2m_property_change(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> _ResolvedZ2MPropertyChange | tuple[dict, str, str]:
+    """Resolve, ownership-check, validate, and conflict-check a direct write."""
+    tool = "set_zigbee_device_property"
+    resolved = _resolve_radio_device(args, token, hass, tool, require_write=True)
+    if isinstance(resolved, tuple):
+        return resolved
+    if resolved.backend != radio_backend.BACKEND_Z2M:
+        return (
+            _tool_error("Direct exposed properties are available only for Zigbee2MQTT devices."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    property_name = args.get("property")
+    if not isinstance(property_name, str) or not property_name:
+        return (
+            _tool_error("property must be a non-empty exposed property name."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    expected_hash = args.get("expected_hash")
+    if (
+        not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+        or any(char not in "0123456789abcdef" for char in expected_hash)
+    ):
+        return (
+            _tool_error(
+                "expected_hash must be the lowercase content_hash returned by get_radio_device's property_read."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    try:
+        entry, _options, _options_hash = await radio_backend.async_z2m_device_snapshot(
+            hass, resolved.ieee
+        )
+    except RadioError as exc:
+        return _tool_error(str(exc)), "invalid_request", resolved.device.id
+    if entry is None:
+        return (
+            _tool_error("Device is not on the Zigbee network."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    definitions = radio_backend.z2m_exposed_property_map(entry)
+    schema = definitions.get(property_name)
+    if not isinstance(schema, dict):
+        return (
+            _tool_error("Unknown, ambiguous, or non-readable/writable exposed property."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    access = schema.get("access")
+    if isinstance(access, bool) or not isinstance(access, int) or access & 3 != 3:
+        return (
+            _tool_error("Unknown, ambiguous, or non-readable/writable exposed property."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    coverage = _z2m_property_coverage(hass, resolved.device.id, entry)
+    if property_name in coverage.owners:
+        accessible = _accessible_entity_ids(token, hass)
+        visible = sorted(set(coverage.owners[property_name]) & accessible)
+        message = (
+            f"Use Home Assistant entity {visible[0]} for this property."
+            if visible
+            else "Use the Home Assistant entity that owns this property."
+        )
+        return _tool_error(message), "invalid_request", resolved.device.id
+    if property_name in coverage.ambiguous:
+        return (
+            _tool_error(
+                "Direct fallback is unavailable because Home Assistant MQTT discovery ownership is ambiguous."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    try:
+        before = await radio_backend.async_read_z2m_exposed_property(
+            hass, entry, property_name, schema
+        )
+        after = radio_backend.validate_z2m_exposed_value(
+            property_name, args.get("value"), schema
+        )
+    except (RadioError, radio_backend.Z2MPropertyValidationError) as exc:
+        return _tool_error(str(exc)), "invalid_request", resolved.device.id
+    before_hash = radio_backend.z2m_property_hash(property_name, before)
+    if before_hash != expected_hash:
+        return (
+            _tool_error(
+                "The Zigbee2MQTT property changed after it was read. Call get_radio_device again and retry with its new content_hash."
+            ),
+            "invalid_request",
+            resolved.device.id,
+        )
+    if type(before) is type(after) and before == after:
+        return (
+            _tool_error("The requested Zigbee2MQTT property value is already current."),
+            "invalid_request",
+            resolved.device.id,
+        )
+    mesa_entities = tuple(
+        sorted(
+            registry_entry.entity_id
+            for registry_entry in er.async_entries_for_device(
+                er.async_get(hass),
+                resolved.device.id,
+                include_disabled_entities=True,
+            )
+            if resolve(registry_entry.entity_id, token, hass) == Permission.WRITE
+        )
+    )
+    return _ResolvedZ2MPropertyChange(
+        device=resolved.device,
+        ieee=resolved.ieee,
+        entry=entry,
+        property_name=property_name,
+        schema=schema,
+        before=before,
+        after=after,
+        before_hash=before_hash,
+        mesa_entities=mesa_entities,
     )
 
 
@@ -353,6 +660,54 @@ async def _build_diff_set_zigbee_device_options(
     }
 
 
+async def _build_diff_set_zigbee_device_property(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    change: _ResolvedZ2MPropertyChange | None = None,
+) -> dict:
+    """Approval preview for one exact direct exposed-property change."""
+    resolved_change = change or await _resolve_z2m_property_change(args, token, hass)
+    if isinstance(resolved_change, tuple):
+        return {
+            "kind": "config_diff",
+            **_summary("zigbee_property"),
+            "before": "null",
+            "after": "null",
+            "preview": {},
+        }
+    change = resolved_change
+    label = change.device.name_by_user or change.device.name or change.ieee
+    preview: dict[str, Any] = {
+        "backend": radio_backend.BACKEND_Z2M,
+        "property": change.property_name,
+        "content_hash": change.before_hash,
+        "warning": (
+            "This bypasses Home Assistant's entity layer only because MQTT discovery proves no entity owns the property."
+        ),
+    }
+    mesa_note = _mesa_confirm_annotation(
+        token,
+        hass,
+        [("zigbee", "set_property", list(change.mesa_entities))],
+    )
+    if mesa_note:
+        preview["mesa"] = mesa_note
+    return {
+        "kind": "config_diff",
+        **_summary(
+            "zigbee_property.device",
+            label=label,
+            property=change.property_name,
+        ),
+        "target": {"type": "device", "id": change.device.id, "label": label},
+        "before": _truncate(json.dumps(change.before, indent=2, default=str)),
+        "after": _truncate(json.dumps(change.after, indent=2, default=str)),
+        "preview": preview,
+    }
+
+
 async def _build_diff_remove_zigbee_device(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> dict:
@@ -423,6 +778,63 @@ async def _tool_get_radio_device(
             projected = radio_backend.project_z2m_device(
                 entry, current_options=current_options
             )
+            projected["direct_property_fallback"] = _property_fallback_summary(
+                hass, device.id, entry
+            )
+            requested_property = args.get("property")
+            if requested_property is not None:
+                if not isinstance(requested_property, str) or not requested_property:
+                    return (
+                        _tool_error("property must be a non-empty exposed property name."),
+                        "invalid_request",
+                        device.id,
+                    )
+                definitions = radio_backend.z2m_exposed_property_map(entry)
+                schema = definitions.get(requested_property)
+                if not isinstance(schema, dict):
+                    return (
+                        _tool_error("Unknown, ambiguous, or unreadable exposed property."),
+                        "invalid_request",
+                        device.id,
+                    )
+                access = schema.get("access")
+                if isinstance(access, bool) or not isinstance(access, int) or not access & 1:
+                    return (
+                        _tool_error("Unknown, ambiguous, or unreadable exposed property."),
+                        "invalid_request",
+                        device.id,
+                    )
+                coverage = _z2m_property_coverage(hass, device.id, entry)
+                owners = coverage.owners.get(requested_property, ())
+                if owners:
+                    accessible = _accessible_entity_ids(token, hass)
+                    visible_owners = sorted(set(owners) & accessible)
+                    message = (
+                        f"Use Home Assistant entity {visible_owners[0]} for this property."
+                        if visible_owners
+                        else "Use the Home Assistant entity that owns this property."
+                    )
+                    return _tool_error(message), "invalid_request", device.id
+                if requested_property in coverage.ambiguous:
+                    return (
+                        _tool_error(
+                            "Direct fallback is unavailable because Home Assistant MQTT discovery ownership is ambiguous."
+                        ),
+                        "invalid_request",
+                        device.id,
+                    )
+                value = await radio_backend.async_read_z2m_exposed_property(
+                    hass, entry, requested_property, schema
+                )
+                projected["property_read"] = {
+                    "property": requested_property,
+                    "value": value,
+                    "content_hash": radio_backend.z2m_property_hash(
+                        requested_property, value
+                    ),
+                    "definition": radio_backend.project_z2m_property_definition(schema),
+                    "source": "zigbee2mqtt_direct_fallback",
+                }
         else:
             raw = await radio_backend.async_zha_device_info(hass, ieee)
             accessible = _accessible_entity_ids(token, hass)
@@ -705,6 +1117,177 @@ async def _execute_set_zigbee_device_options(
         "allowed",
         change.device.id,
     )
+
+
+async def _tool_set_zigbee_device_property(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """MCP tool: direct Z2M exposed-property fallback (dual-gated)."""
+    caps = ("cap_radio_write", "cap_physical_control")
+    if any(effective_cap(token, cap) == CAP_DENY for cap in caps):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_zigbee_device_property"
+    pre = await _resolve_z2m_property_change(args, token, hass)
+    if isinstance(pre, tuple):
+        return pre
+    pre_diff = await _build_diff_set_zigbee_device_property(
+        args, token, hass, change=pre
+    )
+    mesa_outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        token,
+        domain="zigbee",
+        service="set_property",
+        service_data={"property": pre.property_name, "value": pre.after},
+        entities=list(pre.mesa_entities),
+        request_id=request_id or "zigbee_property",
+        client_ip=client_ip,
+        session_id=request_id or "zigbee_property",
+        confirm_approved=False,
+        approval_tool_name="set_zigbee_device_property",
+        approval_args=args,
+        approval_diff=pre_diff,
+        require_all=True,
+    )
+    if mesa_outcome.blocked:
+        fire_mesa_blocked_event(hass, token, mesa_outcome.blocked)
+    if mesa_outcome.decision == "pending":
+        return await _pending_or_inline(hass, data, token, mesa_outcome.approval)
+    if mesa_outcome.decision == "deny":
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", pre.device.id
+    if mesa_outcome.warnings:
+        _mesa_advisory_ctx.set(True)
+    if not _approved_exec_ctx.get():
+        for cap in caps:
+            if effective_cap(token, cap) != CAP_CONFIRM:
+                continue
+            blocked = await _gate(
+                cap,
+                token,
+                hass,
+                data,
+                tool_name="set_zigbee_device_property",
+                args=args,
+                request_id=request_id,
+                client_ip=client_ip,
+                diff=pre_diff,
+            )
+            if blocked is not None:
+                return blocked
+    return await _execute_set_zigbee_device_property(
+        args, token, hass, data, request_id=request_id, client_ip=client_ip
+    )
+
+
+async def _execute_set_zigbee_device_property(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Apply one exact direct property write after all gates are satisfied."""
+    if any(
+        effective_cap(token, cap) == CAP_DENY
+        for cap in ("cap_radio_write", "cap_physical_control")
+    ):
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "set_zigbee_device_property"
+    change = await _resolve_z2m_property_change(args, token, hass)
+    if isinstance(change, tuple):
+        return change
+
+    diff = await _build_diff_set_zigbee_device_property(
+        args, token, hass, change=change
+    )
+    mesa_outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        token,
+        domain="zigbee",
+        service="set_property",
+        service_data={
+            "property": change.property_name,
+            "value": change.after,
+        },
+        entities=list(change.mesa_entities),
+        request_id=request_id or "zigbee_property",
+        client_ip=client_ip,
+        session_id=request_id or "zigbee_property",
+        confirm_approved=_approved_exec_ctx.get(),
+        approval_tool_name="set_zigbee_device_property",
+        approval_args=args,
+        approval_diff=diff,
+        require_all=True,
+    )
+    if mesa_outcome.blocked:
+        fire_mesa_blocked_event(hass, token, mesa_outcome.blocked)
+    if mesa_outcome.decision == "pending":
+        return await _pending_or_inline(
+            hass, data, token, mesa_outcome.approval
+        )
+    if mesa_outcome.decision == "deny":
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", change.device.id
+    if mesa_outcome.warnings:
+        _mesa_advisory_ctx.set(True)
+
+    try:
+        confirmed = await radio_backend.async_set_z2m_exposed_property(
+            hass,
+            change.entry,
+            change.property_name,
+            change.after,
+            change.schema,
+        )
+    except (RadioError, radio_backend.Z2MPropertyValidationError) as exc:
+        return _tool_error(str(exc)), "invalid_request", change.device.id
+
+    after_hash = radio_backend.z2m_property_hash(change.property_name, confirmed)
+    label = change.device.name_by_user or change.device.name or change.ieee
+    await _record_version(
+        data,
+        token,
+        resource_type="device",
+        resource_id=change.device.id,
+        action="edit",
+        before={
+            "snapshot_type": "zigbee_exposed_property",
+            "restorable": False,
+            "property": change.property_name,
+            "value": change.before,
+            "content_hash": change.before_hash,
+        },
+        after={
+            "snapshot_type": "zigbee_exposed_property",
+            "restorable": False,
+            "property": change.property_name,
+            "value": confirmed,
+            "content_hash": after_hash,
+        },
+        alias=label,
+        summary=_version_summary(
+            "device.zigbee_property", property=change.property_name
+        ),
+    )
+    body: dict[str, Any] = {
+        "success": True,
+        "backend": radio_backend.BACKEND_Z2M,
+        "device_id": change.device.id,
+        "property": change.property_name,
+        "previous": change.before,
+        "value": confirmed,
+        "content_hash": after_hash,
+        "confirmation": "device_state",
+        "message": "Property changed and confirmed by Zigbee2MQTT device state.",
+    }
+    if mesa_outcome.warnings:
+        body["mesa_advisory"] = mesa_outcome.warnings
+    return _tool_success(json.dumps(body)), "allowed", change.device.id
 
 
 async def _tool_remove_zigbee_device(

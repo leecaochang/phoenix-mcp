@@ -7,15 +7,21 @@ enforcement_mode override, and confirm-approved folding.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import utcnow
 
 from custom_components.phoenix_mcp.mesa import (
+    async_apply_mesa_to_call,
     async_setup_mesa,
     build_mesa_service_diff,
     evaluate_service_entities,
 )
+import custom_components.phoenix_mcp.mesa as mesa_module
+from custom_components.phoenix_mcp.token_store import GlobalSettings
 from custom_components.phoenix_mcp.mesa_core import MetadataOrigin, SemanticProfile
 from custom_components.phoenix_mcp.token_store import PermissionTree, TokenRecord
 
@@ -162,3 +168,79 @@ async def test_diff_includes_mesa_block(hass: HomeAssistant):
     assert diff["kind"] == "service_preview"
     assert diff["preview"]["mesa"]["confirm_entities"] == ["light.gate"]
     assert diff["preview"]["resolved_entity_ids"] == ["light.gate", "light.ok"]
+
+
+@pytest.mark.asyncio
+async def test_custom_mesa_approval_preserves_tool_args_and_diff(
+    hass: HomeAssistant, monkeypatch
+):
+    runtime = await async_setup_mesa(hass, "enforced")
+    _set_profile(runtime, "light.gate", "confirm")
+    create = AsyncMock(return_value=SimpleNamespace(id="approval"))
+    monkeypatch.setattr(mesa_module, "async_create_mesa_approval", create)
+    data = SimpleNamespace(
+        mesa=runtime,
+        mesa_setup_failed=False,
+        store=SimpleNamespace(get_settings=lambda: GlobalSettings(mesa_mode="enforced")),
+    )
+    custom_diff = {
+        "kind": "config_diff",
+        "preview": {"property": "led_mode"},
+    }
+    outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        _token(),
+        domain="zigbee",
+        service="set_property",
+        service_data={"property": "led_mode", "value": "on"},
+        entities=["light.gate"],
+        request_id="rid",
+        client_ip="1.2.3.4",
+        session_id="sid",
+        approval_tool_name="set_zigbee_device_property",
+        approval_args={"device_id": "dev", "property": "led_mode"},
+        approval_diff=custom_diff,
+        require_all=True,
+    )
+    assert outcome.decision == "pending"
+    kwargs = create.await_args.kwargs
+    assert kwargs["tool_name"] == "set_zigbee_device_property"
+    assert kwargs["args"] == {"device_id": "dev", "property": "led_mode"}
+    assert kwargs["diff"]["kind"] == "config_diff"
+    assert kwargs["diff"]["preview"]["property"] == "led_mode"
+    assert kwargs["diff"]["preview"]["mesa"]["confirm_entities"] == [
+        "light.gate"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_require_all_mesa_denies_mixed_allowed_and_blocked(
+    hass: HomeAssistant, monkeypatch
+):
+    runtime = await async_setup_mesa(hass, "enforced")
+    _set_profile(runtime, "light.ok", "autonomous")
+    _set_profile(runtime, "light.no", "prohibited")
+    create = AsyncMock()
+    monkeypatch.setattr(mesa_module, "async_create_mesa_approval", create)
+    data = SimpleNamespace(
+        mesa=runtime,
+        mesa_setup_failed=False,
+        store=SimpleNamespace(get_settings=lambda: GlobalSettings(mesa_mode="enforced")),
+    )
+    outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        _token(),
+        domain="zigbee",
+        service="set_property",
+        service_data={"property": "led_mode", "value": "on"},
+        entities=["light.ok", "light.no"],
+        request_id="rid",
+        client_ip=None,
+        session_id="sid",
+        require_all=True,
+    )
+    assert outcome.decision == "deny"
+    assert [item[0] for item in outcome.blocked] == ["light.no"]
+    create.assert_not_awaited()

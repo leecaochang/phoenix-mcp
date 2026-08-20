@@ -1205,6 +1205,8 @@ DIFF_SUMMARY_TEMPLATES: dict[str, str] = {
     "zigbee_remove.device": "Remove Zigbee device {label} from the network",
     "zigbee_options": "Change Zigbee2MQTT device options",
     "zigbee_options.device": "Change Zigbee2MQTT options ({keys}) for {label}",
+    "zigbee_property": "Change a Zigbee2MQTT exposed property",
+    "zigbee_property.device": "Change Zigbee2MQTT property {property} for {label}",
     # System.
     "restart_ha": "Restart Home Assistant",
     # {file} rather than a literal configuration.yaml: these tools write any
@@ -1328,6 +1330,8 @@ _APPROVAL_SUMMARY_BODIES = {
     "zigbee_remove.device": "This will remove {label} from the Zigbee network. The change cannot be undone from this approval.",
     "zigbee_options": "This will change Zigbee2MQTT device options. Open Details to review the proposed values.",
     "zigbee_options.device": "This will change Zigbee2MQTT device options for {label}. Open Details to review the proposed values.",
+    "zigbee_property": "This will directly change a Zigbee2MQTT device property. Open Details to review the proposed value.",
+    "zigbee_property.device": "This will directly change property {property} for {label}. Open Details to review the proposed value.",
     "integration.reload": "This will temporarily unload the {label} integration and set it up again.",
     "integration.reconfigure": (
         "Phoenix will submit agent-provided values to {label}'s Home Assistant reconfigure flow. "
@@ -1477,6 +1481,7 @@ VERSION_SUMMARY_TEMPLATES: dict[str, str] = {
     "device.removed": "device registry entry removed",
     "device.changed": "changed: {fields}",
     "device.zigbee_options": "changed Zigbee2MQTT options: {keys}",
+    "device.zigbee_property": "changed Zigbee2MQTT property: {property}",
     "config_entry.removed": "integration removed",
     "card.added": "added {subject} ({where})",
     "card.edited": "edited {subject} ({where})",

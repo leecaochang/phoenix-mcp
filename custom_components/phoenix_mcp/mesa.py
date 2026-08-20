@@ -1072,6 +1072,10 @@ async def async_apply_mesa_to_call(
     client_ip: str | None,
     session_id: str,
     confirm_approved: bool = False,
+    approval_tool_name: str = MESA_APPROVED_EXECUTOR,
+    approval_args: dict[str, Any] | None = None,
+    approval_diff: dict[str, Any] | None = None,
+    require_all: bool = False,
 ) -> MesaGateOutcome:
     """Apply MESA enforcement to an already-flattened, Phoenix-permitted entity list.
 
@@ -1081,7 +1085,9 @@ async def async_apply_mesa_to_call(
     - pending: at least one entity needs confirmation; an approval was created.
 
     ``mesa_mode == off`` short-circuits to allow-all. A production setup failure
-    fails closed while advisory or enforced mode remains configured.
+    fails closed while advisory or enforced mode remains configured. The
+    optional approval fields let another exact-action executor reuse this gate;
+    ``require_all`` turns the normal safe subset behavior into all-or-nothing.
     """
     runtime = data.mesa
     settings = data.store.get_settings()
@@ -1118,18 +1124,35 @@ async def async_apply_mesa_to_call(
             confirm_approved=confirm_approved,
         )
 
+    if require_all and verdict.blocked:
+        return MesaGateOutcome(
+            decision="deny", blocked=verdict.blocked, warnings=verdict.warnings
+        )
+
     if verdict.confirm and not confirm_approved:
-        diff = build_mesa_service_diff(domain, service, service_data, verdict)
+        mesa_diff = build_mesa_service_diff(domain, service, service_data, verdict)
+        if approval_diff is None:
+            diff = mesa_diff
+        else:
+            diff = dict(approval_diff)
+            preview = dict(diff.get("preview") or {})
+            preview["mesa"] = mesa_diff["preview"]["mesa"]
+            diff["preview"] = preview
         approval = await async_create_mesa_approval(
             hass,
             data,
             token,
-            args=_mesa_call_args(
-                domain, service, service_data, verdict.confirm + verdict.allowed
+            args=(
+                dict(approval_args)
+                if approval_args is not None
+                else _mesa_call_args(
+                    domain, service, service_data, verdict.confirm + verdict.allowed
+                )
             ),
             diff=diff,
             request_id=request_id,
             client_ip=client_ip,
+            tool_name=approval_tool_name,
         )
         return MesaGateOutcome(
             decision="pending",
@@ -1165,12 +1188,14 @@ async def async_create_mesa_approval(
     diff: dict[str, Any],
     request_id: str,
     client_ip: str | None,
+    tool_name: str = MESA_APPROVED_EXECUTOR,
 ) -> PendingApproval:
     """Create a PendingApproval for a MESA confirm, mirroring async_evaluate_capability.
 
     The record carries the MESA sentinel cap (skips the effective_cap recheck on
-    approve) and the non-dispatchable executor key (re-runs the call under MESA
-    confirm-approved semantics).
+    approve). The default non-dispatchable executor re-runs a service call under
+    MESA confirm-approved semantics; bounded domain tools may supply their own
+    registered exact-action executor.
     """
     from .approvals import (
         create_approval_notification,
@@ -1183,7 +1208,7 @@ async def async_create_mesa_approval(
             data.store,
             token_id=token.id,
             token_name=token.name,
-            tool_name=MESA_APPROVED_EXECUTOR,
+            tool_name=tool_name,
             cap_name=MESA_CONFIRM_CAP,
             args=args,
             diff=diff,

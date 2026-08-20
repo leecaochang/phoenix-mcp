@@ -72,6 +72,11 @@ _Z2M_OPTION_MAX_CHANGES = 32
 _Z2M_OPTION_MAX_CONTAINER_ITEMS = 64
 _Z2M_OPTION_MAX_DEPTH = 4
 _Z2M_OPTION_MAX_STRING = 1024
+_Z2M_PROPERTY_MAX_NAME = 128
+_Z2M_FRIENDLY_NAME_MAX_LENGTH = 256
+_Z2M_DIRECT_PROPERTY_TYPES = frozenset(
+    {"binary", "enum", "numeric", "text", "list", "composite"}
+)
 
 
 class RadioError(Exception):
@@ -80,6 +85,10 @@ class RadioError(Exception):
 
 class Z2MOptionValidationError(ValueError):
     """A requested Zigbee2MQTT converter option does not match its definition."""
+
+
+class Z2MPropertyValidationError(ValueError):
+    """A direct Zigbee2MQTT exposed property is unsafe or invalid."""
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +492,100 @@ def _option_definition_map(entry: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+def z2m_exposed_property_map(entry: Any) -> dict[str, dict[str, Any]]:
+    """Map unique exposed property names to their raw leaf definitions.
+
+    Converter exposes are recursive and local converters may repeat a property.
+    Repeated properties are omitted because Phoenix cannot prove which endpoint
+    a direct MQTT read or write would address.
+    """
+    entry = entry if isinstance(entry, dict) else {}
+    definition = entry.get("definition")
+    exposes = definition.get("exposes") if isinstance(definition, dict) else None
+    result: dict[str, dict[str, Any]] = {}
+    duplicates: set[str] = set()
+    budget = [_Z2M_EXPOSE_MAX_ITEMS]
+    overflow = [False]
+
+    def _walk(items: Any, depth: int) -> None:
+        if not isinstance(items, list):
+            return
+        if depth > _Z2M_EXPOSE_MAX_DEPTH or budget[0] <= 0:
+            if items:
+                overflow[0] = True
+            return
+        for item in items:
+            if budget[0] <= 0:
+                overflow[0] = True
+                return
+            if not isinstance(item, dict):
+                continue
+            budget[0] -= 1
+            prop = item.get("property")
+            if (
+                isinstance(prop, str)
+                and prop
+                and len(prop) <= _Z2M_PROPERTY_MAX_NAME
+                and item.get("type") in _Z2M_DIRECT_PROPERTY_TYPES
+            ):
+                if prop in result:
+                    duplicates.add(prop)
+                else:
+                    result[prop] = item
+            _walk(item.get("features"), depth + 1)
+
+    _walk(exposes, 0)
+    if overflow[0]:
+        return {}
+    for prop in duplicates:
+        result.pop(prop, None)
+    return result
+
+
+def project_z2m_property_definition(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return the bounded allowlist projection for one exposed property."""
+    return _project_z2m_expose(schema, depth=0, budget=[1]) or {}
+
+
+def z2m_property_hash(property_name: str, value: Any) -> str:
+    """Stable, type-preserving hash for one direct exposed-property value."""
+    canonical = json.dumps(
+        {"property": property_name, "value": value},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def validate_z2m_exposed_value(
+    property_name: str, value: Any, schema: dict[str, Any]
+) -> Any:
+    """Validate one direct exposed-property value against its converter schema."""
+    try:
+        return _validate_option_value(value, schema, f"property {property_name!r}")
+    except Z2MOptionValidationError as exc:
+        raise Z2MPropertyValidationError(
+            str(exc).replace("option type", "property type")
+        ) from exc
+
+
+def _z2m_device_topic(entry: Any) -> str:
+    """Build the exact Z2M device topic from bridge/devices data only."""
+    entry = entry if isinstance(entry, dict) else {}
+    friendly_name = entry.get("friendly_name")
+    if (
+        not isinstance(friendly_name, str)
+        or not friendly_name
+        or len(friendly_name) > _Z2M_FRIENDLY_NAME_MAX_LENGTH
+        or "\x00" in friendly_name
+        or "+" in friendly_name
+        or "#" in friendly_name
+    ):
+        raise RadioError("Zigbee2MQTT returned an unsafe device friendly name.")
+    return f"{Z2M_BASE_TOPIC}/{friendly_name}"
+
+
 def _normalize_option_value(value: Any, *, depth: int = 0) -> Any:
     """Normalize one current/requested option value to bounded JSON data."""
     if depth > _Z2M_OPTION_MAX_DEPTH:
@@ -682,6 +785,108 @@ def project_z2m_option_values(entry: Any, values: Any) -> dict[str, Any]:
         for key, value in values.items()
         if key in definitions
     }
+
+
+async def async_read_z2m_exposed_property(
+    hass: HomeAssistant,
+    entry: dict[str, Any],
+    property_name: str,
+    schema: dict[str, Any],
+    *,
+    timeout: float = Z2M_RETAINED_READ_TIMEOUT_SECONDS,
+) -> Any:
+    """Read one allowlisted property over a device's exact state/get topics."""
+    topic = _z2m_device_topic(entry)
+    future: asyncio.Future = hass.loop.create_future()
+
+    @callback
+    def _on_state(msg: Any) -> None:
+        payload = _parse_json(getattr(msg, "payload", None))
+        if not isinstance(payload, dict) or property_name not in payload or future.done():
+            return
+        try:
+            value = validate_z2m_exposed_value(
+                property_name, payload[property_name], schema
+            )
+        except Z2MPropertyValidationError:
+            return
+        future.set_result(value)
+
+    try:
+        unsubscribe = await _mqtt_subscribe(hass, topic, _on_state)
+    except Exception as exc:  # noqa: BLE001 - broker/integration unavailable
+        raise RadioError(f"MQTT is not available: {exc}") from exc
+    try:
+        try:
+            await _mqtt_publish(
+                hass,
+                f"{topic}/get",
+                json.dumps({property_name: ""}, ensure_ascii=False),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RadioError(f"MQTT is not available: {exc}") from exc
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except TimeoutError as exc:
+            raise RadioError(
+                f"Zigbee2MQTT did not return property {property_name!r}."
+            ) from exc
+    finally:
+        unsubscribe()
+
+
+async def async_set_z2m_exposed_property(
+    hass: HomeAssistant,
+    entry: dict[str, Any],
+    property_name: str,
+    value: Any,
+    schema: dict[str, Any],
+    *,
+    timeout: float = Z2M_REQUEST_TIMEOUT_SECONDS,
+) -> Any:
+    """Write and exactly confirm one allowlisted property on device state."""
+    topic = _z2m_device_topic(entry)
+    expected = validate_z2m_exposed_value(property_name, value, schema)
+    future: asyncio.Future = hass.loop.create_future()
+
+    @callback
+    def _on_state(msg: Any) -> None:
+        payload = _parse_json(getattr(msg, "payload", None))
+        if not isinstance(payload, dict) or property_name not in payload or future.done():
+            return
+        try:
+            observed = validate_z2m_exposed_value(
+                property_name, payload[property_name], schema
+            )
+        except Z2MPropertyValidationError:
+            return
+        if z2m_property_hash(property_name, observed) == z2m_property_hash(
+            property_name, expected
+        ):
+            future.set_result(observed)
+
+    try:
+        unsubscribe = await _mqtt_subscribe(hass, topic, _on_state)
+    except Exception as exc:  # noqa: BLE001
+        raise RadioError(f"MQTT is not available: {exc}") from exc
+    try:
+        try:
+            await _mqtt_publish(
+                hass,
+                f"{topic}/set",
+                json.dumps({property_name: expected}, ensure_ascii=False),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RadioError(f"MQTT is not available: {exc}") from exc
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except TimeoutError as exc:
+            raise RadioError(
+                "Timed out waiting for Zigbee2MQTT to confirm the property change. "
+                "Read the property again before retrying because the device may have applied it."
+            ) from exc
+    finally:
+        unsubscribe()
 
 
 def project_z2m_device(

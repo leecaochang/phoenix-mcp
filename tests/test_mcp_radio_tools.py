@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.components.mqtt.const import ATTR_DISCOVERY_PAYLOAD
+from homeassistant.components.mqtt.models import DATA_MQTT
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.dt import utcnow
@@ -118,6 +120,19 @@ class FakeBroker:
     async def publish(self, hass, topic, payload):
         request = json.loads(payload)
         self.published.append((topic, request))
+        if topic == "zigbee2mqtt/Z2M Bulb/get":
+            state = self.retained.get("zigbee2mqtt/Z2M Bulb")
+            if state is not None:
+                for cb in list(self.subs.get("zigbee2mqtt/Z2M Bulb", [])):
+                    cb(SimpleNamespace(topic=topic, payload=state))
+            return
+        if topic == "zigbee2mqtt/Z2M Bulb/set":
+            state = json.loads(self.retained["zigbee2mqtt/Z2M Bulb"])
+            state.update(request)
+            self.retained["zigbee2mqtt/Z2M Bulb"] = json.dumps(state)
+            for cb in list(self.subs.get("zigbee2mqtt/Z2M Bulb", [])):
+                cb(SimpleNamespace(topic=topic, payload=json.dumps(state)))
+            return
         prefix = "zigbee2mqtt/bridge/request/"
         if not topic.startswith(prefix):
             return
@@ -161,6 +176,14 @@ def broker(monkeypatch) -> FakeBroker:
                         "value_max": 254, "value_step": 1, "unit": "%", "unknown": "drop",
                     }],
                     "unknown": "drop",
+                }, {
+                    "type": "enum", "name": "LED mode", "label": "LED mode",
+                    "property": "led_mode", "access": 3,
+                    "values": ["off", "on", "auto"],
+                }, {
+                    "type": "numeric", "name": "Temperature", "label": "Temperature",
+                    "property": "temperature", "access": 1,
+                    "value_min": -40, "value_max": 125, "unit": "°C",
                 }],
                 "options": [
                     {"type": "numeric", "name": "Temperature precision", "property": "temperature_precision",
@@ -184,6 +207,11 @@ def broker(monkeypatch) -> FakeBroker:
             "definition": {"model": "L1", "vendor": "Acme", "description": "Lock"},
         },
     ])
+    fake.retained["zigbee2mqtt/Z2M Bulb"] = json.dumps({
+        "brightness_left": 120,
+        "led_mode": "auto",
+        "temperature": 21.5,
+    })
     fake.responders["permit_join"] = lambda req: {"status": "ok", "data": {"time": req.get("time")}}
     fake.responders["device/configure"] = lambda req: {"status": "ok", "data": {"id": req.get("id")}}
     fake.responders["device/remove"] = lambda req: {"status": "ok", "data": {"id": req.get("id")}}
@@ -243,7 +271,7 @@ def radio_env(hass: HomeAssistant):
         hass.states.async_set(e.entity_id, "on", {})
         return e.entity_id
 
-    return {
+    result = {
         "z2m_bulb": z2m_bulb.id,
         "z2m_bulb_eid": _entity("light", "u1", z2m_bulb, "z2m_bulb"),
         "z2m_lock": z2m_lock.id,
@@ -255,6 +283,21 @@ def radio_env(hass: HomeAssistant):
         "plain": plain.id,
         "plain_eid": _entity("light", "u5", plain, "plain_bulb"),
     }
+    hass.data[DATA_MQTT] = SimpleNamespace(
+        debug_info_entities={
+            result["z2m_bulb_eid"]: {
+                "discovery_data": {
+                    ATTR_DISCOVERY_PAYLOAD: {
+                        "schema": "json",
+                        "state_topic": "zigbee2mqtt/Z2M Bulb",
+                        "command_topic": "zigbee2mqtt/Z2M Bulb/set",
+                        "brightness": True,
+                    }
+                }
+            }
+        }
+    )
+    return result
 
 
 def _data() -> PhoenixData:
@@ -297,6 +340,9 @@ class _ApprStore:
 
     def set_pending_approvals(self, v: list) -> None:
         self._p = v
+
+    def get_settings(self):
+        return SimpleNamespace(mesa_mode="off")
 
 
 def _appr_data() -> tuple[PhoenixData, _ApprStore]:
@@ -403,7 +449,7 @@ class TestGetRadioDevice:
         assert body["interview_state"] == "SUCCESSFUL"
         assert body["device_id"] == radio_env["z2m_bulb"]
         expose = body["exposes"]
-        assert expose["total"] == 1 and expose["truncated"] is False
+        assert expose["total"] == 3 and expose["truncated"] is False
         assert expose["items"][0]["type"] == "light"
         assert expose["items"][0]["features"][0]["property"] == "brightness_left"
         assert "unknown" not in _text(res)
@@ -417,6 +463,13 @@ class TestGetRadioDevice:
             "thresholds": [1, 2],
         }
         assert len(options["content_hash"]) == 64
+        fallback = body["direct_property_fallback"]
+        assert fallback["status"] == "available"
+        assert [item["property"] for item in fallback["properties"]] == [
+            "led_mode", "temperature"
+        ]
+        assert fallback["properties"][0]["writable"] is True
+        assert fallback["properties"][1]["writable"] is False
         text = _text(res)
         for secret in ("network_key", "core-mosquitto", "hunter2", "config_schema"):
             assert secret not in text
@@ -439,6 +492,7 @@ class TestGetRadioDevice:
         assert body["exposes"]["total"] == 100
         assert len(body["exposes"]["items"]) == 64
         assert body["exposes"]["truncated"] is True
+        assert radio.z2m_exposed_property_map(entry) == {}
         assert len(body["exposes"]["items"][0]["description"]) == 512
         assert "secret_extension" not in json.dumps(body)
 
@@ -447,6 +501,16 @@ class TestGetRadioDevice:
         assert malformed["options"]["definitions"] == {
             "items": [], "total": 0, "truncated": False,
         }
+
+        duplicate = {
+            "definition": {
+                "exposes": [
+                    {"type": "enum", "property": "mode", "values": ["a", "b"]},
+                    {"type": "enum", "property": "mode", "values": ["a", "b"]},
+                ]
+            }
+        }
+        assert radio.z2m_exposed_property_map(duplicate) == {}
 
     async def test_z2m_device_missing_from_bridge(self, hass, radio_env, broker):
         broker.retained["zigbee2mqtt/bridge/devices"] = json.dumps([])
@@ -472,6 +536,112 @@ class TestGetRadioDevice:
         )
         assert result[1] == "allowed"
         assert _body(result)["options"]["values"]["temperature_precision"] == 1
+
+    async def test_direct_fallback_reads_one_exact_property(
+        self, hass, radio_env, broker
+    ):
+        hass.config.components.add("mqtt")
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"], "property": "led_mode"},
+            _light_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "allowed"
+        read = _body(result)["property_read"]
+        assert read["property"] == "led_mode"
+        assert read["value"] == "auto"
+        assert len(read["content_hash"]) == 64
+        assert broker.published[-1] == (
+            "zigbee2mqtt/Z2M Bulb/get", {"led_mode": ""}
+        )
+
+    async def test_direct_fallback_refuses_owned_property(
+        self, hass, radio_env, broker
+    ):
+        mqtt_data = hass.data[DATA_MQTT]
+        payload = mqtt_data.debug_info_entities[radio_env["z2m_bulb_eid"]][
+            "discovery_data"
+        ][ATTR_DISCOVERY_PAYLOAD]
+        payload["value_template"] = '{{ value_json["led_mode"] }}'
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"], "property": "led_mode"},
+            _light_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert radio_env["z2m_bulb_eid"] in _text(result)
+        assert not any(topic.endswith("/get") for topic, _ in broker.published)
+
+    async def test_inaccessible_owner_blocks_without_revealing_entity_id(
+        self, hass, radio_env, broker
+    ):
+        config_entry = hass.config_entries.async_get_entry("e_radio")
+        assert config_entry is not None
+        hidden = er.async_get(hass).async_get_or_create(
+            "sensor",
+            "mqtt",
+            "hidden_led_mode_owner",
+            config_entry=config_entry,
+            device_id=radio_env["z2m_bulb"],
+            suggested_object_id="secret_led_mode",
+        )
+        hass.data[DATA_MQTT].debug_info_entities[hidden.entity_id] = {
+            "discovery_data": {
+                ATTR_DISCOVERY_PAYLOAD: {
+                    "state_topic": "zigbee2mqtt/Z2M Bulb",
+                    "value_template": '{{ value_json["led_mode"] }}',
+                }
+            }
+        }
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"], "property": "led_mode"},
+            _light_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "entity that owns this property" in _text(result)
+        assert hidden.entity_id not in _text(result)
+        assert not any(topic.endswith("/get") for topic, _ in broker.published)
+
+    async def test_missing_discovery_metadata_fails_closed(
+        self, hass, radio_env, broker
+    ):
+        hass.data[DATA_MQTT].debug_info_entities.clear()
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"], "property": "led_mode"},
+            _light_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "ownership is ambiguous" in _text(result)
+        assert not any(topic.endswith("/get") for topic, _ in broker.published)
+
+    async def test_disabled_entity_cannot_unlock_direct_fallback(
+        self, hass, radio_env, broker
+    ):
+        er.async_get(hass).async_update_entity(
+            radio_env["z2m_bulb_eid"], disabled_by=er.RegistryEntryDisabler.USER
+        )
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"], "property": "led_mode"},
+            _light_token(cap_diagnostics="allow"),
+            hass,
+            _data(),
+        )
+        # Disabling the only visible entity also removes device visibility. That
+        # is even stricter than the ownership ambiguity block and must still
+        # happen before any device-topic publish.
+        assert result[1] in {"not_found", "invalid_request"}
+        assert not any(topic.endswith("/get") for topic, _ in broker.published)
 
     def _zha_device_payload(self, radio_env) -> dict:
         return {
@@ -1024,6 +1194,193 @@ class TestSetZigbeeDeviceOptions:
         assert "unsafe or incomplete" in _text(result)
 
 
+class TestSetZigbeeDeviceProperty:
+    async def _current(self, hass, radio_env, token, property_name="led_mode") -> dict:
+        result = await _call_tool(
+            "get_radio_device",
+            {"device_id": radio_env["z2m_bulb"], "property": property_name},
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "allowed"
+        return _body(result)["property_read"]
+
+    @pytest.mark.parametrize(
+        ("radio_cap", "physical_cap"),
+        [("deny", "allow"), ("allow", "deny")],
+    )
+    async def test_either_capability_deny_is_not_an_oracle(
+        self, hass, radio_env, broker, radio_cap, physical_cap
+    ):
+        result = await _call_tool(
+            "set_zigbee_device_property",
+            {
+                "device_id": radio_env["z2m_bulb"],
+                "property": "led_mode",
+                "value": "on",
+                "expected_hash": "0" * 64,
+            },
+            _light_token(
+                cap_radio_write=radio_cap,
+                cap_physical_control=physical_cap,
+            ),
+            hass,
+            _data(),
+        )
+        assert result[1] == "denied"
+        assert broker.published == []
+
+    async def test_allow_changes_and_exactly_confirms_property(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        current = await self._current(hass, radio_env, token)
+        data = _data()
+        result = await _call_tool(
+            "set_zigbee_device_property",
+            {
+                "device_id": radio_env["z2m_bulb"],
+                "property": "led_mode",
+                "value": "on",
+                "expected_hash": current["content_hash"],
+            },
+            token,
+            hass,
+            data,
+        )
+        assert result[1] == "allowed"
+        body = _body(result)
+        assert body["previous"] == "auto"
+        assert body["value"] == "on"
+        assert body["confirmation"] == "device_state"
+        assert broker.published[-1] == (
+            "zigbee2mqtt/Z2M Bulb/set", {"led_mode": "on"}
+        )
+        record = data.versions.list_for("device", radio_env["z2m_bulb"])[0]
+        assert record.before["snapshot_type"] == "zigbee_exposed_property"
+        assert record.before["restorable"] is False
+        assert record.before["value"] == "auto"
+        assert record.after["value"] == "on"
+
+    async def test_read_only_expose_cannot_be_written(
+        self, hass, radio_env, broker
+    ):
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="allow",
+            cap_physical_control="allow",
+        )
+        current = await self._current(hass, radio_env, token, "temperature")
+        broker.published.clear()
+        result = await _call_tool(
+            "set_zigbee_device_property",
+            {
+                "device_id": radio_env["z2m_bulb"],
+                "property": "temperature",
+                "value": 22,
+                "expected_hash": current["content_hash"],
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "non-readable/writable" in _text(result)
+        assert broker.published == []
+
+    async def test_stale_hash_never_writes(self, hass, radio_env, broker):
+        token = _light_token(
+            cap_radio_write="allow", cap_physical_control="allow"
+        )
+        result = await _call_tool(
+            "set_zigbee_device_property",
+            {
+                "device_id": radio_env["z2m_bulb"],
+                "property": "led_mode",
+                "value": "on",
+                "expected_hash": "0" * 64,
+            },
+            token,
+            hass,
+            _data(),
+        )
+        assert result[1] == "invalid_request"
+        assert "changed after it was read" in _text(result)
+        assert not any(topic.endswith("/set") for topic, _ in broker.published)
+
+    async def test_capability_confirm_then_approve_executes(
+        self, hass, radio_env, broker
+    ):
+        data, store = _appr_data()
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="confirm",
+            cap_physical_control="allow",
+        )
+        current = await self._current(hass, radio_env, token)
+        broker.published.clear()
+        args = {
+            "device_id": radio_env["z2m_bulb"],
+            "property": "led_mode",
+            "value": "on",
+            "expected_hash": current["content_hash"],
+        }
+        result = await _call_tool(
+            "set_zigbee_device_property",
+            args,
+            token,
+            hass,
+            data,
+            "rid-property",
+            "1.2.3.4",
+        )
+        assert result[1] == "pending_approval"
+        assert not any(topic.endswith("/set") for topic, _ in broker.published)
+        approval = store._p[0]
+        assert approval["tool_name"] == "set_zigbee_device_property"
+        assert approval["diff"]["preview"]["property"] == "led_mode"
+        output = await async_execute_approved_tool(
+            "set_zigbee_device_property", approval["args"], token, hass, data
+        )
+        assert output[1] == "allowed"
+        assert broker.published[-1][0].endswith("/set")
+
+    async def test_executor_rechecks_both_capabilities_after_approval(
+        self, hass, radio_env, broker
+    ):
+        data, store = _appr_data()
+        token = _light_token(
+            cap_diagnostics="allow",
+            cap_radio_write="confirm",
+            cap_physical_control="allow",
+        )
+        current = await self._current(hass, radio_env, token)
+        await _call_tool(
+            "set_zigbee_device_property",
+            {
+                "device_id": radio_env["z2m_bulb"],
+                "property": "led_mode",
+                "value": "on",
+                "expected_hash": current["content_hash"],
+            },
+            token,
+            hass,
+            data,
+        )
+        token.cap_physical_control = "deny"
+        broker.published.clear()
+        output = await async_execute_approved_tool(
+            "set_zigbee_device_property", store._p[0]["args"], token, hass, data
+        )
+        assert output[1] == "denied"
+        assert broker.published == []
+
+
 class TestRemoveZigbeeDevice:
     async def test_cap_deny_not_an_oracle(self, hass, radio_env, broker):
         token = _light_token(cap_radio_write="deny")
@@ -1155,13 +1512,28 @@ class TestAnnouncementGating:
             "set_zigbee_device_options", "remove_zigbee_device",
         ):
             assert name in gate_map["needs_approval"]
+        assert "set_zigbee_device_property" in gate_map["unavailable"]
         assert "get_radio_network" in gate_map["usable"]
+
+        dual_confirm = _light_token(
+            cap_radio_write="allow", cap_physical_control="confirm"
+        )
+        assert "set_zigbee_device_property" in _tool_gate_map(
+            dual_confirm, data, hass
+        )["needs_approval"]
+        dual_allow = _light_token(
+            cap_radio_write="allow", cap_physical_control="allow"
+        )
+        assert "set_zigbee_device_property" in _tool_gate_map(
+            dual_allow, data, hass
+        )["usable"]
 
         deny_token = _light_token(cap_radio_write="deny", cap_diagnostics="deny")
         gate_map = _tool_gate_map(deny_token, data, hass)
         for name in (
             "permit_zigbee_join", "reconfigure_zigbee_device",
             "set_zigbee_device_options", "remove_zigbee_device",
+            "set_zigbee_device_property",
             "get_radio_network", "get_radio_device",
         ):
             assert name in gate_map["unavailable"]
