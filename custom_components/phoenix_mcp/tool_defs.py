@@ -2254,18 +2254,34 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     {
         "name": "create_helper",
         "description": (
-            "Create a Home Assistant helper. helper_type is one of input_boolean, input_number, "
-            "input_text, input_select, input_datetime, input_button, counter, timer, schedule. config holds the helper's fields "
-            "(at least 'name'). Returns the created helper including its id."
+            "Create a Home Assistant helper. Storage helpers (input_boolean, input_number, input_text, "
+            "input_select, input_datetime, input_button, counter, timer, schedule) use config. A helper "
+            "integration that Home Assistant creates through a config flow, such as mold_indicator or "
+            "history_stats, uses cumulative flow_steps instead: start with [] to receive its first real "
+            "form schema, then append each {step_id, data} and call again. Incomplete flows are closed "
+            "without creating anything; the final form is approval-gated. OTP is excluded."
         ),
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, or timer."},
-                "config": {"type": "object", "description": "Helper fields, e.g. {\"name\": \"Guest mode\"}."},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, mold_indicator, or history_stats."},
+                "config": {"type": "object", "description": "Storage-helper fields, e.g. {\"name\": \"Guest mode\"}. Do not use with flow_steps."},
+                "flow_steps": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "description": "Cumulative config-flow forms. Use [] to inspect the first form; resend prior steps plus the next form on each call.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step_id": {"type": "string"},
+                            "data": {"type": "object"},
+                        },
+                        "required": ["step_id", "data"],
+                    },
+                },
             },
-            "required": ["helper_type", "config"],
+            "required": ["helper_type"],
         },
     },
     {

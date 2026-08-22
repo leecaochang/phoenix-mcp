@@ -117,6 +117,7 @@ KNOWN_IMPORTS: dict[str, dict[str, str]] = {
         "ConfigFlow": "0.0.0",
         "ConfigFlowResult": "0.0.0",
         "SOURCE_RECONFIGURE": "0.0.0",
+        "SOURCE_USER": "0.0.0",
         # Public helper used by HA's own 2025.2 config-entry/device removal
         # surfaces; predates Phoenix MCP's current minimum version.
         "support_entry_unload": "0.0.0",

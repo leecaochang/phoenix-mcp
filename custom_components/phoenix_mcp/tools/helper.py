@@ -1,10 +1,11 @@
-"""Helper tools: input_* / counter / timer CRUD over the in-process WS dispatch.
+"""Helper authoring and settings over Home Assistant's own helper machinery.
 
 The storage-based helper domains only, listed in HELPER_TYPES: each publishes a
 uniform {type}/create|update|delete WS command whose item id key is
 "{type}_id", which is what makes one set of handlers cover all nine.
-Config-entry helper types (template, group, utility_meter) do not work that way
-and are deliberately out of scope.
+Config-flow helpers use HA's config-entry flow manager instead. create_helper
+can replay their cumulative form steps, returning the next real schema until a
+last step is supplied; only that last step is approval-gated and submitted.
 
 The precheck here hoists only the cheap structural checks (type known, id
 present, config a mapping). A helper write validates by way of the WS command
@@ -19,7 +20,7 @@ come from ..tool_common.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 import json
 import logging
 
@@ -29,7 +30,7 @@ import voluptuous_serialize
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.core import HomeAssistant
-from homeassistant.config_entries import SOURCE_RECONFIGURE
+from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 
@@ -60,6 +61,12 @@ HELPER_TYPES = frozenset({
     "input_select", "input_datetime", "input_button", "counter", "timer", "schedule",
 })
 
+# A generated OTP cannot be created noninteractively: HA shows the secret and
+# requires a current TOTP code in a later confirmation step. Keeping it out is a
+# deliberate safety boundary, not a missing schema mapping.
+_EXCLUDED_CONFIG_FLOW_HELPERS = frozenset({"otp"})
+_MAX_HELPER_FLOW_STEPS = 8
+
 
 # ---------------------------------------------------------------------------
 # Helper CRUD (cap_helper_write) via in-process WS command dispatch
@@ -68,6 +75,163 @@ HELPER_TYPES = frozenset({
 
 def _valid_helper_type(helper_type: Any) -> bool:
     return isinstance(helper_type, str) and helper_type in HELPER_TYPES
+
+
+async def _is_config_flow_helper(hass: HomeAssistant, helper_type: Any) -> bool:
+    """Whether HA classifies this domain as a creatable helper config flow."""
+    if (
+        not isinstance(helper_type, str)
+        or not helper_type.strip()
+        or helper_type in HELPER_TYPES
+        or helper_type in _EXCLUDED_CONFIG_FLOW_HELPERS
+    ):
+        return False
+    try:
+        integration = await async_get_integration(hass, helper_type)
+    except (IntegrationNotFound, ValueError):
+        return False
+    return (
+        integration.integration_type == "helper"
+        and integration.manifest.get("config_flow") is True
+    )
+
+
+def _helper_flow_steps_error(steps: Any) -> str | None:
+    """Cheap structural validation before a helper creation flow is opened."""
+    if not isinstance(steps, list):
+        return "flow_steps must be an array. Use an empty array to read the first form."
+    if len(steps) > _MAX_HELPER_FLOW_STEPS:
+        return f"flow_steps may contain at most {_MAX_HELPER_FLOW_STEPS} steps."
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            return f"flow_steps[{index}] must be an object."
+        if not isinstance(step.get("step_id"), str) or not step["step_id"].strip():
+            return f"flow_steps[{index}].step_id must be a non-empty string."
+        if not isinstance(step.get("data"), dict):
+            return f"flow_steps[{index}].data must be an object."
+    return None
+
+
+def _flow_step_body(helper_type: str, result: Any) -> dict[str, Any] | None:
+    """Public, serializable projection of one HA config-flow form."""
+    if result.get("type") != FlowResultType.FORM:
+        return None
+    schema = _options_schema_json(result)
+    if schema is None:
+        return None
+    return {
+        "status": "needs_input",
+        "helper_type": helper_type,
+        "step": {
+            "step_id": result.get("step_id"),
+            "last_step": result.get("last_step"),
+            "schema": schema,
+            "errors": result.get("errors") or {},
+            "description_placeholders": result.get("description_placeholders") or {},
+        },
+        "note": (
+            "Append this step_id and its data to flow_steps, then call create_helper "
+            "again. Phoenix replays and closes unfinished flows; approval is requested "
+            "only when the final form is supplied."
+        ),
+    }
+
+
+async def _abort_create_flow(hass: HomeAssistant, flow_id: str | None) -> None:
+    """Close an unfinished helper creation flow without leaking a UI dialog."""
+    if not flow_id:
+        return
+    try:
+        hass.config_entries.flow.async_abort(flow_id)
+    except Exception:  # noqa: BLE001 - already-finished and already-gone are fine
+        _LOGGER.debug("Could not abort helper creation flow %s", flow_id, exc_info=True)
+
+
+async def _prepare_config_flow_helper(
+    hass: HomeAssistant,
+    helper_type: str,
+    steps: list[dict[str, Any]],
+    token: TokenRecord,
+) -> tuple[str, Any]:
+    """Replay a helper flow without ever submitting its final form.
+
+    Returns ("form", body) when more input is needed, ("ready", None) when the
+    supplied final form is schema-valid and may go to approval, or ("error",
+    message) on refusal. Every flow opened here is aborted in the finally block.
+    """
+    flow_id = None
+    try:
+        result = await hass.config_entries.flow.async_init(
+            helper_type, context={"source": SOURCE_USER}
+        )
+        flow_id = result.get("flow_id")
+        if result.get("type") == FlowResultType.ABORT:
+            return "error", f"Home Assistant refused this helper flow: {result.get('reason')}."
+
+        for index, supplied in enumerate(steps):
+            body = _flow_step_body(helper_type, result)
+            if body is None:
+                return "error", "This helper's creation flow is not a supported form flow."
+            current = body["step"]
+            if supplied["step_id"] != current["step_id"]:
+                return "error", (
+                    f"flow_steps[{index}].step_id must be '{current['step_id']}', "
+                    f"not '{supplied['step_id']}'."
+                )
+            denied = _unwritable_option_entities(supplied["data"], token, hass)
+            if denied:
+                return "denied", denied
+
+            if current["last_step"] is True:
+                if index != len(steps) - 1:
+                    return "error", "The final helper form must be the last item in flow_steps."
+                schema = result.get("data_schema")
+                try:
+                    if schema is not None:
+                        schema(dict(supplied["data"]))
+                except vol.Invalid as err:
+                    return "error", f"The final helper form was rejected: {err}."
+                return "ready", None
+
+            # Submitting a form whose last_step is unknown could create an entry
+            # during this side-effect-free preflight. Fail closed. HA's schema
+            # config flows, including history_stats and mold_indicator, mark it.
+            if current["last_step"] is not False:
+                return "error", (
+                    "This helper flow does not identify its final form, so Phoenix "
+                    "cannot preflight it without risking an unapproved creation."
+                )
+            try:
+                result = await hass.config_entries.flow.async_configure(
+                    flow_id, dict(supplied["data"])
+                )
+            except vol.Invalid as err:
+                return "error", f"flow_steps[{index}] was rejected: {err}."
+            if result.get("type") == FlowResultType.ABORT:
+                return "error", f"Home Assistant refused this helper flow: {result.get('reason')}."
+            if result.get("type") == FlowResultType.CREATE_ENTRY:
+                # last_step=False promised this could not happen. If an
+                # integration violates that contract, creation already occurred;
+                # surface it loudly rather than pretending preflight was clean.
+                entry = result.get("result")
+                if entry is not None:
+                    await hass.config_entries.async_remove(entry.entry_id)
+                return "error", "This helper flow finished before its declared final form."
+            if result.get("errors"):
+                error_body = _flow_step_body(helper_type, result)
+                if error_body is None:
+                    return "error", "This helper's rejected form could not be described."
+                return "form", error_body
+
+        body = _flow_step_body(helper_type, result)
+        if body is None:
+            return "error", "This helper's creation flow is not a supported form flow."
+        return "form", body
+    except Exception:  # noqa: BLE001 - integration flow failures become clean tool errors
+        _LOGGER.exception("Could not preflight helper creation flow for %s", helper_type)
+        return "error", "Could not open or validate this helper's creation flow."
+    finally:
+        await _abort_create_flow(hass, flow_id)
 
 
 def _resolve_helper_entity_id(hass: HomeAssistant, helper_type: str, helper_id: str) -> str | None:
@@ -140,9 +304,58 @@ async def _tool_create_helper(
     """MCP tool: create a helper (Confirm-gated)."""
     if effective_cap(token, "cap_helper_write") == CAP_DENY:
         return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "create_helper"
-    pre = _helper_write_precheck(args, "create_helper", require_id=False)
-    if pre is not None:
-        return pre
+    helper_type = args.get("helper_type")
+    if _valid_helper_type(helper_type):
+        if "flow_steps" in args:
+            return (
+                _tool_error("Storage helpers use config, not flow_steps."),
+                "invalid_request", "create_helper",
+            )
+        pre = _helper_write_precheck(args, "create_helper", require_id=False)
+        if pre is not None:
+            return pre
+    else:
+        if not await _is_config_flow_helper(hass, helper_type):
+            extra = (
+                " OTP is deliberately excluded because its generated-token flow "
+                "requires a live confirmation code."
+                if helper_type == "otp" else ""
+            )
+            return (
+                _tool_error(
+                    "helper_type must be a supported storage helper or a Home Assistant "
+                    f"integration classified as a helper with a config flow.{extra}"
+                ),
+                "invalid_request", "create_helper",
+            )
+        if "config" in args:
+            return (
+                _tool_error("Config-flow helpers use flow_steps, not config."),
+                "invalid_request", "create_helper",
+            )
+        steps = args.get("flow_steps")
+        if error := _helper_flow_steps_error(steps):
+            return _tool_error(error), "invalid_request", "create_helper"
+        flow_steps = cast(list[dict[str, Any]], steps)
+        status, detail = await _prepare_config_flow_helper(
+            hass, str(helper_type), flow_steps, token
+        )
+        if status == "form":
+            return (
+                _tool_success(json.dumps(detail, default=str)),
+                "allowed", f"helper_flow:{helper_type}",
+            )
+        if status == "denied":
+            return (
+                _tool_error(
+                    "These entities are outside this token's write scope: "
+                    f"{', '.join(detail)}. A helper may expose or actuate every entity "
+                    "it references, so all of them must already be writable."
+                ),
+                "denied", "create_helper",
+            )
+        if status != "ready":
+            return _tool_error(str(detail)), "invalid_request", "create_helper"
     blocked = await _gate(
         "cap_helper_write", token, hass, data,
         tool_name="create_helper", args=args, request_id=request_id,
@@ -176,7 +389,33 @@ async def _execute_create_helper(
     helper_type = args.get("helper_type")
     config = args.get("config")
     if not _valid_helper_type(helper_type):
-        return _tool_error(f"helper_type must be one of: {', '.join(sorted(HELPER_TYPES))}."), "invalid_request", "create_helper"
+        if not await _is_config_flow_helper(hass, helper_type):
+            return _tool_error("This is not a creatable helper config flow."), "invalid_request", "create_helper"
+        steps = args.get("flow_steps")
+        if error := _helper_flow_steps_error(steps):
+            return _tool_error(error), "invalid_request", "create_helper"
+        flow_steps = cast(list[dict[str, Any]], steps)
+        status, detail = await _prepare_config_flow_helper(
+            hass, str(helper_type), flow_steps, token
+        )
+        if status == "denied":
+            return (
+                _tool_error(
+                    "These entities are outside this token's write scope: "
+                    f"{', '.join(detail)}."
+                ),
+                "denied", "create_helper",
+            )
+        if status != "ready":
+            message = (
+                "The helper flow no longer reaches its final form with these steps. "
+                "Call create_helper again to inspect the current form."
+                if status == "form" else str(detail)
+            )
+            return _tool_error(message), "invalid_request", "create_helper"
+        return await _execute_config_flow_helper(
+            str(helper_type), flow_steps, token, hass, data
+        )
     if not isinstance(config, dict) or not config:
         return _tool_error("config must be a non-empty object (at least 'name')."), "invalid_request", "create_helper"
     try:
@@ -189,6 +428,127 @@ async def _execute_create_helper(
         action="create", before=None, after=config, alias=config.get("name"),
     )
     return _tool_success(json.dumps({"helper_type": helper_type, "helper": item}, default=str)), "allowed", f"helper:{helper_type}"
+
+
+async def _execute_config_flow_helper(
+    helper_type: str,
+    steps: list[dict[str, Any]],
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+) -> tuple[dict, str, str]:
+    """Run the approved helper flow through its final form exactly once."""
+    flow_id = None
+    entry = None
+    try:
+        result = await hass.config_entries.flow.async_init(
+            helper_type, context={"source": SOURCE_USER}
+        )
+        flow_id = result.get("flow_id")
+        for index, supplied in enumerate(steps):
+            body = _flow_step_body(helper_type, result)
+            if body is None or body["step"]["step_id"] != supplied["step_id"]:
+                return (
+                    _tool_error("The helper flow changed after approval; nothing was created."),
+                    "invalid_request", "create_helper",
+                )
+            denied = _unwritable_option_entities(supplied["data"], token, hass)
+            if denied:
+                return (
+                    _tool_error(
+                        "These entities are outside this token's write scope: "
+                        f"{', '.join(denied)}."
+                    ),
+                    "denied", "create_helper",
+                )
+            result = await hass.config_entries.flow.async_configure(
+                flow_id, dict(supplied["data"])
+            )
+            if result.get("type") == FlowResultType.CREATE_ENTRY:
+                if index != len(steps) - 1:
+                    entry = result.get("result")
+                    if entry is not None:
+                        await hass.config_entries.async_remove(entry.entry_id)
+                        entry = None
+                    return (
+                        _tool_error("The helper flow finished before all approved steps were used."),
+                        "invalid_request", "create_helper",
+                    )
+                entry = result.get("result")
+                break
+            if result.get("type") == FlowResultType.ABORT:
+                return (
+                    _tool_error(
+                        f"Home Assistant refused this helper: {result.get('reason')}. "
+                        "Nothing was created."
+                    ),
+                    "invalid_request", "create_helper",
+                )
+            if result.get("errors"):
+                detail = ", ".join(
+                    f"{field}: {message}"
+                    for field, message in (result.get("errors") or {}).items()
+                )
+                return (
+                    _tool_error(
+                        f"The helper form was rejected ({detail}). Nothing was created."
+                    ),
+                    "invalid_request", "create_helper",
+                )
+        if entry is None:
+            return (
+                _tool_error("The approved steps did not create a helper."),
+                "invalid_request", "create_helper",
+            )
+    except vol.Invalid as err:
+        return (
+            _tool_error(f"The helper form was rejected: {err}. Nothing was created."),
+            "invalid_request", "create_helper",
+        )
+    except Exception:  # noqa: BLE001 - integration failures become clean tool errors
+        _LOGGER.exception("Helper creation flow failed for %s", helper_type)
+        return (
+            _tool_error("Could not create this helper."),
+            "invalid_request", "create_helper",
+        )
+    finally:
+        if entry is None:
+            await _abort_create_flow(hass, flow_id)
+
+    registry = er.async_get(hass)
+    entity_ids = sorted(
+        registry_entry.entity_id
+        for registry_entry in registry.entities.values()
+        if registry_entry.config_entry_id == entry.entry_id
+    )
+    await _record_version(
+        data,
+        token,
+        resource_type="config_entry",
+        resource_id=entry.entry_id,
+        action="create",
+        before=None,
+        after={
+            "restorable": False,
+            "reason": "Config-flow helper creation cannot be replayed safely.",
+        },
+        alias=entry.title,
+    )
+    return (
+        _tool_success(json.dumps({
+            "helper_type": helper_type,
+            "config_entry": {
+                "entry_id": entry.entry_id,
+                "domain": entry.domain,
+                "title": entry.title,
+                "state": str(entry.state),
+            },
+            "entity_ids": entity_ids,
+            "note": "The helper is materialized; no restart is needed.",
+        }, default=str)),
+        "allowed",
+        f"config_entry:{entry.entry_id}",
+    )
 
 
 async def _tool_edit_helper(
@@ -286,6 +646,14 @@ async def _execute_delete_helper(
 def _build_diff_create_helper(args: dict, token: TokenRecord, hass: HomeAssistant) -> dict:
     helper_type = args.get("helper_type")
     config = dict_arg(args.get("config"))
+    flow_steps = args.get("flow_steps") if isinstance(args.get("flow_steps"), list) else []
+    if flow_steps:
+        config = {"flow_steps": flow_steps}
+        for step in flow_steps:
+            step_data = step.get("data") if isinstance(step, dict) else None
+            if isinstance(step_data, dict) and isinstance(step_data.get("name"), str):
+                config["name"] = step_data["name"]
+                break
     return {
         "kind": "config_diff",
         **_summary("create_helper", helper_type=helper_type, name=config.get("name", "<no name>")),

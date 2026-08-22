@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.const import UnitOfTemperature
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
@@ -24,11 +25,12 @@ from custom_components.phoenix_mcp.tools.helper import _build_diff_delete_helper
 
 
 def _token(**caps) -> TokenRecord:
-    tree = PermissionTree(domains={
+    tree = caps.pop("permissions", PermissionTree(domains={
         "input_boolean": PermissionNode(state="GREEN"),
         "input_button": PermissionNode(state="GREEN"),
         "schedule": PermissionNode(state="GREEN"),
-    })
+        "sensor": PermissionNode(state="GREEN"),
+    }))
     base = {"cap_helper_write": "allow", "cap_registry_read": "allow"}
     base.update(caps)
     return TokenRecord(
@@ -106,6 +108,275 @@ class TestCreateHelper:
             "create_helper", {"helper_type": "light", "config": {"name": "X"}},
             _token(cap_helper_write="confirm"), hass)
         assert outcome == "invalid_request"
+
+
+class TestConfigFlowHelperCreation:
+    async def test_mold_indicator_schema_create_and_remove(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        """A real single-step helper flow, including immediate materialization."""
+        hass.states.async_set(
+            "sensor.indoor_temp", "22",
+            {"device_class": "temperature", "unit_of_measurement": UnitOfTemperature.CELSIUS},
+        )
+        hass.states.async_set(
+            "sensor.outdoor_temp", "12",
+            {"device_class": "temperature", "unit_of_measurement": UnitOfTemperature.CELSIUS},
+        )
+        hass.states.async_set(
+            "sensor.indoor_humidity", "55",
+            {"device_class": "humidity", "unit_of_measurement": "%"},
+        )
+
+        content, outcome, _ = await _call(
+            "create_helper",
+            {"helper_type": "mold_indicator", "flow_steps": []},
+            _token(), hass,
+        )
+        assert outcome == "allowed"
+        first = _json(content)
+        assert first["status"] == "needs_input"
+        assert first["step"]["step_id"] == "user"
+        assert first["step"]["last_step"] is True
+        assert {field["name"] for field in first["step"]["schema"]} == {
+            "name", "indoor_temp_sensor", "indoor_humidity_sensor", "outdoor_temp_sensor",
+            "calibration_factor",
+        }
+        assert not hass.config_entries.flow.async_progress_by_handler("mold_indicator")
+
+        content, outcome, _ = await _call(
+            "create_helper",
+            {
+                "helper_type": "mold_indicator",
+                "flow_steps": [{
+                    "step_id": "user",
+                    "data": {
+                        "name": "Phoenix Mold Probe",
+                        "indoor_temp_sensor": "sensor.indoor_temp",
+                        "indoor_humidity_sensor": "sensor.indoor_humidity",
+                        "outdoor_temp_sensor": "sensor.outdoor_temp",
+                        "calibration_factor": 2.0,
+                    },
+                }],
+            },
+            _token(), hass,
+        )
+        assert outcome == "allowed", content
+        body = _json(content)
+        entry_id = body["config_entry"]["entry_id"]
+        try:
+            assert body["config_entry"]["domain"] == "mold_indicator"
+            assert body["config_entry"]["title"] == "Phoenix Mold Probe"
+            assert len(body["entity_ids"]) == 1
+            assert hass.states.get(body["entity_ids"][0]) is not None
+            assert hass.config_entries.async_get_entry(entry_id) is not None
+        finally:
+            await hass.config_entries.async_remove(entry_id)
+
+    async def test_history_stats_returns_each_form_and_creates(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        """The real three-step helper flow is replayable without leaked flows."""
+        assert await async_setup_component(hass, "input_boolean", {"input_boolean": {}})
+        # Loading the real flow normally starts Recorder, whose pytest fixture
+        # must run before this suite's session-scoped hass. Keep the real
+        # history_stats flow handler and config-entry manager, but replace the
+        # dependency setup and entity platform with the smallest materializer.
+        import homeassistant.components.history_stats as history_stats
+        from homeassistant.helpers import entity_registry as er
+
+        async def _setup_history_entry(hass, entry):
+            registry_entry = er.async_get(hass).async_get_or_create(
+                "history_stats", "history_stats", entry.entry_id,
+                config_entry=entry,
+                suggested_object_id=entry.title,
+            )
+            hass.states.async_set(registry_entry.entity_id, "0")
+            entry.async_on_unload(
+                lambda: hass.states.async_remove(registry_entry.entity_id)
+            )
+            return True
+
+        steps = [{
+            "step_id": "user",
+            "data": {
+                "name": "Phoenix History Probe",
+                "entity_id": "input_boolean.flow_source",
+                "type": "time",
+            },
+        }]
+        hass.states.async_set("input_boolean.flow_source", "off")
+
+        with (
+            patch(
+                "homeassistant.config_entries.async_process_deps_reqs",
+                AsyncMock(),
+            ),
+            patch(
+                "homeassistant.setup.async_process_deps_reqs",
+                AsyncMock(),
+            ),
+            patch.object(history_stats, "async_setup_entry", _setup_history_entry),
+        ):
+            content, outcome, _ = await _call(
+                "create_helper",
+                {"helper_type": "history_stats", "flow_steps": steps},
+                _token(), hass,
+            )
+            assert outcome == "allowed"
+            state_form = _json(content)["step"]
+            assert state_form["step_id"] == "state"
+            assert state_form["last_step"] is False
+            assert not hass.config_entries.flow.async_progress_by_handler("history_stats")
+
+            steps.append({
+                "step_id": "state",
+                "data": {"entity_id": "input_boolean.flow_source", "state": ["on"]},
+            })
+            content, outcome, _ = await _call(
+                "create_helper",
+                {"helper_type": "history_stats", "flow_steps": steps},
+                _token(), hass,
+            )
+            assert outcome == "allowed"
+            options_form = _json(content)["step"]
+            assert options_form["step_id"] == "options"
+            assert options_form["last_step"] is True
+            assert {field["name"] for field in options_form["schema"]} >= {
+                "start", "end", "duration",
+            }
+            assert not hass.config_entries.flow.async_progress_by_handler("history_stats")
+
+            steps.append({
+                "step_id": "options",
+                "data": {
+                    "entity_id": "input_boolean.flow_source",
+                    "state": ["on"],
+                    "type": "time",
+                    "start": "{{ today_at() }}",
+                    "duration": {"hours": 1},
+                },
+            })
+            content, outcome, _ = await _call(
+                "create_helper",
+                {"helper_type": "history_stats", "flow_steps": steps},
+                _token(), hass,
+            )
+            assert outcome == "allowed", content
+            body = _json(content)
+            entry_id = body["config_entry"]["entry_id"]
+            try:
+                assert body["config_entry"]["domain"] == "history_stats"
+                assert body["entity_ids"]
+                assert all(hass.states.get(entity_id) is not None for entity_id in body["entity_ids"])
+            finally:
+                await hass.config_entries.async_remove(entry_id)
+
+    async def test_out_of_scope_source_is_rejected_before_approval(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        hass.states.async_set("sensor.indoor_temp", "22")
+        hass.states.async_set("sensor.outdoor_temp", "12")
+        hass.states.async_set("sensor.indoor_humidity", "55")
+        content, outcome, _ = await _call(
+            "create_helper",
+            {
+                "helper_type": "mold_indicator",
+                "flow_steps": [{
+                    "step_id": "user",
+                    "data": {
+                        "name": "No Scope",
+                        "indoor_temp_sensor": "sensor.indoor_temp",
+                        "indoor_humidity_sensor": "sensor.indoor_humidity",
+                        "outdoor_temp_sensor": "sensor.outdoor_temp",
+                        "calibration_factor": 2.0,
+                    },
+                }],
+            },
+            _token(
+                cap_helper_write="confirm",
+                permissions=PermissionTree(domains={}),
+            ),
+            hass,
+        )
+        assert outcome == "denied"
+        assert "outside this token's write scope" in content["content"][0]["text"]
+
+    async def test_final_form_is_confirmation_gated_without_leaking_a_flow(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        for entity_id, value in (
+            ("sensor.indoor_temp", "22"),
+            ("sensor.outdoor_temp", "12"),
+            ("sensor.indoor_humidity", "55"),
+        ):
+            hass.states.async_set(entity_id, value)
+        data = MagicMock()
+        data.store.get_pending_approvals.return_value = []
+        data.store.async_save = AsyncMock()
+        before = {entry.entry_id for entry in hass.config_entries.async_entries("mold_indicator")}
+        content, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "mold_indicator",
+                "flow_steps": [{
+                    "step_id": "user",
+                    "data": {
+                        "name": "Awaiting Approval",
+                        "indoor_temp_sensor": "sensor.indoor_temp",
+                        "indoor_humidity_sensor": "sensor.indoor_humidity",
+                        "outdoor_temp_sensor": "sensor.outdoor_temp",
+                        "calibration_factor": 2.0,
+                    },
+                }],
+            },
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "pending_approval", content
+        assert {entry.entry_id for entry in hass.config_entries.async_entries("mold_indicator")} == before
+        assert not hass.config_entries.flow.async_progress_by_handler("mold_indicator")
+        data.store.set_pending_approvals.assert_called_once()
+
+    async def test_integration_specific_final_rejection_creates_nothing(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        for entity_id, value in (
+            ("sensor.indoor_temp", "22"),
+            ("sensor.outdoor_temp", "12"),
+            ("sensor.indoor_humidity", "55"),
+        ):
+            hass.states.async_set(entity_id, value)
+        before = {entry.entry_id for entry in hass.config_entries.async_entries("mold_indicator")}
+        content, outcome, _ = await _call(
+            "create_helper",
+            {
+                "helper_type": "mold_indicator",
+                "flow_steps": [{
+                    "step_id": "user",
+                    "data": {
+                        "name": "Invalid Calibration",
+                        "indoor_temp_sensor": "sensor.indoor_temp",
+                        "indoor_humidity_sensor": "sensor.indoor_humidity",
+                        "outdoor_temp_sensor": "sensor.outdoor_temp",
+                        "calibration_factor": 0.0,
+                    },
+                }],
+            },
+            _token(), hass,
+        )
+        assert outcome == "invalid_request"
+        assert "calibration_is_zero" in content["content"][0]["text"]
+        assert {entry.entry_id for entry in hass.config_entries.async_entries("mold_indicator")} == before
+        assert not hass.config_entries.flow.async_progress_by_handler("mold_indicator")
+
+    async def test_otp_is_deliberately_excluded(self, hass: HomeAssistant, hass_admin_user):
+        content, outcome, _ = await _call(
+            "create_helper",
+            {"helper_type": "otp", "flow_steps": []},
+            _token(), hass,
+        )
+        assert outcome == "invalid_request"
+        assert "live confirmation code" in content["content"][0]["text"]
 
 
 class TestEditDeleteHelper:
