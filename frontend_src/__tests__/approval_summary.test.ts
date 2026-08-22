@@ -164,6 +164,21 @@ describe("friendly approval summary", () => {
       body: "This will permanently delete the selected input boolean helper. This action cannot be undone.",
     });
   });
+
+  it("uses the friendly input button kind for helper approvals", () => {
+    expect(friendlyApprovalSummary({
+      summary_key: "diff.edit_helper",
+      summary_params: {
+        helper_type: "input_button",
+        helper_id: "doorbell_helper",
+      },
+      target: {
+        type: "helper",
+        id: "doorbell_helper",
+        label: "Doorbell helper",
+      },
+    }).title).toBe("Edit button helper 'Doorbell helper'");
+  });
 });
 
 describe("approval Summary preference", () => {

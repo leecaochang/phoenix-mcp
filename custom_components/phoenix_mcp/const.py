@@ -1461,6 +1461,7 @@ APPROVAL_SUMMARY_UI: dict[str, str] = {
     "named.kind.input_text": "text helper",
     "named.kind.input_select": "dropdown helper",
     "named.kind.input_datetime": "date and time helper",
+    "named.kind.input_button": "button helper",
     "named.kind.counter": "counter helper",
     "named.kind.timer": "timer helper",
     "named.resource.createTitle": "Create {kind} '{label}'",

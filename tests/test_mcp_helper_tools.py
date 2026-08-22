@@ -24,7 +24,10 @@ from custom_components.phoenix_mcp.tools.helper import _build_diff_delete_helper
 
 
 def _token(**caps) -> TokenRecord:
-    tree = PermissionTree(domains={"input_boolean": PermissionNode(state="GREEN")})
+    tree = PermissionTree(domains={
+        "input_boolean": PermissionNode(state="GREEN"),
+        "input_button": PermissionNode(state="GREEN"),
+    })
     base = {"cap_helper_write": "allow", "cap_registry_read": "allow"}
     base.update(caps)
     return TokenRecord(
@@ -297,3 +300,102 @@ class TestListHelpers:
     async def test_deny_without_cap(self, hass, helper_env, hass_admin_user):
         _, outcome, _ = await _call("list_helpers", {}, _token(cap_registry_read="deny"), hass)
         assert outcome == "denied"
+
+
+class TestInputButtonLifecycle:
+    """Prove input_button fits the shared storage-helper CRUD contract."""
+
+    async def test_crud_and_deleted_restore(self, hass, hass_admin_user):
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.mcp_view import async_restore_version
+
+        assert await async_setup_component(hass, "input_button", {"input_button": {}})
+        await hass.async_block_till_done()
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(), versions=versions,
+        )
+        token = _token()
+
+        created_result, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "input_button",
+                "config": {"name": "Doorbell test", "icon": "mdi:gesture-tap-button"},
+            },
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        created = _json(created_result)["helper"]
+        helper_id = created["id"]
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id("input_button", "input_button", helper_id)
+        assert entity_id is not None
+        assert hass.states.get(entity_id) is not None
+        assert hass.states.get(entity_id).attributes["friendly_name"] == "Doorbell test"
+        assert hass.states.get(entity_id).attributes["icon"] == "mdi:gesture-tap-button"
+
+        listed_result, outcome, _ = await _call_tool(
+            "list_helpers", {"helper_type": "input_button"}, token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(listed_result)["helpers"] == [{
+            "entity_id": entity_id,
+            "helper_type": "input_button",
+            "name": "Doorbell test",
+            "helper_id": helper_id,
+        }]
+
+        edited_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "input_button",
+                "helper_id": helper_id,
+                "config": {"name": "Doorbell renamed", "icon": "mdi:radiobox-marked"},
+            },
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(edited_result)["helper"]["name"] == "Doorbell renamed"
+        assert registry.async_get_entity_id("input_button", "input_button", helper_id) == entity_id
+        assert hass.states.get(entity_id).attributes["friendly_name"] == "Doorbell renamed"
+        assert hass.states.get(entity_id).attributes["icon"] == "mdi:radiobox-marked"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "input_button", "helper_id": helper_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert registry.async_get_entity_id("input_button", "input_button", helper_id) is None
+        assert hass.states.get(entity_id) is None
+
+        history = versions.list_for("helper", f"input_button:{helper_id}")
+        assert [record.action for record in history] == ["delete", "edit", "create"]
+        assert history[0].before["name"] == "Doorbell renamed"
+        assert history[1].before["name"] == "Doorbell test"
+        assert history[1].after["name"] == "Doorbell renamed"
+
+        restored_result, outcome, _ = await async_restore_version(
+            history[0], "admin-input-button", hass, data,
+        )
+        assert outcome == "allowed"
+        restored = _json(restored_result)["helper"]
+        restored_id = restored["id"]
+        assert restored_id != helper_id
+        restored_entity_id = registry.async_get_entity_id(
+            "input_button", "input_button", restored_id
+        )
+        assert restored_entity_id is not None
+        assert hass.states.get(restored_entity_id).attributes["friendly_name"] == "Doorbell renamed"
+        restored_history = versions.list_for("helper", f"input_button:{restored_id}")
+        assert restored_history[0].action == "rollback"
+        assert restored_history[0].approved_by_user_id == "admin-input-button"
+
+        # A restore creates a new storage-helper id, so remove that new helper too.
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "input_button", "helper_id": restored_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"

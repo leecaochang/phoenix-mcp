@@ -2241,7 +2241,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "list_helpers",
         "description": (
             "List Home Assistant helpers this token can access (input_boolean, input_number, "
-            "input_text, input_select, input_datetime, counter, timer), with each helper's id for editing."
+            "input_text, input_select, input_datetime, input_button, counter, timer), with each helper's id for editing."
         ),
         "cap": "cap_registry_read",
         "inputSchema": {
@@ -2255,7 +2255,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "create_helper",
         "description": (
             "Create a Home Assistant helper. helper_type is one of input_boolean, input_number, "
-            "input_text, input_select, input_datetime, counter, timer. config holds the helper's fields "
+            "input_text, input_select, input_datetime, input_button, counter, timer. config holds the helper's fields "
             "(at least 'name'). Returns the created helper including its id."
         ),
         "cap": "cap_helper_write",

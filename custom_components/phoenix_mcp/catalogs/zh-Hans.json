@@ -1803,6 +1803,7 @@
       "named.kind.automation": "自动化",
       "named.kind.counter": "计数器辅助工具",
       "named.kind.helper": "辅助工具",
+      "named.kind.input_button": "按钮辅助工具",
       "named.kind.input_boolean": "布尔值辅助工具",
       "named.kind.input_datetime": "日期和时间辅助工具",
       "named.kind.input_number": "数值辅助工具",

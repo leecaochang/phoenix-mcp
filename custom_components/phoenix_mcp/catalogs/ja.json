@@ -1803,6 +1803,7 @@
       "named.kind.automation": "オートメーション",
       "named.kind.counter": "カウンターヘルパー",
       "named.kind.helper": "ヘルパー",
+      "named.kind.input_button": "ボタンヘルパー",
       "named.kind.input_boolean": "入力ブール値ヘルパー",
       "named.kind.input_datetime": "日時ヘルパー",
       "named.kind.input_number": "数値ヘルパー",

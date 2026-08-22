@@ -1808,6 +1808,7 @@
       "named.kind.counter": "counter helper",
       "named.kind.helper": "helper",
       "named.kind.input_boolean": "input boolean helper",
+      "named.kind.input_button": "button helper",
       "named.kind.input_datetime": "date and time helper",
       "named.kind.input_number": "number helper",
       "named.kind.input_select": "dropdown helper",

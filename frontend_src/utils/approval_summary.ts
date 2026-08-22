@@ -71,7 +71,7 @@ function resourceKind(kind: string, diff: ApprovalDiff): string {
   const helperType = String(diff.summary_params?.helper_type || "");
   const known = new Set([
     "input_boolean", "input_number", "input_text", "input_select",
-    "input_datetime", "counter", "timer",
+    "input_datetime", "input_button", "counter", "timer",
   ]);
   return t(`approvalSummary.named.kind.${known.has(helperType) ? helperType : "helper"}`);
 }

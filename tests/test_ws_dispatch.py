@@ -7,6 +7,17 @@ from homeassistant.setup import async_setup_component
 
 import custom_components.phoenix_mcp.ws_dispatch as wd_module
 from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError, async_ws_command
+from custom_components.phoenix_mcp.tools.helper import HELPER_TYPES
+
+
+def test_storage_helper_domains_have_all_allowlisted_commands():
+    """The helper catalog and privileged WS allowlist must move together."""
+    assert set(wd_module._HELPER_DOMAINS) == HELPER_TYPES
+    assert {
+        f"{domain}/{operation}"
+        for domain in HELPER_TYPES
+        for operation in ("create", "update", "delete", "list")
+    } <= wd_module.ALLOWED_WS_COMMANDS
 
 
 async def test_create_input_boolean_in_process(hass, hass_admin_user):
