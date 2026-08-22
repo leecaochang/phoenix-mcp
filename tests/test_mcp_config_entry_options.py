@@ -22,6 +22,7 @@ import pytest
 import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 from homeassistant.util.dt import utcnow
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -87,6 +88,14 @@ def helper_entry(hass: HomeAssistant):
     # supports_options is computed from a REGISTERED config-flow handler, which a
     # MockConfigEntry has none of; the real threshold integration reports True.
     object.__setattr__(entry, "_supports_options", True)
+    registry_entry = er.async_get(hass).async_get_or_create(
+        "binary_sensor",
+        "threshold",
+        "helper1",
+        config_entry=entry,
+        suggested_object_id="kitchen_threshold",
+    )
+    hass.states.async_set(registry_entry.entity_id, "off", {})
     hass.states.async_set("sensor.kitchen", "20", {})
     hass.states.async_set("sensor.other", "5", {})
     return entry
@@ -351,6 +360,14 @@ class TestReconfigureMechanism:
         entry.add_to_hass(hass)
         object.__setattr__(entry, "_supports_options", False)
         object.__setattr__(entry, "_supports_reconfigure", True)
+        registry_entry = er.async_get(hass).async_get_or_create(
+            "sensor",
+            "time_off",
+            "data1",
+            config_entry=entry,
+            suggested_object_id="pantry_light",
+        )
+        hass.states.async_set(registry_entry.entity_id, "off", {})
         hass.states.async_set("sensor.kitchen", "20", {})
         hass.states.async_set("sensor.other", "5", {})
         return entry

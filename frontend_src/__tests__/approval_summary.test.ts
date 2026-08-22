@@ -194,6 +194,21 @@ describe("friendly approval summary", () => {
       },
     }).title).toBe("Edit schedule helper 'Weekly schedule'");
   });
+
+  it("uses the friendly tag kind for helper approvals", () => {
+    expect(friendlyApprovalSummary({
+      summary_key: "diff.create_helper",
+      summary_params: {
+        helper_type: "tag",
+        name: "Front door NFC",
+      },
+      target: {
+        type: "helper",
+        id: "front-door-nfc",
+        label: "Front door NFC",
+      },
+    }).title).toBe("Create tag helper 'Front door NFC'");
+  });
 });
 
 describe("approval Summary preference", () => {

@@ -2241,7 +2241,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "list_helpers",
         "description": (
             "List Home Assistant helpers this token can access (input_boolean, input_number, "
-            "input_text, input_select, input_datetime, input_button, counter, timer, schedule, zone), with each helper's id for editing."
+            "input_text, input_select, input_datetime, input_button, counter, timer, schedule, zone, tag), with each helper's id for editing."
         ),
         "cap": "cap_registry_read",
         "inputSchema": {
@@ -2255,12 +2255,16 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "create_helper",
         "description": (
             "Create a Home Assistant helper. Storage helpers (input_boolean, input_number, input_text, "
-            "input_select, input_datetime, input_button, counter, timer, schedule, zone) use config. A helper "
+            "input_select, input_datetime, input_button, counter, timer, schedule, zone, tag) use config. A helper "
             "integration that Home Assistant creates through a config flow, such as mold_indicator or "
             "history_stats, uses cumulative flow_steps instead: start with [] to receive its first real "
             "form schema, then append each {step_id, data} and call again. Incomplete flows are closed "
             "without creating anything; the final form is approval-gated. Creating a zone requires "
-            "write access to the entire zone domain so the new entity remains manageable. OTP is excluded."
+            "write access to its entire entity domain so the new entity remains manageable. Tag creation "
+            "requires tag_id and accepts only name/description metadata; scan history cannot be forged. "
+            "Inherited MESA applies to the proposed helper and is rechecked after materialization; a "
+            "new entity that resolves more restrictively than the approved proposal is removed. "
+            "OTP is excluded."
         ),
         "cap": "cap_helper_write",
         "inputSchema": {
@@ -2287,12 +2291,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     },
     {
         "name": "edit_helper",
-        "description": "Update an existing helper's config by its helper_type and helper_id. Zone edits require write access to that zone and reject unknown configuration fields.",
+        "description": "Update an existing helper's config by its helper_type and helper_id. Inherited MESA is resolved before approval and fingerprint-rechecked at execution. Zone and tag edits require write access to that entity and reject unknown configuration fields. Tags expose only name and description; scan history is read-only.",
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, timer, or zone."},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, timer, zone, or tag."},
                 "helper_id": {"type": "string", "description": "The helper id (from list_helpers)."},
                 "config": {"type": "object", "description": "Complete helper configuration to apply."},
             },
@@ -2301,7 +2305,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     },
     {
         "name": "delete_helper",
-        "description": "Permanently delete a helper by its helper_type and helper_id. Zone deletion requires write access to that storage-backed zone.",
+        "description": "Permanently delete a helper by its helper_type and helper_id. Inherited MESA is resolved before approval and fingerprint-rechecked at execution. Zone and tag deletion require write access to that storage-backed entity. Scanning a deleted physical tag can make Home Assistant discover it again.",
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",
@@ -2524,7 +2528,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "if you omit it. Pass that read's content_hash as expected_hash so the write is "
             "refused if something else changed the settings meanwhile. Any "
             "entity you name must be one this token could already control. May require admin "
-            "approval. The helper reloads with the new settings; no restart. Helpers only, and a "
+            "approval. Inherited MESA is resolved across every entity owned by the helper and "
+            "fingerprint-rechecked before its flow runs. The helper reloads with the new settings; no restart. Helpers only, and a "
             "helper whose options flow has more than one step must be changed in the Home "
             "Assistant UI."
         ),

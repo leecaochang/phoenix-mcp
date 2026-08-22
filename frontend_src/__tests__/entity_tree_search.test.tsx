@@ -155,13 +155,17 @@ describe("permission tree search and device cleanup", () => {
     );
   });
 
-  it("shows an empty grantable domain without a nonfunctional expander", async () => {
+  it("shows empty grantable domains without nonfunctional expanders", async () => {
     mocks.getEntityTree.mockResolvedValue({
+      tag: { devices: {}, deviceless_entities: [], entity_details: {} },
       zone: { devices: {}, deviceless_entities: [], entity_details: {} },
     });
 
     renderTree();
 
+    expect(await screen.findByText("tag")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Permission for domain tag" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Expand tag" })).not.toBeInTheDocument();
     expect(await screen.findByText("zone")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Permission for domain zone" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Expand zone" })).not.toBeInTheDocument();

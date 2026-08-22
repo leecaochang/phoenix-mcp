@@ -179,22 +179,22 @@ def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wire
     assert metrics == {
         "read_only": {
             "tool_count": 48,
-            "canonical_bytes": 39016,
-            "claude_bytes": 34074,
-            "openai_bytes": 35466,
+            "canonical_bytes": 39021,
+            "claude_bytes": 34079,
+            "openai_bytes": 35471,
         },
-            "write_capable": {
-                "tool_count": 92,
-                "canonical_bytes": 85558,
-                "claude_bytes": 76071,
-                "openai_bytes": 78739,
-            },
-            "announce_all": {
-                "tool_count": 152,
-                "canonical_bytes": 145896,
-                "claude_bytes": 130208,
-                "openai_bytes": 134616,
-            },
+        "write_capable": {
+            "tool_count": 92,
+            "canonical_bytes": 86291,
+            "claude_bytes": 76804,
+            "openai_bytes": 79472,
+        },
+        "announce_all": {
+            "tool_count": 152,
+            "canonical_bytes": 146629,
+            "claude_bytes": 130941,
+            "openai_bytes": 135349,
+        },
     }
     assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 152
     assert mcp_view.tool_catalog_counts()["total"] == 158
@@ -455,7 +455,12 @@ def _handler_calls_gate(fn) -> bool:
         if isinstance(node, ast.Call):
             func = node.func
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if name in ("_gate", "_integration_gate", "_pending_or_inline"):
+            if name in (
+                "_gate",
+                "_helper_mesa_approval_gate",
+                "_integration_gate",
+                "_pending_or_inline",
+            ):
                 return True
     return False
 

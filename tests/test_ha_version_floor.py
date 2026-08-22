@@ -191,6 +191,9 @@ KNOWN_IMPORTS: dict[str, dict[str, str]] = {
     },
     "homeassistant.util": {
         "dt": "0.0.0",
+        # Core helper/entity ID generation has used this public utility since
+        # well before Phoenix's earliest supported Home Assistant release.
+        "slugify": "0.0.0",
     },
     "homeassistant.util.dt": {
         "as_utc": "0.0.0",

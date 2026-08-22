@@ -31,6 +31,7 @@ def _token(**caps) -> TokenRecord:
         "input_button": PermissionNode(state="GREEN"),
         "schedule": PermissionNode(state="GREEN"),
         "zone": PermissionNode(state="GREEN"),
+        "tag": PermissionNode(state="GREEN"),
         "sensor": PermissionNode(state="GREEN"),
     }))
     base = {"cap_helper_write": "allow", "cap_registry_read": "allow"}
@@ -997,6 +998,395 @@ class TestZoneLifecycle:
         _, outcome, _ = await _call_tool(
             "delete_helper",
             {"helper_type": "zone", "helper_id": helper_id},
+            allow_token, hass, data,
+        )
+        assert outcome == "allowed"
+
+
+class TestTagLifecycle:
+    """Prove tag CRUD protects scope and treats scan data as read-only evidence."""
+
+    @staticmethod
+    async def _setup(hass: HomeAssistant) -> None:
+        assert await async_setup_component(hass, "tag", {"tag": {}})
+        await hass.async_block_till_done()
+
+    async def test_create_requires_tag_id_and_domain_write_before_approval(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        await self._setup(hass)
+        data = MagicMock()
+        missing_id, outcome, _ = await _call_tool(
+            "create_helper",
+            {"helper_type": "tag", "config": {"name": "Missing id"}},
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "requires a non-empty string tag_id" in missing_id["content"][0]["text"]
+
+        forged_scan, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "tag",
+                "config": {"tag_id": "forged", "last_scanned": "2026-08-22"},
+            },
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "Unknown tag configuration fields" in forged_scan["content"][0]["text"]
+
+        unscoped, outcome, _ = await _call_tool(
+            "create_helper",
+            {"helper_type": "tag", "config": {"tag_id": "unscoped-tag"}},
+            _token(
+                cap_helper_write="confirm",
+                permissions=PermissionTree(domains={}),
+            ),
+            hass, data,
+        )
+        assert outcome == "denied"
+        assert "entire tag domain" in unscoped["content"][0]["text"]
+
+    async def test_create_rolls_back_entity_specific_scope_override(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.helpers import entity_registry as er
+
+        await self._setup(hass)
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=versions,
+        )
+        token = _token(permissions=PermissionTree(
+            domains={"tag": PermissionNode(state="GREEN")},
+            entities={"tag.blocked_new_tag": PermissionNode(state="RED")},
+        ))
+        result, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "tag",
+                "config": {
+                    "tag_id": "blocked-new-tag",
+                    "name": "Blocked new tag",
+                },
+            },
+            token, hass, data,
+        )
+        assert outcome == "denied"
+        assert "removed and nothing changed" in result["content"][0]["text"]
+        assert er.async_get(hass).async_get_entity_id(
+            "tag", "tag", "blocked-new-tag"
+        ) is None
+        assert versions.list_for("helper", "tag:blocked-new-tag") == []
+
+    async def test_confirmed_create_rechecks_tag_id_absence(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from custom_components.phoenix_mcp.mcp_view import async_execute_approved_tool
+        from custom_components.phoenix_mcp.ws_dispatch import async_ws_command
+
+        class ApprovalStore:
+            def __init__(self) -> None:
+                self.pending: list[dict] = []
+                self.async_lock = asyncio.Lock()
+                self.async_save = AsyncMock()
+
+            def get_pending_approvals(self) -> list[dict]:
+                return self.pending
+
+            def set_pending_approvals(self, value: list[dict]) -> None:
+                self.pending = value
+
+        await self._setup(hass)
+        store = ApprovalStore()
+        data = PhoenixData(
+            store=store, rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=VersionStore(),
+        )
+        token = _token(cap_helper_write="confirm")
+        args = {
+            "helper_type": "tag",
+            "config": {"tag_id": "approval-race-tag", "name": "Reviewed name"},
+        }
+        _, outcome, _ = await _call_tool(
+            "create_helper", args, token, hass, data,
+        )
+        assert outcome == "pending_approval"
+        approved_args = store.pending[0]["args"]
+
+        await async_ws_command(
+            hass, "tag/create",
+            {"tag_id": "approval-race-tag", "name": "External name"},
+        )
+        executed = await async_execute_approved_tool(
+            "create_helper", approved_args, token, hass, data,
+        )
+        assert executed[1] == "invalid_request"
+        assert "tag_id is unavailable" in executed[0]["content"][0]["text"]
+        items = await async_ws_command(hass, "tag/list", {})
+        item = next(row for row in items if row["id"] == "approval-race-tag")
+        assert item["name"] == "External name"
+
+        await async_ws_command(
+            hass, "tag/delete", {"tag_id": "approval-race-tag"}
+        )
+
+    async def test_explicit_tag_list_reports_storage_failure(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError
+
+        await self._setup(hass)
+        with patch(
+            "custom_components.phoenix_mcp.tools.helper.async_ws_command",
+            AsyncMock(side_effect=WsDispatchError("unavailable")),
+        ):
+            result, outcome, _ = await _call_tool(
+                "list_helpers", {"helper_type": "tag"}, _token(), hass,
+                PhoenixData(
+                    store=MagicMock(), rate_limiter=MagicMock(),
+                    audit=MagicMock(), versions=VersionStore(),
+                ),
+            )
+        assert outcome == "invalid_request"
+        assert "storage is unavailable" in result["content"][0]["text"]
+
+    async def test_crud_duplicate_precheck_and_deleted_restore(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.mcp_view import async_restore_version
+
+        await self._setup(hass)
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=versions,
+        )
+        token = _token()
+        initial = {
+            "tag_id": "phoenix-tag-lifecycle",
+            "name": "Phoenix tag lifecycle",
+            "description": "Disposable lifecycle tag",
+        }
+        created_result, outcome, _ = await _call_tool(
+            "create_helper", {"helper_type": "tag", "config": initial},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        created = _json(created_result)["helper"]
+        assert created["id"] == initial["tag_id"]
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id("tag", "tag", initial["tag_id"])
+        assert entity_id is not None
+        assert hass.states.get(entity_id) is not None
+        assert hass.states.get(entity_id).attributes["friendly_name"] == initial["name"]
+
+        unknown_edit, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "tag", "helper_id": initial["tag_id"],
+                "config": {"device_id": "forged-scanner"},
+            },
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "Unknown tag configuration fields" in unknown_edit["content"][0]["text"]
+
+        listed_result, outcome, _ = await _call_tool(
+            "list_helpers", {"helper_type": "tag"}, token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(listed_result)["helpers"] == [{
+            "entity_id": entity_id,
+            "helper_type": "tag",
+            "name": initial["name"],
+            "helper_id": initial["tag_id"],
+        }]
+
+        duplicate, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "tag",
+                "config": {"tag_id": initial["tag_id"], "name": "Hijacked"},
+            },
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "tag_id is unavailable" in duplicate["content"][0]["text"]
+        assert hass.states.get(entity_id).attributes["friendly_name"] == initial["name"]
+
+        unscoped = _token(permissions=PermissionTree(domains={}))
+        _, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "tag", "helper_id": initial["tag_id"],
+                "config": {"name": "Hidden"},
+            },
+            unscoped, hass, data,
+        )
+        assert outcome == "not_found"
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "tag", "helper_id": initial["tag_id"]},
+            unscoped, hass, data,
+        )
+        assert outcome == "not_found"
+
+        edited_config = {
+            "name": "Phoenix tag renamed",
+            "description": "Updated description",
+        }
+        edited_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "tag", "helper_id": initial["tag_id"],
+                "config": edited_config,
+            },
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(edited_result)["helper"]["description"] == "Updated description"
+        assert registry.async_get_entity_id("tag", "tag", initial["tag_id"]) == entity_id
+        assert hass.states.get(entity_id).attributes["friendly_name"] == "Phoenix tag renamed"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "tag", "helper_id": initial["tag_id"]},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert registry.async_get_entity_id("tag", "tag", initial["tag_id"]) is None
+        assert hass.states.get(entity_id) is None
+
+        history = versions.list_for("helper", f"tag:{initial['tag_id']}")
+        assert [record.action for record in history] == ["delete", "edit", "create"]
+        assert history[0].before["description"] == "Updated description"
+        assert history[1].before["description"] == initial["description"]
+
+        restored_result, outcome, _ = await async_restore_version(
+            history[0], "admin-tag", hass, data,
+        )
+        assert outcome == "allowed"
+        restored = _json(restored_result)["helper"]
+        assert restored["id"] == initial["tag_id"]
+        restored_entity_id = registry.async_get_entity_id(
+            "tag", "tag", initial["tag_id"]
+        )
+        assert restored_entity_id is not None
+        assert hass.states.get(restored_entity_id).attributes["friendly_name"] == "Phoenix tag renamed"
+        assert versions.list_for(
+            "helper", f"tag:{initial['tag_id']}"
+        )[0].action == "rollback"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "tag", "helper_id": initial["tag_id"]},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+
+    async def test_scan_metadata_does_not_stale_approval_but_config_drift_does(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.components.tag import async_scan_tag
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.mcp_view import (
+            async_execute_approved_tool, async_restore_version,
+        )
+        from custom_components.phoenix_mcp.ws_dispatch import async_ws_command
+
+        class ApprovalStore:
+            def __init__(self) -> None:
+                self.pending: list[dict] = []
+                self.async_lock = asyncio.Lock()
+                self.async_save = AsyncMock()
+
+            def get_pending_approvals(self) -> list[dict]:
+                return self.pending
+
+            def set_pending_approvals(self, value: list[dict]) -> None:
+                self.pending = value
+
+        await self._setup(hass)
+        store = ApprovalStore()
+        data = PhoenixData(
+            store=store, rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=VersionStore(),
+        )
+        allow_token = _token()
+        tag_id = "phoenix-tag-approval"
+        _, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "tag",
+                "config": {"tag_id": tag_id, "name": "Approval tag"},
+            },
+            allow_token, hass, data,
+        )
+        assert outcome == "allowed"
+
+        confirm_token = _token(cap_helper_write="confirm")
+        _, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "tag", "helper_id": tag_id,
+                "config": {"name": "After scan"},
+            },
+            confirm_token, hass, data,
+        )
+        assert outcome == "pending_approval"
+        approved_args = store.pending.pop()["args"]
+        await async_scan_tag(hass, tag_id, "scanner-device")
+        executed = await async_execute_approved_tool(
+            "edit_helper", approved_args, confirm_token, hass, data,
+        )
+        assert executed[1] == "allowed"
+
+        _, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "tag", "helper_id": tag_id,
+                "config": {"name": "Should not land"},
+            },
+            confirm_token, hass, data,
+        )
+        assert outcome == "pending_approval"
+        stale_args = store.pending.pop()["args"]
+        await async_ws_command(
+            hass, "tag/update",
+            {"tag_id": tag_id, "description": "External change"},
+        )
+        executed = await async_execute_approved_tool(
+            "edit_helper", stale_args, confirm_token, hass, data,
+        )
+        assert executed[1] == "invalid_request"
+        assert "changed after the request was reviewed" in executed[0]["content"][0]["text"]
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper", {"helper_type": "tag", "helper_id": tag_id},
+            allow_token, hass, data,
+        )
+        assert outcome == "allowed"
+        deleted = data.versions.list_for("helper", f"tag:{tag_id}")[0]
+        assert deleted.before["device_id"] == "scanner-device"
+        restored_result, outcome, _ = await async_restore_version(
+            deleted, "admin-tag-scan", hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(restored_result)["helper"]["id"] == tag_id
+        restored_entity_id = er.async_get(hass).async_get_entity_id(
+            "tag", "tag", tag_id
+        )
+        assert restored_entity_id is not None
+        restored_state = hass.states.get(restored_entity_id)
+        assert restored_state is not None
+        assert restored_state.state == "unknown"
+        assert restored_state.attributes["last_scanned_by_device_id"] is None
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper", {"helper_type": "tag", "helper_id": tag_id},
             allow_token, hass, data,
         )
         assert outcome == "allowed"

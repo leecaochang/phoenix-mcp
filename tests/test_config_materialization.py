@@ -208,6 +208,40 @@ class TestCreateMaterialization:
         assert state.attributes["latitude"] == 10.0
         assert state.attributes["longitude"] == 20.0
 
+    async def test_tag_exists_the_moment_create_returns(self, hass: HomeAssistant, admin_user):
+        """Registry-backed tag naming must also be visible synchronously."""
+        from homeassistant.helpers import entity_registry as er
+
+        assert await async_setup_component(hass, "tag", {"tag": {}})
+        await hass.async_block_till_done()
+
+        result, outcome, _res = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "tag",
+                "config": {
+                    "tag_id": "materialization-tag-id",
+                    "name": "Materialization Tag",
+                    "description": "Disposable probe",
+                },
+            },
+            _token(
+                PermissionTree(domains={"tag": PermissionNode(state="GREEN")}),
+                cap_helper_write="allow",
+            ),
+            hass,
+            _data(),
+        )
+        assert outcome == "allowed", _text(result)
+
+        entity_id = er.async_get(hass).async_get_entity_id(
+            "tag", "tag", "materialization-tag-id"
+        )
+        assert entity_id is not None
+        state = hass.states.get(entity_id)
+        assert state is not None, "create_helper returned before the tag existed"
+        assert state.attributes["friendly_name"] == "Materialization Tag"
+
     async def test_edit_is_visible_the_moment_edit_returns(self, hass: HomeAssistant):
         """The same property for a rename, which is what an agent reads back to
         confirm its own edit landed."""

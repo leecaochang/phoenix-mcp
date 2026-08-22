@@ -87,6 +87,7 @@ from .tools.config_files import (
     _tool_write_file,
 )
 from .tools.helper import (
+    _HELPER_RESTORE_ID,
     _execute_set_config_entry_options,
     _tool_get_config_entry_options,
     _tool_set_config_entry_options,
@@ -4951,9 +4952,31 @@ async def async_restore_version(
             return await _execute_create_scene({"config": target, "scene_id": resource_id}, token, hass, data)
         if resource_type == "helper":
             ht, _, hid = resource_id.partition(":")
+            if ht == "tag":
+                # Scan timestamps and scanner device ids are operational evidence,
+                # not authorable configuration. Never rewind them from version
+                # history. A deleted tag is recreated under its original stable
+                # physical identifier; an existing tag edit must not receive the
+                # create-only tag_id field.
+                target = {
+                    key: target[key]
+                    for key in ("name", "description")
+                    if key in target
+                }
+                if not exists:
+                    target["tag_id"] = hid
             if exists:
                 return await _execute_edit_helper({"helper_type": ht, "helper_id": hid, "config": target}, token, hass, data)
-            return await _execute_create_helper({"helper_type": ht, "config": target}, token, hass, data)
+            return await _execute_create_helper(
+                {
+                    "helper_type": ht,
+                    "config": target,
+                    _HELPER_RESTORE_ID: hid,
+                },
+                token,
+                hass,
+                data,
+            )
         if resource_type == "dashboard":
             # Dashboards are edit-only: re-apply the layout to the existing dashboard
             # (resource_id "lovelace" is the default dashboard, url_path None).

@@ -56,7 +56,7 @@ DEFAULT_TIMEOUT = 10.0
 # radio identifier.
 _HELPER_DOMAINS = (
     "input_boolean", "input_number", "input_text",
-    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone",
+    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone", "tag",
 )
 ALLOWED_WS_COMMANDS: frozenset[str] = frozenset(
     [f"{domain}/{op}" for domain in _HELPER_DOMAINS for op in ("create", "update", "delete", "list")]

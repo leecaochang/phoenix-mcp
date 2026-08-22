@@ -1812,6 +1812,7 @@
       "named.kind.scene": "场景",
       "named.kind.schedule": "计划表辅助工具",
       "named.kind.zone": "区域辅助工具",
+      "named.kind.tag": "标签辅助工具",
       "named.kind.script": "脚本",
       "named.kind.timer": "计时器辅助工具",
       "named.removeDevice.body": "这将要求{integration}集成移除{device}。您可能需要重新添加该设备，并且无法通过Phoenix MCP撤销此操作。",

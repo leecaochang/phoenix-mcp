@@ -2,7 +2,7 @@
 
 The storage-based helper domains only, listed in HELPER_TYPES: each publishes a
 uniform {type}/create|update|delete WS command whose item id key is
-"{type}_id", which is what makes one set of handlers cover all ten.
+"{type}_id", which is what makes one set of handlers cover all eleven.
 Config-flow helpers use HA's config-entry flow manager instead. create_helper
 can replay their cumulative form steps, returning the next real schema until a
 last step is supplied; only that last step is approval-gated and submitted.
@@ -20,7 +20,9 @@ come from ..tool_common.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, cast
+import hashlib
 import json
 import logging
 
@@ -33,12 +35,32 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.loader import IntegrationNotFound, async_get_integration
+from homeassistant.util import slugify
 
 from ..const import CAP_DENY
 from ..data import PhoenixData
+from ..mesa import (
+    MesaRuntime,
+    RegistryMesaDecision,
+    async_create_mesa_approval,
+    evaluate_registry_action,
+    fire_mesa_blocked_event,
+)
 from ..ws_dispatch import WsDispatchError, async_ws_command
 from ..helpers import content_hash, dict_arg, diff_summary_fields as _summary, effective_cap, version_summary_fields as _version_summary
-from ..tool_common import _CAP_FORBIDDEN_MESSAGE, _cas_conflict, _gate, _record_version, _tool_error, _tool_success, _truncate
+from ..tool_common import (
+    _CAP_FORBIDDEN_MESSAGE,
+    _approved_exec_ctx,
+    _cas_conflict,
+    _gate,
+    _mesa_advisory_ctx,
+    _pending_or_inline,
+    _record_version,
+    _restore_ctx,
+    _tool_error,
+    _tool_success,
+    _truncate,
+)
 from ..policy_engine import _ENTITY_ID_RE, Permission, filter_entities_for_token, resolve
 from ..token_store import TokenRecord
 
@@ -58,13 +80,18 @@ _NOT_A_HELPER_ENTRY = (
 # types (template, group, utility_meter, etc.) are out of scope for now.
 HELPER_TYPES = frozenset({
     "input_boolean", "input_number", "input_text",
-    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone",
+    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone", "tag",
 })
 
 _ZONE_CONFIG_FIELDS = frozenset({
     "name", "latitude", "longitude", "radius", "passive", "icon",
 })
+_TAG_CREATE_CONFIG_FIELDS = frozenset({"tag_id", "name", "description"})
+_TAG_UPDATE_CONFIG_FIELDS = frozenset({"name", "description"})
+_SCOPED_STORAGE_HELPER_TYPES = frozenset({"tag", "zone"})
 _HELPER_CONTEXT_FINGERPRINT = "_phoenix_helper_context_fingerprint"
+_HELPER_MESA_FINGERPRINT = "_phoenix_helper_mesa_fingerprint"
+_HELPER_RESTORE_ID = "_phoenix_helper_restore_id"
 
 # A generated OTP cannot be created noninteractively: HA shows the secret and
 # requires a current TOTP code in a later confirmation step. Keeping it out is a
@@ -76,6 +103,318 @@ _MAX_HELPER_FLOW_STEPS = 8
 # ---------------------------------------------------------------------------
 # Helper CRUD (cap_helper_write) via in-process WS command dispatch
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _HelperMesaContext:
+    """One exact inherited-MESA snapshot for a helper mutation."""
+
+    action: str
+    decisions: tuple[tuple[str, RegistryMesaDecision], ...]
+    decision: str
+    fingerprint: str
+    warnings: tuple[str, ...]
+
+    @property
+    def profile_fingerprints(self) -> frozenset[str]:
+        return frozenset(
+            decision.profile_fingerprint
+            for _entity_id, decision in self.decisions
+            if isinstance(decision.profile_fingerprint, str)
+        )
+
+
+def _helper_mesa_context(
+    data: PhoenixData,
+    token: TokenRecord,
+    entity_ids: list[str] | tuple[str, ...],
+    *,
+    action: str,
+    service_data: dict[str, Any] | None = None,
+    session_id: str,
+) -> _HelperMesaContext | tuple[dict, str, str]:
+    """Resolve helper.<action> for every exact entity, failing closed."""
+    entities = tuple(sorted(set(entity_ids)))
+    if not entities:
+        return (
+            _tool_error("MESA could not resolve an entity for this helper; nothing changed."),
+            "denied",
+            f"helper:{action}",
+        )
+    decisions: list[tuple[str, RegistryMesaDecision]] = []
+    try:
+        for entity_id in entities:
+            if not isinstance(data.mesa, MesaRuntime) and data.mesa_setup_failed is not True:
+                decisions.append((
+                    entity_id,
+                    RegistryMesaDecision(
+                        decision="allow",
+                        rule="mesa:unavailable_in_test_context",
+                        reason="MESA has no runtime in this host context.",
+                    ),
+                ))
+                continue
+            decisions.append((
+                entity_id,
+                evaluate_registry_action(
+                    data,
+                    token,
+                    entity_id,
+                    action=action,
+                    registry_domain="helper",
+                    service_data=dict(service_data or {}),
+                    session_id=session_id,
+                ),
+            ))
+    except Exception:  # noqa: BLE001 - a safety resolver failure must block
+        _LOGGER.exception("MESA helper %s evaluation failed for %s", action, entities)
+        return (
+            _tool_error("MESA safety evaluation failed; no helper change was made."),
+            "denied",
+            f"helper:{action}",
+        )
+    aggregate = (
+        "deny" if any(item.decision == "deny" for _eid, item in decisions)
+        else "confirm" if any(item.decision == "confirm" for _eid, item in decisions)
+        else "allow"
+    )
+    warnings = tuple(
+        warning
+        for _entity_id, decision in decisions
+        for warning in decision.warnings
+    )
+    fingerprint_doc = {
+        "action": action,
+        "entities": [
+            {
+                "entity_id": entity_id,
+                "decision": decision.decision,
+                "rule": decision.rule,
+                "reason": decision.reason,
+                "effective_rule": decision.effective_rule,
+                "profile_fingerprint": decision.profile_fingerprint,
+            }
+            for entity_id, decision in decisions
+        ],
+    }
+    fingerprint = hashlib.sha256(json.dumps(
+        fingerprint_doc, sort_keys=True, separators=(",", ":"), default=str
+    ).encode()).hexdigest()
+    return _HelperMesaContext(
+        action=action,
+        decisions=tuple(decisions),
+        decision=aggregate,
+        fingerprint=fingerprint,
+        warnings=warnings,
+    )
+
+
+def _helper_mesa_preview(context: _HelperMesaContext) -> dict[str, Any]:
+    return {
+        "decision": context.decision,
+        "action": f"helper.{context.action}",
+        "confirm_entities": [
+            entity_id
+            for entity_id, decision in context.decisions
+            if decision.decision == "confirm"
+        ],
+        "allowed_entities": [
+            entity_id
+            for entity_id, decision in context.decisions
+            if decision.decision == "allow"
+        ],
+        "blocked": [
+            {"entity_id": entity_id, "rule": decision.rule}
+            for entity_id, decision in context.decisions
+            if decision.decision == "deny"
+        ],
+        "entities": [
+            {
+                "entity_id": entity_id,
+                "decision": decision.decision,
+                "rule": decision.rule,
+                "reason": decision.reason,
+                "effective_rule": decision.effective_rule,
+            }
+            for entity_id, decision in context.decisions
+        ],
+        "warnings": list(context.warnings),
+        "fingerprint": context.fingerprint[:16],
+    }
+
+
+def _helper_mesa_error(
+    context: _HelperMesaContext,
+    *,
+    changed: bool = False,
+) -> tuple[dict, str, str]:
+    message = (
+        "MESA protection changed after this helper request was reviewed; nothing changed."
+        if changed
+        else "MESA blocked this helper change."
+    )
+    return (
+        _tool_error(json.dumps({
+            "error": message,
+            "mesa": _helper_mesa_preview(context),
+        }, default=str)),
+        "denied",
+        f"helper:{context.action}",
+    )
+
+
+def _fire_helper_mesa_blocks(
+    hass: HomeAssistant,
+    token: TokenRecord,
+    context: _HelperMesaContext,
+) -> None:
+    blocked = [
+        (entity_id, decision.rule, decision.reason)
+        for entity_id, decision in context.decisions
+        if decision.decision == "deny"
+    ]
+    if blocked:
+        fire_mesa_blocked_event(hass, token, blocked)
+
+
+def _helper_mesa_diff(diff: dict, context: _HelperMesaContext) -> dict:
+    preview = diff.setdefault("preview", {})
+    if isinstance(preview, dict):
+        preview["mesa"] = _helper_mesa_preview(context)
+    return diff
+
+
+async def _helper_mesa_approval_gate(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    *,
+    context: _HelperMesaContext,
+    tool_name: str,
+    request_id: str,
+    client_ip: str | None,
+    diff_builder: Any,
+) -> tuple[dict, tuple[dict, str, str] | None]:
+    """Merge inherited MESA with the ordinary helper capability approval."""
+    if context.decision == "deny":
+        _fire_helper_mesa_blocks(hass, token, context)
+        return args, _helper_mesa_error(context)
+    approval_args = {**args, _HELPER_MESA_FINGERPRINT: context.fingerprint}
+
+    async def _diff() -> dict:
+        value = diff_builder()
+        if hasattr(value, "__await__"):
+            value = await value
+        return _helper_mesa_diff(value, context)
+
+    blocked = await _gate(
+        "cap_helper_write",
+        token,
+        hass,
+        data,
+        tool_name=tool_name,
+        args=approval_args,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff=_diff,
+    )
+    if blocked is not None:
+        return approval_args, blocked
+    if context.decision == "confirm":
+        approval = await async_create_mesa_approval(
+            hass,
+            data,
+            token,
+            args=approval_args,
+            diff=await _diff(),
+            request_id=request_id,
+            client_ip=client_ip,
+            tool_name=tool_name,
+        )
+        return approval_args, await _pending_or_inline(
+            hass, data, token, approval
+        )
+    return approval_args, None
+
+
+def _enforce_helper_mesa_context(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    entity_ids: list[str] | tuple[str, ...],
+    *,
+    action: str,
+    service_data: dict[str, Any] | None = None,
+    session_id: str,
+) -> _HelperMesaContext | tuple[dict, str, str]:
+    context = _helper_mesa_context(
+        data,
+        token,
+        entity_ids,
+        action=action,
+        service_data=service_data,
+        session_id=session_id,
+    )
+    if isinstance(context, tuple):
+        return context
+    saved = args.get(_HELPER_MESA_FINGERPRINT)
+    if isinstance(saved, str) and saved != context.fingerprint:
+        return _helper_mesa_error(context, changed=True)
+    restoring = _restore_ctx.get() is not None
+    confirmed = (
+        _approved_exec_ctx.get()
+        and isinstance(saved, str)
+        and saved == context.fingerprint
+    ) or restoring
+    if context.decision == "deny" or (
+        context.decision == "confirm" and not confirmed
+    ):
+        _fire_helper_mesa_blocks(hass, token, context)
+        return _helper_mesa_error(context)
+    if context.warnings:
+        _mesa_advisory_ctx.set(True)
+    return context
+
+
+def _helper_create_mesa_entity(
+    helper_type: str, args: dict, hass: HomeAssistant
+) -> str:
+    restore_id = args.get(_HELPER_RESTORE_ID)
+    if isinstance(restore_id, str) and restore_id.strip():
+        return f"{helper_type}.{slugify(restore_id)}"
+    config = args.get("config")
+    suggestion: str | None = None
+    if isinstance(config, dict):
+        if helper_type == "tag" and isinstance(config.get("tag_id"), str):
+            suggestion = config["tag_id"]
+        elif isinstance(config.get("name"), str):
+            suggestion = config["name"]
+    if suggestion is None:
+        steps = args.get("flow_steps")
+        if isinstance(steps, list):
+            for step in reversed(steps):
+                step_data = step.get("data") if isinstance(step, dict) else None
+                if isinstance(step_data, dict) and isinstance(step_data.get("name"), str):
+                    suggestion = step_data["name"]
+                    break
+    if suggestion is not None:
+        base = slugify(suggestion) or "__phoenix_helper_create__"
+        if helper_type in HELPER_TYPES and helper_type != "tag":
+            used = {
+                entry.unique_id
+                for entry in er.async_get(hass).entities.values()
+                if entry.domain == helper_type and entry.platform == helper_type
+            }
+            proposal = base
+            attempt = 1
+            while proposal in used:
+                attempt += 1
+                proposal = f"{base}_{attempt}"
+            base = proposal
+        return f"{helper_type}.{base}"
+    return f"{helper_type}.__phoenix_helper_create__"
 
 
 def _valid_helper_type(helper_type: Any) -> bool:
@@ -245,7 +584,8 @@ def _resolve_helper_entity_id(hass: HomeAssistant, helper_type: str, helper_id: 
     list_helpers exposes entry.unique_id as the editable helper_id, so the reverse
     lookup matches on (domain == helper_type, unique_id == helper_id). Used by
     edit/delete as an existence check (the helper must resolve to a real
-    entity); authoring itself is cap-gated, not entity-scoped.
+    entity). Ordinary authoring is cap-gated; sensitive zone/tag writes add
+    entity scope and storage-membership checks.
     """
     registry = er.async_get(hass)
     for entry in registry.entities.values():
@@ -262,30 +602,38 @@ async def _tool_list_helpers(
         return _tool_error("Forbidden."), "denied", "list_helpers"
     type_filter = args.get("helper_type")
     registry = er.async_get(hass)
-    storage_zone_ids: set[str] = set()
-    if type_filter in (None, "zone") and "zone" in hass.config.components:
+    scoped_storage_ids: dict[str, set[str]] = {}
+    for helper_type in _SCOPED_STORAGE_HELPER_TYPES:
+        if type_filter not in (None, helper_type):
+            continue
+        if helper_type not in hass.config.components:
+            continue
         try:
-            zone_items = await async_ws_command(hass, "zone/list", {})
+            items = await async_ws_command(hass, f"{helper_type}/list", {})
         except WsDispatchError:
-            if type_filter == "zone":
+            if type_filter == helper_type:
                 return (
-                    _tool_error("Zone helper storage is unavailable."),
+                    _tool_error(
+                        f"{helper_type.capitalize()} helper storage is unavailable."
+                    ),
                     "invalid_request",
                     "list_helpers",
                 )
-        else:
-            if not isinstance(zone_items, list):
-                if type_filter == "zone":
-                    return (
-                        _tool_error("Zone helper storage is unavailable."),
-                        "invalid_request",
-                        "list_helpers",
-                    )
-            else:
-                storage_zone_ids = {
-                    row["id"] for row in zone_items
-                    if isinstance(row, dict) and isinstance(row.get("id"), str)
-                }
+            continue
+        if not isinstance(items, list):
+            if type_filter == helper_type:
+                return (
+                    _tool_error(
+                        f"{helper_type.capitalize()} helper storage is unavailable."
+                    ),
+                    "invalid_request",
+                    "list_helpers",
+                )
+            continue
+        scoped_storage_ids[helper_type] = {
+            row["id"] for row in items
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
     helpers: list[dict] = []
     for e in filter_entities_for_token(hass.states.async_all(), token, hass):
         domain = e["entity_id"].split(".")[0]
@@ -294,8 +642,9 @@ async def _tool_list_helpers(
         if type_filter and domain != type_filter:
             continue
         entry = registry.async_get(e["entity_id"])
-        if domain == "zone" and (
-            entry is None or entry.unique_id not in storage_zone_ids
+        if domain in _SCOPED_STORAGE_HELPER_TYPES and (
+            entry is None
+            or entry.unique_id not in scoped_storage_ids.get(domain, set())
         ):
             continue
         helpers.append({
@@ -339,58 +688,151 @@ def _helper_write_precheck(args: dict, tool_name: str, *, require_id: bool) -> t
                 "invalid_request",
                 tool_name,
             )
+    if args.get("helper_type") == "tag" and isinstance(config, dict):
+        allowed = _TAG_UPDATE_CONFIG_FIELDS if require_id else _TAG_CREATE_CONFIG_FIELDS
+        unknown = sorted(set(config) - allowed)
+        if unknown:
+            return (
+                _tool_error(
+                    "Unknown tag configuration fields: "
+                    f"{', '.join(unknown)}. Allowed fields are: "
+                    f"{', '.join(sorted(allowed))}."
+                ),
+                "invalid_request",
+                tool_name,
+            )
+        if tool_name == "edit_helper" and not config:
+            return (
+                _tool_error("Tag edit config must include name or description."),
+                "invalid_request",
+                tool_name,
+            )
+        if not require_id and (
+            not isinstance(config.get("tag_id"), str)
+            or not config["tag_id"].strip()
+        ):
+            return (
+                _tool_error("Tag creation requires a non-empty string tag_id."),
+                "invalid_request",
+                tool_name,
+            )
+        if "name" in config and (
+            not isinstance(config["name"], str) or not config["name"].strip()
+        ):
+            return (
+                _tool_error("Tag name must be a non-empty string."),
+                "invalid_request",
+                tool_name,
+            )
+        if "description" in config and not isinstance(config["description"], str):
+            return (
+                _tool_error("Tag description must be a string."),
+                "invalid_request",
+                tool_name,
+            )
     return None
 
 
-def _zone_create_scope_error(token: TokenRecord) -> str | None:
-    """Require inherited WRITE scope before creating a new zone entity.
+def _scoped_helper_create_scope_error(
+    helper_type: str, token: TokenRecord
+) -> str | None:
+    """Require inherited WRITE scope before creating a scoped helper entity.
 
     A new entity cannot already have an entity-specific grant. Requiring a
-    GREEN zone-domain grant (or pass-through scope) ensures the entity will be
+    GREEN domain grant (or pass-through scope) ensures the entity will be
     visible and manageable after it materializes. The executor still verifies
     the concrete entity because an entity-specific RED rule may override the
     inherited grant once the final entity_id is known.
     """
     if token.pass_through:
         return None
-    domain = token.permissions.domains.get("zone")
+    domain = token.permissions.domains.get(helper_type)
     if domain is not None and domain.state == "GREEN":
         return None
     return (
-        "Creating a zone requires write access to the entire zone domain, "
-        "because the new zone does not have an entity ID that can be scoped yet."
+        f"Creating a {helper_type} requires write access to the entire "
+        f"{helper_type} domain, because the new {helper_type} does not have an "
+        "entity ID that can be scoped yet."
     )
 
 
-async def _zone_helper_context(
+async def _tag_create_absence_error(
+    args: dict, hass: HomeAssistant, tool_name: str
+) -> tuple[dict, str, str] | None:
+    """Require an authoritative absent tag id before create and approval."""
+    if args.get("helper_type") != "tag":
+        return None
+    tag_id = str(dict_arg(args.get("config")).get("tag_id") or "").strip()
+    try:
+        items = await async_ws_command(hass, "tag/list", {})
+    except WsDispatchError:
+        return (
+            _tool_error("Tag helper storage is unavailable; nothing changed."),
+            "invalid_request",
+            tool_name,
+        )
+    if not isinstance(items, list):
+        return (
+            _tool_error("Tag helper storage is unavailable; nothing changed."),
+            "invalid_request",
+            tool_name,
+        )
+    if any(
+        isinstance(row, dict) and row.get("id") == tag_id for row in items
+    ):
+        return (
+            _tool_error("This tag_id is unavailable."),
+            "invalid_request",
+            tool_name,
+        )
+    return None
+
+
+def _scoped_helper_approval_context(
+    helper_type: str, entity_id: str, item: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the stable configuration that an approval actually reviews."""
+    if helper_type == "tag":
+        item = {
+            key: item[key] for key in ("id", "name", "description") if key in item
+        }
+    return {"entity_id": entity_id, "config": item}
+
+
+async def _scoped_helper_context(
     args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str,
 ) -> tuple[dict[str, Any] | None, tuple[dict, str, str] | None]:
-    """Resolve one writable storage zone and its approval-bound snapshot.
+    """Resolve one writable scoped storage helper and its stored config.
 
-    Zone authoring is stricter than ordinary helper authoring because its stored
-    record contains a precise location. The storage list proves the item is an
-    editable storage zone rather than the core home zone or a YAML-backed zone;
-    the entity permission check keeps an accessible zone from becoming a route
-    to another token's location data. A list failure is reported as unavailable,
-    never collapsed into an authoritative not-found result.
+    The storage list proves the item belongs to the editable collection rather
+    than merely sharing its entity domain. A list failure is reported as
+    unavailable, never collapsed into an authoritative not-found result.
     """
+    helper_type = str(args.get("helper_type") or "")
     helper_id = str(args.get("helper_id") or "").strip()
-    entity_id = _resolve_helper_entity_id(hass, "zone", helper_id)
+    entity_id = _resolve_helper_entity_id(hass, helper_type, helper_id)
     if entity_id is None or resolve(entity_id, token, hass) != Permission.WRITE:
         return None, (
-            _tool_error("Helper not found."), "not_found", f"helper:zone:{helper_id}"
+            _tool_error("Helper not found."), "not_found",
+            f"helper:{helper_type}:{helper_id}",
         )
     try:
-        items = await async_ws_command(hass, "zone/list", {})
+        items = await async_ws_command(hass, f"{helper_type}/list", {})
     except WsDispatchError:
         return None, (
-            _tool_error("Zone helper storage is unavailable; nothing changed."),
+            _tool_error(
+                f"{helper_type.capitalize()} helper storage is unavailable; "
+                "nothing changed."
+            ),
             "invalid_request",
             tool_name,
         )
     if not isinstance(items, list):
         return None, (
-            _tool_error("Zone helper storage is unavailable; nothing changed."),
+            _tool_error(
+                f"{helper_type.capitalize()} helper storage is unavailable; "
+                "nothing changed."
+            ),
             "invalid_request",
             tool_name,
         )
@@ -400,41 +842,52 @@ async def _zone_helper_context(
     )
     if item is None:
         return None, (
-            _tool_error("Helper not found."), "not_found", f"helper:zone:{helper_id}"
+            _tool_error("Helper not found."), "not_found",
+            f"helper:{helper_type}:{helper_id}",
         )
     return {"entity_id": entity_id, "config": item}, None
 
 
-async def _bind_zone_helper_context(
+async def _bind_scoped_helper_context(
     args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str,
 ) -> tuple[dict, tuple[dict, str, str] | None]:
-    """Attach an exact zone snapshot to edit/delete approval arguments."""
-    if args.get("helper_type") != "zone":
+    """Attach an exact stable snapshot to edit/delete approval arguments."""
+    helper_type = str(args.get("helper_type") or "")
+    if helper_type not in _SCOPED_STORAGE_HELPER_TYPES:
         return args, None
-    context, error = await _zone_helper_context(args, token, hass, tool_name)
+    context, error = await _scoped_helper_context(args, token, hass, tool_name)
     if error is not None:
         return args, error
     assert context is not None
     bound = dict(args)
-    bound[_HELPER_CONTEXT_FINGERPRINT] = content_hash(context)
+    bound[_HELPER_CONTEXT_FINGERPRINT] = content_hash(
+        _scoped_helper_approval_context(
+            helper_type, context["entity_id"], context["config"]
+        )
+    )
     return bound, None
 
 
-async def _revalidate_zone_helper_context(
+async def _revalidate_scoped_helper_context(
     args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str,
 ) -> tuple[dict[str, Any] | None, tuple[dict, str, str] | None]:
-    """Re-check zone scope, storage ownership, and any approval snapshot."""
-    if args.get("helper_type") != "zone":
+    """Re-check helper scope, storage ownership, and any approval snapshot."""
+    helper_type = str(args.get("helper_type") or "")
+    if helper_type not in _SCOPED_STORAGE_HELPER_TYPES:
         return None, None
-    context, error = await _zone_helper_context(args, token, hass, tool_name)
+    context, error = await _scoped_helper_context(args, token, hass, tool_name)
     if error is not None:
         return None, error
     assert context is not None
     saved = args.get(_HELPER_CONTEXT_FINGERPRINT)
-    if saved is not None and content_hash(context) != saved:
+    current = _scoped_helper_approval_context(
+        helper_type, context["entity_id"], context["config"]
+    )
+    if saved is not None and content_hash(current) != saved:
         return None, (
             _tool_error(
-                "This zone changed after the request was reviewed; nothing changed. "
+                f"This {helper_type} changed after the request was reviewed; "
+                "nothing changed. "
                 "Read it again and submit a new request."
             ),
             "invalid_request",
@@ -460,8 +913,15 @@ async def _tool_create_helper(
         pre = _helper_write_precheck(args, "create_helper", require_id=False)
         if pre is not None:
             return pre
-        if helper_type == "zone" and (scope_error := _zone_create_scope_error(token)):
-            return _tool_error(scope_error), "denied", "create_helper"
+        if helper_type in _SCOPED_STORAGE_HELPER_TYPES:
+            if scope_error := _scoped_helper_create_scope_error(
+                str(helper_type), token
+            ):
+                return _tool_error(scope_error), "denied", "create_helper"
+            if absence_error := await _tag_create_absence_error(
+                args, hass, "create_helper"
+            ):
+                return absence_error
     else:
         if not await _is_config_flow_helper(hass, helper_type):
             extra = (
@@ -504,14 +964,35 @@ async def _tool_create_helper(
             )
         if status != "ready":
             return _tool_error(str(detail)), "invalid_request", "create_helper"
-    blocked = await _gate(
-        "cap_helper_write", token, hass, data,
-        tool_name="create_helper", args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_create_helper(args, token, hass),
+    create_entity = _helper_create_mesa_entity(str(helper_type), args, hass)
+    mesa_context = _helper_mesa_context(
+        data,
+        token,
+        [create_entity],
+        action="create",
+        service_data={
+            "helper_type": helper_type,
+            "config": args.get("config"),
+            "flow_steps": args.get("flow_steps"),
+        },
+        session_id=request_id or "create_helper",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
+    approval_args, blocked = await _helper_mesa_approval_gate(
+        args,
+        token,
+        hass,
+        data,
+        context=mesa_context,
+        tool_name="create_helper",
+        request_id=request_id,
+        client_ip=client_ip,
+        diff_builder=lambda: _build_diff_create_helper(args, token, hass),
     )
     if blocked is not None:
         return blocked
-    return await _execute_create_helper(args, token, hass, data)
+    return await _execute_create_helper(approval_args, token, hass, data)
 
 
 async def _read_helper_config(hass: HomeAssistant, helper_type: str, helper_id: str) -> dict | None:
@@ -536,6 +1017,23 @@ async def _execute_create_helper(
 ) -> tuple[dict, str, str]:
     helper_type = args.get("helper_type")
     config = args.get("config")
+    create_entity = _helper_create_mesa_entity(str(helper_type), args, hass)
+    mesa_context = _enforce_helper_mesa_context(
+        args,
+        token,
+        hass,
+        data,
+        [create_entity],
+        action="create",
+        service_data={
+            "helper_type": helper_type,
+            "config": config,
+            "flow_steps": args.get("flow_steps"),
+        },
+        session_id="create_helper_execute",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
     if not _valid_helper_type(helper_type):
         if not await _is_config_flow_helper(hass, helper_type):
             return _tool_error("This is not a creatable helper config flow."), "invalid_request", "create_helper"
@@ -562,35 +1060,44 @@ async def _execute_create_helper(
             )
             return _tool_error(message), "invalid_request", "create_helper"
         return await _execute_config_flow_helper(
-            str(helper_type), flow_steps, token, hass, data
+            str(helper_type), flow_steps, token, hass, data,
+            create_mesa_context=mesa_context,
         )
     if not isinstance(config, dict) or not config:
         return _tool_error("config must be a non-empty object (at least 'name')."), "invalid_request", "create_helper"
     pre = _helper_write_precheck(args, "create_helper", require_id=False)
     if pre is not None:
         return pre
-    if helper_type == "zone" and (scope_error := _zone_create_scope_error(token)):
-        return _tool_error(scope_error), "denied", "create_helper"
+    if helper_type in _SCOPED_STORAGE_HELPER_TYPES:
+        if scope_error := _scoped_helper_create_scope_error(str(helper_type), token):
+            return _tool_error(scope_error), "denied", "create_helper"
+        if absence_error := await _tag_create_absence_error(
+            args, hass, "create_helper"
+        ):
+            return absence_error
     try:
         item = await async_ws_command(hass, f"{helper_type}/create", dict(config))
     except WsDispatchError as exc:
         return _tool_error(f"Failed to create helper: {exc}"), "invalid_request", "create_helper"
     new_id = item.get("id") if isinstance(item, dict) else None
-    if helper_type == "zone":
-        entity_id = (
-            _resolve_helper_entity_id(hass, "zone", str(new_id))
-            if new_id is not None else None
-        )
+    entity_id = (
+        _resolve_helper_entity_id(hass, str(helper_type), str(new_id))
+        if new_id is not None else None
+    )
+    if helper_type in _SCOPED_STORAGE_HELPER_TYPES:
         if entity_id is None or resolve(entity_id, token, hass) != Permission.WRITE:
             if new_id is not None:
                 try:
                     await async_ws_command(
-                        hass, "zone/delete", {"zone_id": str(new_id)}
+                        hass,
+                        f"{helper_type}/delete",
+                        {f"{helper_type}_id": str(new_id)},
                     )
                 except WsDispatchError:
                     return (
                         _tool_error(
-                            "The new zone did not enter this token's write scope, and "
+                            f"The new {helper_type} did not enter this token's write "
+                            "scope, and "
                             "automatic cleanup failed. Remove it in Home Assistant."
                         ),
                         "invalid_request",
@@ -598,12 +1105,59 @@ async def _execute_create_helper(
                     )
             return (
                 _tool_error(
-                    "The new zone did not enter this token's write scope, so it was "
-                    "removed and nothing changed."
+                    f"The new {helper_type} did not enter this token's write scope, "
+                    "so it was removed and nothing changed."
                 ),
                 "denied",
                 "create_helper",
             )
+    post_mesa = (
+        _helper_mesa_context(
+            data,
+            token,
+            [entity_id] if entity_id is not None else [],
+            action="create",
+            service_data={"helper_type": helper_type, "config": config},
+            session_id="create_helper_materialized",
+        )
+    )
+    post_error: tuple[dict, str, str] | None = None
+    if isinstance(post_mesa, tuple):
+        post_error = post_mesa
+    elif post_mesa.decision == "deny":
+        _fire_helper_mesa_blocks(hass, token, post_mesa)
+        post_error = _helper_mesa_error(post_mesa)
+    elif post_mesa.decision == "confirm" and not (
+        _restore_ctx.get() is not None
+        or (
+            _approved_exec_ctx.get()
+            and post_mesa.profile_fingerprints.issubset(
+                mesa_context.profile_fingerprints
+            )
+        )
+    ):
+        post_error = _helper_mesa_error(post_mesa, changed=True)
+    if post_error is not None:
+        if new_id is not None:
+            try:
+                await async_ws_command(
+                    hass,
+                    f"{helper_type}/delete",
+                    {f"{helper_type}_id": str(new_id)},
+                )
+            except WsDispatchError:
+                return (
+                    _tool_error(
+                        "MESA blocked the new helper, but automatic cleanup failed. "
+                        "Remove it in Home Assistant."
+                    ),
+                    "invalid_request",
+                    "create_helper",
+                )
+        return post_error
+    assert isinstance(post_mesa, _HelperMesaContext)
+    if post_mesa.warnings:
+        _mesa_advisory_ctx.set(True)
     await _record_version(
         data, token, resource_type="helper", resource_id=f"{helper_type}:{new_id}",
         action="create", before=None, after=config, alias=config.get("name"),
@@ -617,6 +1171,8 @@ async def _execute_config_flow_helper(
     token: TokenRecord,
     hass: HomeAssistant,
     data: PhoenixData,
+    *,
+    create_mesa_context: _HelperMesaContext,
 ) -> tuple[dict, str, str]:
     """Run the approved helper flow through its final form exactly once."""
     flow_id = None
@@ -702,6 +1258,49 @@ async def _execute_config_flow_helper(
         for registry_entry in registry.entities.values()
         if registry_entry.config_entry_id == entry.entry_id
     )
+    post_mesa = _helper_mesa_context(
+        data,
+        token,
+        entity_ids,
+        action="create",
+        service_data={"helper_type": helper_type},
+        session_id="create_helper_flow_materialized",
+    )
+    post_error: tuple[dict, str, str] | None = None
+    if isinstance(post_mesa, tuple):
+        post_error = post_mesa
+    elif post_mesa.decision == "deny":
+        _fire_helper_mesa_blocks(hass, token, post_mesa)
+        post_error = _helper_mesa_error(post_mesa)
+    elif post_mesa.decision == "confirm" and not (
+        _restore_ctx.get() is not None
+        or (
+            _approved_exec_ctx.get()
+            and post_mesa.profile_fingerprints.issubset(
+                create_mesa_context.profile_fingerprints
+            )
+        )
+    ):
+        post_error = _helper_mesa_error(post_mesa, changed=True)
+    if post_error is not None:
+        try:
+            await hass.config_entries.async_remove(entry.entry_id)
+        except Exception:  # noqa: BLE001 - report an unsafe partial create loudly
+            _LOGGER.exception(
+                "MESA blocked new helper entry %s but cleanup failed", entry.entry_id
+            )
+            return (
+                _tool_error(
+                    "MESA blocked the new helper, but automatic cleanup failed. "
+                    "Remove its configuration entry in Home Assistant."
+                ),
+                "invalid_request",
+                "create_helper",
+            )
+        return post_error
+    assert isinstance(post_mesa, _HelperMesaContext)
+    if post_mesa.warnings:
+        _mesa_advisory_ctx.set(True)
     await _record_version(
         data,
         token,
@@ -742,16 +1341,36 @@ async def _tool_edit_helper(
     pre = _helper_write_precheck(args, "edit_helper", require_id=True)
     if pre is not None:
         return pre
-    approval_args, context_error = await _bind_zone_helper_context(
+    approval_args, context_error = await _bind_scoped_helper_context(
         args, token, hass, "edit_helper"
     )
     if context_error is not None:
         return context_error
-    blocked = await _gate(
-        "cap_helper_write", token, hass, data,
-        tool_name="edit_helper", args=approval_args, request_id=request_id,
+    helper_type = str(args.get("helper_type"))
+    helper_id = str(args.get("helper_id") or "").strip()
+    entity_id = _resolve_helper_entity_id(hass, helper_type, helper_id)
+    if entity_id is None:
+        return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
+    mesa_context = _helper_mesa_context(
+        data,
+        token,
+        [entity_id],
+        action="edit",
+        service_data={"helper_type": helper_type, "config": args.get("config")},
+        session_id=request_id or "edit_helper",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
+    approval_args, blocked = await _helper_mesa_approval_gate(
+        approval_args,
+        token,
+        hass,
+        data,
+        context=mesa_context,
+        tool_name="edit_helper",
+        request_id=request_id,
         client_ip=client_ip,
-        diff=lambda: _build_diff_edit_helper(approval_args, token, hass),
+        diff_builder=lambda: _build_diff_edit_helper(approval_args, token, hass),
     )
     if blocked is not None:
         return blocked
@@ -773,20 +1392,33 @@ async def _execute_edit_helper(
     pre = _helper_write_precheck(args, "edit_helper", require_id=True)
     if pre is not None:
         return pre
-    zone_context, context_error = await _revalidate_zone_helper_context(
+    scoped_context, context_error = await _revalidate_scoped_helper_context(
         args, token, hass, "edit_helper"
     )
     if context_error is not None:
         return context_error
-    # Ordinary helper authoring is cap-gated rather than entity-scoped. Zone is
-    # the narrow exception above because its record contains a precise location.
+    # Ordinary helper authoring is cap-gated rather than entity-scoped. Zone and
+    # tag are the narrow exceptions above because their records carry sensitive
+    # location or scan metadata.
     # Every path still requires a real storage-backed helper entity.
     entity_id = _resolve_helper_entity_id(hass, str(helper_type), str(helper_id))
     if entity_id is None:
         return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
+    mesa_context = _enforce_helper_mesa_context(
+        args,
+        token,
+        hass,
+        data,
+        [entity_id],
+        action="edit",
+        service_data={"helper_type": helper_type, "config": config},
+        session_id="edit_helper_execute",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
     before_cfg = (
-        zone_context["config"]
-        if zone_context is not None
+        scoped_context["config"]
+        if scoped_context is not None
         else await _read_helper_config(hass, str(helper_type), str(helper_id))
     )
     payload = {f"{helper_type}_id": helper_id, **config}
@@ -813,16 +1445,36 @@ async def _tool_delete_helper(
     )
     if pre is not None:
         return pre
-    approval_args, context_error = await _bind_zone_helper_context(
+    approval_args, context_error = await _bind_scoped_helper_context(
         args, token, hass, "delete_helper"
     )
     if context_error is not None:
         return context_error
-    blocked = await _gate(
-        "cap_helper_write", token, hass, data,
-        tool_name="delete_helper", args=approval_args, request_id=request_id,
+    helper_type = str(args.get("helper_type"))
+    helper_id = str(args.get("helper_id") or "").strip()
+    entity_id = _resolve_helper_entity_id(hass, helper_type, helper_id)
+    if entity_id is None:
+        return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
+    mesa_context = _helper_mesa_context(
+        data,
+        token,
+        [entity_id],
+        action="delete",
+        service_data={"helper_type": helper_type},
+        session_id=request_id or "delete_helper",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
+    approval_args, blocked = await _helper_mesa_approval_gate(
+        approval_args,
+        token,
+        hass,
+        data,
+        context=mesa_context,
+        tool_name="delete_helper",
+        request_id=request_id,
         client_ip=client_ip,
-        diff=lambda: _build_diff_delete_helper(approval_args, token, hass),
+        diff_builder=lambda: _build_diff_delete_helper(approval_args, token, hass),
     )
     if blocked is not None:
         return blocked
@@ -838,19 +1490,31 @@ async def _execute_delete_helper(
         return _tool_error(f"helper_type must be one of: {', '.join(sorted(HELPER_TYPES))}."), "invalid_request", "delete_helper"
     if not helper_id:
         return _tool_error("helper_id is required."), "invalid_request", "delete_helper"
-    zone_context, context_error = await _revalidate_zone_helper_context(
+    scoped_context, context_error = await _revalidate_scoped_helper_context(
         args, token, hass, "delete_helper"
     )
     if context_error is not None:
         return context_error
-    # Ordinary helpers are cap-gated rather than entity-scoped. Zone has already
-    # passed the stricter storage ownership and WRITE-scope check above.
+    # Ordinary helpers are cap-gated rather than entity-scoped. Zone and tag have
+    # already passed the stricter storage ownership and WRITE-scope check above.
     entity_id = _resolve_helper_entity_id(hass, str(helper_type), str(helper_id))
     if entity_id is None:
         return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
+    mesa_context = _enforce_helper_mesa_context(
+        args,
+        token,
+        hass,
+        data,
+        [entity_id],
+        action="delete",
+        service_data={"helper_type": helper_type},
+        session_id="delete_helper_execute",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
     before_cfg = (
-        zone_context["config"]
-        if zone_context is not None
+        scoped_context["config"]
+        if scoped_context is not None
         else await _read_helper_config(hass, str(helper_type), str(helper_id))
     )
     try:
@@ -878,7 +1542,10 @@ def _build_diff_create_helper(args: dict, token: TokenRecord, hass: HomeAssistan
                 break
     return {
         "kind": "config_diff",
-        **_summary("create_helper", helper_type=helper_type, name=config.get("name", "<no name>")),
+        **_summary(
+            "create_helper", helper_type=helper_type,
+            name=config.get("name") or config.get("tag_id") or "<no name>",
+        ),
         "target": {"type": "helper", "id": None, "label": config.get("name")},
         "before": None,
         "after": _truncate(json.dumps(config, indent=2, default=str)),
@@ -952,6 +1619,49 @@ async def _helper_config_entry(hass: HomeAssistant, entry_id: Any) -> Any | None
     except IntegrationNotFound:
         return None
     return entry if integration.integration_type == "helper" else None
+
+
+def _config_entry_helper_entity_ids(hass: HomeAssistant, entry_id: str) -> list[str]:
+    """Every exact entity owned by one helper config entry."""
+    return sorted(
+        entry.entity_id
+        for entry in er.async_get(hass).entities.values()
+        if entry.config_entry_id == entry_id
+    )
+
+
+def _config_entry_helper_mesa_entities(
+    hass: HomeAssistant, entry: Any, data: PhoenixData
+) -> list[str] | tuple[dict, str, str]:
+    """Exact owners, or a harmless synthetic anchor only while MESA is off."""
+    entity_ids = _config_entry_helper_entity_ids(hass, entry.entry_id)
+    if entity_ids:
+        return entity_ids
+    if data.mesa_setup_failed is True:
+        return (
+            _tool_error(
+                "MESA is configured but unavailable, so helper ownership cannot be checked."
+            ),
+            "denied",
+            "set_helper_settings",
+        )
+    if isinstance(data.mesa, MesaRuntime):
+        try:
+            if data.store.get_settings().mesa_mode != "off":
+                return (
+                    _tool_error(
+                        "MESA cannot protect this helper because it has no registry entities; nothing changed."
+                    ),
+                    "denied",
+                    "set_helper_settings",
+                )
+        except Exception:  # noqa: BLE001 - unreadable safety mode fails closed
+            return (
+                _tool_error("MESA safety state could not be read; nothing changed."),
+                "denied",
+                "set_helper_settings",
+            )
+    return [f"{entry.domain}.__phoenix_helper_settings__"]
 
 
 # The two ways HA lets an entry be reconfigured, and they are NOT interchangeable.
@@ -1279,14 +1989,33 @@ async def _tool_set_config_entry_options(
         args.get("expected_hash"), _settings_store(entry, mechanism), tool)
     if conflict is not None:
         return conflict
-    blocked = await _gate(
-        "cap_helper_write", token, hass, data,
-        tool_name=tool, args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_set_config_entry_options(args, token, hass),
+    entity_ids = _config_entry_helper_mesa_entities(hass, entry, data)
+    if isinstance(entity_ids, tuple):
+        return entity_ids
+    mesa_context = _helper_mesa_context(
+        data,
+        token,
+        entity_ids,
+        action="settings",
+        service_data={"helper_type": entry.domain, "settings": args.get("settings")},
+        session_id=request_id or tool,
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
+    approval_args, blocked = await _helper_mesa_approval_gate(
+        args,
+        token,
+        hass,
+        data,
+        context=mesa_context,
+        tool_name=tool,
+        request_id=request_id,
+        client_ip=client_ip,
+        diff_builder=lambda: _build_diff_set_config_entry_options(args, token, hass),
     )
     if blocked is not None:
         return blocked
-    return await _execute_set_config_entry_options(args, token, hass, data)
+    return await _execute_set_config_entry_options(approval_args, token, hass, data)
 
 
 async def _execute_set_config_entry_options(
@@ -1307,6 +2036,21 @@ async def _execute_set_config_entry_options(
     conflict = _cas_conflict(args.get("expected_hash"), before, tool)
     if conflict is not None:
         return conflict
+    entity_ids = _config_entry_helper_mesa_entities(hass, entry, data)
+    if isinstance(entity_ids, tuple):
+        return entity_ids
+    mesa_context = _enforce_helper_mesa_context(
+        args,
+        token,
+        hass,
+        data,
+        entity_ids,
+        action="settings",
+        service_data={"helper_type": entry.domain, "settings": settings},
+        session_id="set_helper_settings_execute",
+    )
+    if isinstance(mesa_context, tuple):
+        return mesa_context
     if mechanism is None:  # refused by the precheck above; narrows for the type checker
         return _tool_error("This helper exposes no way to change its settings."), "invalid_request", tool
 
