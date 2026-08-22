@@ -127,7 +127,7 @@ class TestAdminEntityTree:
         ids = self._entity_ids(self._tree(hass))
         assert ORDINARY in ids, "the tree is empty; the absence test above proves nothing"
 
-    @pytest.mark.parametrize("domain", ["tag", "zone"])
+    @pytest.mark.parametrize("domain", ["person", "tag", "zone"])
     def test_creatable_domain_is_grantable_before_its_first_entity_exists(
             self, domain, hass, registry_with_a_phoenix_sensor):
         tree = self._tree(hass)

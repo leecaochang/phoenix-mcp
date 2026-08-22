@@ -422,13 +422,13 @@ def _build_entity_tree(hass: HomeAssistant) -> dict:
 
         tree[domain]["entity_details"][entity_id] = entity_info
 
-    # Zone and tag creation require inherited domain WRITE scope because their
+    # Zone, tag, and person creation require inherited domain WRITE scope because their
     # entity IDs do not exist until Home Assistant creates them. Keep both
     # grantable domains in the permission UI before their first registry-backed
     # user entity exists; otherwise the operator faces a chicken-and-egg
     # requirement. Each gains its ordinary children as soon as an entity
     # materializes and invalidates this cache.
-    for creatable_domain in ("tag", "zone"):
+    for creatable_domain in ("person", "tag", "zone"):
         tree.setdefault(
             creatable_domain,
             {"devices": {}, "deviceless_entities": [], "entity_details": {}},

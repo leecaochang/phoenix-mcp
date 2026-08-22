@@ -2241,7 +2241,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "list_helpers",
         "description": (
             "List Home Assistant helpers this token can access (input_boolean, input_number, "
-            "input_text, input_select, input_datetime, input_button, counter, timer, schedule, zone, tag), with each helper's id for editing."
+            "input_text, input_select, input_datetime, input_button, counter, timer, schedule, zone, tag, person), with each helper's id for editing. Person rows expose only accessible tracker relationships and whether a private user link exists, never the user id."
         ),
         "cap": "cap_registry_read",
         "inputSchema": {
@@ -2255,12 +2255,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "create_helper",
         "description": (
             "Create a Home Assistant helper. Storage helpers (input_boolean, input_number, input_text, "
-            "input_select, input_datetime, input_button, counter, timer, schedule, zone, tag) use config. A helper "
+            "input_select, input_datetime, input_button, counter, timer, schedule, zone, tag, person) use config. A helper "
             "integration that Home Assistant creates through a config flow, such as mold_indicator or "
             "history_stats, uses cumulative flow_steps instead: start with [] to receive its first real "
             "form schema, then append each {step_id, data} and call again. Incomplete flows are closed "
             "without creating anything; the final form is approval-gated. Creating a zone requires "
-            "write access to its entire entity domain so the new entity remains manageable. Tag creation "
+            "write access to its entire entity domain so the new entity remains manageable. Person creation similarly requires person-domain write plus write access to every proposed device tracker; only name and device_trackers are accepted, never a raw Home Assistant user id or picture. Tag creation "
             "requires tag_id and accepts only name/description metadata; scan history cannot be forged. "
             "Inherited MESA applies to the proposed helper and is rechecked after materialization; a "
             "new entity that resolves more restrictively than the approved proposal is removed. "
@@ -2291,12 +2291,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     },
     {
         "name": "edit_helper",
-        "description": "Update an existing helper's config by its helper_type and helper_id. Inherited MESA is resolved before approval and fingerprint-rechecked at execution. Zone and tag edits require write access to that entity and reject unknown configuration fields. Tags expose only name and description; scan history is read-only.",
+        "description": "Update an existing helper's config by its helper_type and helper_id. Inherited MESA is resolved before approval and fingerprint-rechecked at execution. Zone, tag, and person edits require write access to that storage entity and reject unknown fields. Person edits accept only name/device_trackers, require write access to every current and proposed tracker, and preserve private user/picture bindings. Tags expose only name and description; scan history is read-only.",
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, timer, zone, or tag."},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, timer, zone, tag, or person."},
                 "helper_id": {"type": "string", "description": "The helper id (from list_helpers)."},
                 "config": {"type": "object", "description": "Complete helper configuration to apply."},
             },
@@ -2305,7 +2305,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     },
     {
         "name": "delete_helper",
-        "description": "Permanently delete a helper by its helper_type and helper_id. Inherited MESA is resolved before approval and fingerprint-rechecked at execution. Zone and tag deletion require write access to that storage-backed entity. Scanning a deleted physical tag can make Home Assistant discover it again.",
+        "description": "Permanently delete a helper by its helper_type and helper_id. Inherited MESA is resolved before approval and fingerprint-rechecked at execution. Zone, tag, and person deletion require write access to that storage-backed entity; person deletion also requires write access to every linked tracker. Scanning a deleted physical tag can make Home Assistant discover it again.",
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",

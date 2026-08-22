@@ -2,7 +2,7 @@
 
 The storage-based helper domains only, listed in HELPER_TYPES: each publishes a
 uniform {type}/create|update|delete WS command whose item id key is
-"{type}_id", which is what makes one set of handlers cover all eleven.
+"{type}_id", which is what makes one set of handlers cover all twelve.
 Config-flow helpers use HA's config-entry flow manager instead. create_helper
 can replay their cumulative form steps, returning the next real schema until a
 last step is supplied; only that last step is approval-gated and submitted.
@@ -61,7 +61,13 @@ from ..tool_common import (
     _tool_success,
     _truncate,
 )
-from ..policy_engine import _ENTITY_ID_RE, Permission, filter_entities_for_token, resolve
+from ..policy_engine import (
+    _ENTITY_ID_RE,
+    Permission,
+    filter_entities_for_token,
+    resolve,
+    resolve_registry_access,
+)
 from ..token_store import TokenRecord
 
 _LOGGER = logging.getLogger(__name__)
@@ -80,7 +86,7 @@ _NOT_A_HELPER_ENTRY = (
 # types (template, group, utility_meter, etc.) are out of scope for now.
 HELPER_TYPES = frozenset({
     "input_boolean", "input_number", "input_text",
-    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone", "tag",
+    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone", "tag", "person",
 })
 
 _ZONE_CONFIG_FIELDS = frozenset({
@@ -88,7 +94,8 @@ _ZONE_CONFIG_FIELDS = frozenset({
 })
 _TAG_CREATE_CONFIG_FIELDS = frozenset({"tag_id", "name", "description"})
 _TAG_UPDATE_CONFIG_FIELDS = frozenset({"name", "description"})
-_SCOPED_STORAGE_HELPER_TYPES = frozenset({"tag", "zone"})
+_PERSON_CONFIG_FIELDS = frozenset({"name", "device_trackers"})
+_SCOPED_STORAGE_HELPER_TYPES = frozenset({"person", "tag", "zone"})
 _HELPER_CONTEXT_FINGERPRINT = "_phoenix_helper_context_fingerprint"
 _HELPER_MESA_FINGERPRINT = "_phoenix_helper_mesa_fingerprint"
 _HELPER_RESTORE_ID = "_phoenix_helper_restore_id"
@@ -421,6 +428,60 @@ def _valid_helper_type(helper_type: Any) -> bool:
     return isinstance(helper_type, str) and helper_type in HELPER_TYPES
 
 
+def _storage_items(helper_type: str, result: Any) -> list[dict[str, Any]] | None:
+    """Normalize a storage collection list without admitting YAML people."""
+    if helper_type == "person":
+        if not isinstance(result, dict) or not isinstance(result.get("storage"), list):
+            return None
+        result = result["storage"]
+    if not isinstance(result, list):
+        return None
+    return [item for item in result if isinstance(item, dict)]
+
+
+def _person_trackers(item: dict[str, Any]) -> tuple[str, ...] | None:
+    """Return a validated, duplicate-free person tracker relationship."""
+    value = item.get("device_trackers", [])
+    if not isinstance(value, list):
+        return None
+    trackers = tuple(value)
+    if any(
+        not isinstance(entity_id, str)
+        or not _ENTITY_ID_RE.fullmatch(entity_id)
+        or not entity_id.startswith("device_tracker.")
+        for entity_id in trackers
+    ) or len(set(trackers)) != len(trackers):
+        return None
+    return trackers
+
+
+def _person_relationships_accessible(
+    item: dict[str, Any], token: TokenRecord, hass: HomeAssistant, *, write: bool,
+) -> bool:
+    trackers = _person_trackers(item)
+    if trackers is None:
+        return False
+    allowed = {Permission.WRITE} if write else {Permission.READ, Permission.WRITE}
+    return all(
+        resolve_registry_access(entity_id, token, hass) in allowed
+        for entity_id in trackers
+    )
+
+
+def _public_helper_config(helper_type: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Project stored helper data into the MCP/version-history privacy boundary."""
+    if helper_type != "person":
+        return dict(item)
+    trackers = _person_trackers(item)
+    return {
+        **({"id": item["id"]} if isinstance(item.get("id"), str) else {}),
+        **({"name": item["name"]} if isinstance(item.get("name"), str) else {}),
+        "device_trackers": list(trackers or ()),
+        "has_user_link": bool(item.get("user_id")),
+        "has_picture": bool(item.get("picture")),
+    }
+
+
 async def _is_config_flow_helper(hass: HomeAssistant, helper_type: Any) -> bool:
     """Whether HA classifies this domain as a creatable helper config flow."""
     if (
@@ -584,7 +645,7 @@ def _resolve_helper_entity_id(hass: HomeAssistant, helper_type: str, helper_id: 
     list_helpers exposes entry.unique_id as the editable helper_id, so the reverse
     lookup matches on (domain == helper_type, unique_id == helper_id). Used by
     edit/delete as an existence check (the helper must resolve to a real
-    entity). Ordinary authoring is cap-gated; sensitive zone/tag writes add
+    entity). Ordinary authoring is cap-gated; sensitive zone/tag/person writes add
     entity scope and storage-membership checks.
     """
     registry = er.async_get(hass)
@@ -602,7 +663,7 @@ async def _tool_list_helpers(
         return _tool_error("Forbidden."), "denied", "list_helpers"
     type_filter = args.get("helper_type")
     registry = er.async_get(hass)
-    scoped_storage_ids: dict[str, set[str]] = {}
+    scoped_storage_items: dict[str, dict[str, dict[str, Any]]] = {}
     for helper_type in _SCOPED_STORAGE_HELPER_TYPES:
         if type_filter not in (None, helper_type):
             continue
@@ -620,7 +681,8 @@ async def _tool_list_helpers(
                     "list_helpers",
                 )
             continue
-        if not isinstance(items, list):
+        storage_items = _storage_items(helper_type, items)
+        if storage_items is None:
             if type_filter == helper_type:
                 return (
                     _tool_error(
@@ -630,9 +692,9 @@ async def _tool_list_helpers(
                     "list_helpers",
                 )
             continue
-        scoped_storage_ids[helper_type] = {
-            row["id"] for row in items
-            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        scoped_storage_items[helper_type] = {
+            row["id"]: row for row in storage_items
+            if isinstance(row.get("id"), str)
         }
     helpers: list[dict] = []
     for e in filter_entities_for_token(hass.states.async_all(), token, hass):
@@ -642,17 +704,33 @@ async def _tool_list_helpers(
         if type_filter and domain != type_filter:
             continue
         entry = registry.async_get(e["entity_id"])
-        if domain in _SCOPED_STORAGE_HELPER_TYPES and (
-            entry is None
-            or entry.unique_id not in scoped_storage_ids.get(domain, set())
+        stored_item = (
+            scoped_storage_items.get(domain, {}).get(entry.unique_id)
+            if entry is not None else None
+        )
+        if domain in _SCOPED_STORAGE_HELPER_TYPES and stored_item is None:
+            continue
+        if domain == "person" and (
+            stored_item is None
+            or not _person_relationships_accessible(
+                stored_item, token, hass, write=False
+            )
         ):
             continue
-        helpers.append({
+        helper = {
             "entity_id": e["entity_id"],
             "helper_type": domain,
             "name": e.get("attributes", {}).get("friendly_name"),
             "helper_id": entry.unique_id if entry is not None else None,
-        })
+        }
+        if domain == "person" and stored_item is not None:
+            public = _public_helper_config(domain, stored_item)
+            helper.update({
+                "device_trackers": public["device_trackers"],
+                "tracker_count": len(public["device_trackers"]),
+                "has_user_link": public["has_user_link"],
+            })
+        helpers.append(helper)
     helpers.sort(key=lambda h: h["entity_id"])
     return _tool_success(json.dumps({"count": len(helpers), "helpers": helpers}, default=str)), "allowed", "list_helpers"
 
@@ -730,6 +808,50 @@ def _helper_write_precheck(args: dict, tool_name: str, *, require_id: bool) -> t
                 "invalid_request",
                 tool_name,
             )
+    if args.get("helper_type") == "person" and isinstance(config, dict):
+        unknown = sorted(set(config) - _PERSON_CONFIG_FIELDS)
+        if unknown:
+            return (
+                _tool_error(
+                    "Unknown person configuration fields: "
+                    f"{', '.join(unknown)}. Phoenix accepts only name and "
+                    "device_trackers; user links and pictures remain private "
+                    "and must be managed in Home Assistant."
+                ),
+                "invalid_request",
+                tool_name,
+            )
+        if not require_id and (
+            not isinstance(config.get("name"), str) or not config["name"].strip()
+        ):
+            return (
+                _tool_error("Person creation requires a non-empty string name."),
+                "invalid_request",
+                tool_name,
+            )
+        if "name" in config and (
+            not isinstance(config["name"], str) or not config["name"].strip()
+        ):
+            return (
+                _tool_error("Person name must be a non-empty string."),
+                "invalid_request",
+                tool_name,
+            )
+        if tool_name == "edit_helper" and not config:
+            return (
+                _tool_error("Person edit config must include name or device_trackers."),
+                "invalid_request",
+                tool_name,
+            )
+        if "device_trackers" in config and _person_trackers(config) is None:
+            return (
+                _tool_error(
+                    "device_trackers must be a duplicate-free array of "
+                    "device_tracker entity IDs."
+                ),
+                "invalid_request",
+                tool_name,
+            )
     return None
 
 
@@ -788,6 +910,18 @@ async def _tag_create_absence_error(
     return None
 
 
+def _person_relationship_scope_error(
+    config: dict[str, Any], token: TokenRecord, hass: HomeAssistant,
+) -> str | None:
+    """Require WRITE for every person tracker without identifying hidden links."""
+    if not _person_relationships_accessible(config, token, hass, write=True):
+        return (
+            "This person references an unavailable or out-of-scope device "
+            "tracker. Write access to every linked tracker is required; nothing changed."
+        )
+    return None
+
+
 def _scoped_helper_approval_context(
     helper_type: str, entity_id: str, item: dict[str, Any]
 ) -> dict[str, Any]:
@@ -795,6 +929,15 @@ def _scoped_helper_approval_context(
     if helper_type == "tag":
         item = {
             key: item[key] for key in ("id", "name", "description") if key in item
+        }
+    elif helper_type == "person":
+        # The returned value is immediately hashed into the approval arguments.
+        # Keeping the raw private binding inside the hash detects user-link and
+        # picture drift while never exposing either value in a diff or response.
+        item = {
+            key: item[key]
+            for key in ("id", "name", "user_id", "device_trackers", "picture")
+            if key in item
         }
     return {"entity_id": entity_id, "config": item}
 
@@ -827,7 +970,8 @@ async def _scoped_helper_context(
             "invalid_request",
             tool_name,
         )
-    if not isinstance(items, list):
+    storage_items = _storage_items(helper_type, items)
+    if storage_items is None:
         return None, (
             _tool_error(
                 f"{helper_type.capitalize()} helper storage is unavailable; "
@@ -837,12 +981,23 @@ async def _scoped_helper_context(
             tool_name,
         )
     item = next(
-        (row for row in items if isinstance(row, dict) and row.get("id") == helper_id),
+        (row for row in storage_items if row.get("id") == helper_id),
         None,
     )
     if item is None:
         return None, (
             _tool_error("Helper not found."), "not_found",
+            f"helper:{helper_type}:{helper_id}",
+        )
+    if helper_type == "person" and not _person_relationships_accessible(
+        item, token, hass, write=True
+    ):
+        return None, (
+            _tool_error(
+                "Helper not found or one of its relationships is outside this "
+                "token's write scope."
+            ),
+            "not_found",
             f"helper:{helper_type}:{helper_id}",
         )
     return {"entity_id": entity_id, "config": item}, None
@@ -922,6 +1077,12 @@ async def _tool_create_helper(
                 args, hass, "create_helper"
             ):
                 return absence_error
+            if helper_type == "person" and (
+                relationship_error := _person_relationship_scope_error(
+                    dict_arg(args.get("config")), token, hass
+                )
+            ):
+                return _tool_error(relationship_error), "denied", "create_helper"
     else:
         if not await _is_config_flow_helper(hass, helper_type):
             extra = (
@@ -1002,10 +1163,11 @@ async def _read_helper_config(hass: HomeAssistant, helper_type: str, helper_id: 
     so any dispatch error degrades to no `before` rather than raising.
     """
     try:
-        items = await async_ws_command(hass, f"{helper_type}/list", {})
+        result = await async_ws_command(hass, f"{helper_type}/list", {})
     except WsDispatchError:
         return None
-    if not isinstance(items, list):
+    items = _storage_items(helper_type, result)
+    if items is None:
         return None
     return next(
         (it for it in items if isinstance(it, dict) and it.get("id") == helper_id), None
@@ -1075,11 +1237,55 @@ async def _execute_create_helper(
             args, hass, "create_helper"
         ):
             return absence_error
+        if helper_type == "person" and (
+            relationship_error := _person_relationship_scope_error(
+                config, token, hass
+            )
+        ):
+            return _tool_error(relationship_error), "denied", "create_helper"
+    create_payload = dict(config)
+    restore_id = args.get(_HELPER_RESTORE_ID)
+    if helper_type == "person" and isinstance(restore_id, str):
+        # person/create offers no explicit id. Seed the name with the original
+        # storage id, then apply the restored friendly name after HA allocates
+        # that exact id.
+        create_payload["name"] = restore_id
     try:
-        item = await async_ws_command(hass, f"{helper_type}/create", dict(config))
+        item = await async_ws_command(hass, f"{helper_type}/create", create_payload)
     except WsDispatchError as exc:
         return _tool_error(f"Failed to create helper: {exc}"), "invalid_request", "create_helper"
     new_id = item.get("id") if isinstance(item, dict) else None
+    if (
+        helper_type == "person"
+        and isinstance(restore_id, str)
+        and new_id == restore_id
+        and config.get("name") != restore_id
+    ):
+        try:
+            item = await async_ws_command(
+                hass,
+                "person/update",
+                {"person_id": restore_id, **config},
+            )
+        except WsDispatchError as exc:
+            try:
+                await async_ws_command(
+                    hass, "person/delete", {"person_id": restore_id}
+                )
+            except WsDispatchError:
+                return (
+                    _tool_error(
+                        "Failed to finish restoring the person and automatic cleanup "
+                        "failed. Remove it in Home Assistant."
+                    ),
+                    "invalid_request",
+                    "create_helper",
+                )
+            return (
+                _tool_error(f"Failed to finish restoring the person: {exc}"),
+                "invalid_request",
+                "create_helper",
+            )
     entity_id = (
         _resolve_helper_entity_id(hass, str(helper_type), str(new_id))
         if new_id is not None else None
@@ -1111,6 +1317,58 @@ async def _execute_create_helper(
                 "denied",
                 "create_helper",
             )
+        if helper_type == "person" and (
+            not isinstance(item, dict)
+            or not _person_relationships_accessible(item, token, hass, write=True)
+        ):
+            if new_id is not None:
+                try:
+                    await async_ws_command(
+                        hass, "person/delete", {"person_id": str(new_id)}
+                    )
+                except WsDispatchError:
+                    return (
+                        _tool_error(
+                            "The new person has an inaccessible relationship and "
+                            "automatic cleanup failed. Remove it in Home Assistant."
+                        ),
+                        "invalid_request",
+                        "create_helper",
+                    )
+            return (
+                _tool_error(
+                    "The new person has an inaccessible relationship, so it was "
+                    "removed and nothing changed."
+                ),
+                "denied",
+                "create_helper",
+            )
+    if (
+        helper_type == "person"
+        and isinstance(restore_id, str)
+        and new_id != restore_id
+    ):
+        if new_id is not None:
+            try:
+                await async_ws_command(
+                    hass, "person/delete", {"person_id": str(new_id)}
+                )
+            except WsDispatchError:
+                return (
+                    _tool_error(
+                        "Home Assistant assigned a different person ID and automatic "
+                        "cleanup failed. Remove it in Home Assistant."
+                    ),
+                    "invalid_request",
+                    "create_helper",
+                )
+        return (
+            _tool_error(
+                "The original person ID is unavailable, so the restore was rolled back."
+            ),
+            "invalid_request",
+            "create_helper",
+        )
     post_mesa = (
         _helper_mesa_context(
             data,
@@ -1158,11 +1416,17 @@ async def _execute_create_helper(
     assert isinstance(post_mesa, _HelperMesaContext)
     if post_mesa.warnings:
         _mesa_advisory_ctx.set(True)
+    public_item = (
+        _public_helper_config(str(helper_type), item)
+        if helper_type == "person" and isinstance(item, dict)
+        else item if isinstance(item, dict) else dict(config)
+    )
+    version_after = public_item if helper_type == "person" else config
     await _record_version(
         data, token, resource_type="helper", resource_id=f"{helper_type}:{new_id}",
-        action="create", before=None, after=config, alias=config.get("name"),
+        action="create", before=None, after=version_after, alias=config.get("name"),
     )
-    return _tool_success(json.dumps({"helper_type": helper_type, "helper": item}, default=str)), "allowed", f"helper:{helper_type}"
+    return _tool_success(json.dumps({"helper_type": helper_type, "helper": public_item}, default=str)), "allowed", f"helper:{helper_type}"
 
 
 async def _execute_config_flow_helper(
@@ -1346,6 +1610,14 @@ async def _tool_edit_helper(
     )
     if context_error is not None:
         return context_error
+    if args.get("helper_type") == "person" and "device_trackers" in dict_arg(
+        args.get("config")
+    ) and (
+        relationship_error := _person_relationship_scope_error(
+            dict_arg(args.get("config")), token, hass
+        )
+    ):
+        return _tool_error(relationship_error), "denied", "edit_helper"
     helper_type = str(args.get("helper_type"))
     helper_id = str(args.get("helper_id") or "").strip()
     entity_id = _resolve_helper_entity_id(hass, helper_type, helper_id)
@@ -1397,9 +1669,9 @@ async def _execute_edit_helper(
     )
     if context_error is not None:
         return context_error
-    # Ordinary helper authoring is cap-gated rather than entity-scoped. Zone and
-    # tag are the narrow exceptions above because their records carry sensitive
-    # location or scan metadata.
+    # Ordinary helper authoring is cap-gated rather than entity-scoped. Zone,
+    # tag, and person are the narrow exceptions because their records carry
+    # sensitive location, scan, user, or tracker relationships.
     # Every path still requires a real storage-backed helper entity.
     entity_id = _resolve_helper_entity_id(hass, str(helper_type), str(helper_id))
     if entity_id is None:
@@ -1421,16 +1693,44 @@ async def _execute_edit_helper(
         if scoped_context is not None
         else await _read_helper_config(hass, str(helper_type), str(helper_id))
     )
+    if helper_type == "person":
+        if "device_trackers" in config and (
+            relationship_error := _person_relationship_scope_error(
+                config, token, hass
+            )
+        ):
+            return _tool_error(relationship_error), "denied", "edit_helper"
+        # HA's person/update schema defaults an omitted tracker list to [], so a
+        # name-only edit must explicitly merge the stored relationship. user_id
+        # and picture are omitted intentionally: HA preserves both on update.
+        current = scoped_context["config"] if scoped_context is not None else {}
+        config = {
+            **config,
+            "device_trackers": list(
+                config.get("device_trackers", current.get("device_trackers", []))
+            ),
+        }
     payload = {f"{helper_type}_id": helper_id, **config}
     try:
         item = await async_ws_command(hass, f"{helper_type}/update", payload)
     except WsDispatchError as exc:
         return _tool_error(f"Failed to edit helper: {exc}"), "invalid_request", "edit_helper"
+    public_before = (
+        _public_helper_config(str(helper_type), before_cfg)
+        if helper_type == "person" and isinstance(before_cfg, dict)
+        else before_cfg
+    )
+    public_item = (
+        _public_helper_config(str(helper_type), item)
+        if helper_type == "person" and isinstance(item, dict)
+        else item if isinstance(item, dict) else dict(config)
+    )
+    version_after = public_item if helper_type == "person" else config
     await _record_version(
         data, token, resource_type="helper", resource_id=f"{helper_type}:{helper_id}",
-        action="edit", before=before_cfg, after=config, alias=config.get("name"),
+        action="edit", before=public_before, after=version_after, alias=config.get("name"),
     )
-    return _tool_success(json.dumps({"helper_type": helper_type, "helper": item}, default=str)), "allowed", f"helper:{helper_type}:{helper_id}"
+    return _tool_success(json.dumps({"helper_type": helper_type, "helper": public_item}, default=str)), "allowed", f"helper:{helper_type}:{helper_id}"
 
 
 async def _tool_delete_helper(
@@ -1495,8 +1795,8 @@ async def _execute_delete_helper(
     )
     if context_error is not None:
         return context_error
-    # Ordinary helpers are cap-gated rather than entity-scoped. Zone and tag have
-    # already passed the stricter storage ownership and WRITE-scope check above.
+    # Ordinary helpers are cap-gated rather than entity-scoped. Zone, tag, and
+    # person have passed stricter storage ownership and WRITE-scope checks above.
     entity_id = _resolve_helper_entity_id(hass, str(helper_type), str(helper_id))
     if entity_id is None:
         return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
@@ -1521,10 +1821,15 @@ async def _execute_delete_helper(
         await async_ws_command(hass, f"{helper_type}/delete", {f"{helper_type}_id": helper_id})
     except WsDispatchError as exc:
         return _tool_error(f"Failed to delete helper: {exc}"), "invalid_request", "delete_helper"
+    public_before = (
+        _public_helper_config(str(helper_type), before_cfg)
+        if helper_type == "person" and isinstance(before_cfg, dict)
+        else before_cfg
+    )
     await _record_version(
         data, token, resource_type="helper", resource_id=f"{helper_type}:{helper_id}",
-        action="delete", before=before_cfg, after=None,
-        alias=before_cfg.get("name") if isinstance(before_cfg, dict) else None,
+        action="delete", before=public_before, after=None,
+        alias=public_before.get("name") if isinstance(public_before, dict) else None,
     )
     return _tool_success(f"Helper '{helper_id}' deleted successfully."), "allowed", f"helper:{helper_type}:{helper_id}"
 

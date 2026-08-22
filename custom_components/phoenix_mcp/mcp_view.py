@@ -4965,6 +4965,17 @@ async def async_restore_version(
                 }
                 if not exists:
                     target["tag_id"] = hid
+            elif ht == "person":
+                # Person versions deliberately store only privacy-safe booleans
+                # for HA user/picture bindings. Existing-person rollback preserves
+                # those private fields by omission; deleted-person recreation is
+                # intentionally unlinked and pictureless rather than persisting a
+                # raw HA user id or private path in Changes history.
+                target = {
+                    key: target[key]
+                    for key in ("name", "device_trackers")
+                    if key in target
+                }
             if exists:
                 return await _execute_edit_helper({"helper_type": ht, "helper_id": hid, "config": target}, token, hass, data)
             return await _execute_create_helper(

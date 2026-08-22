@@ -1467,6 +1467,7 @@ APPROVAL_SUMMARY_UI: dict[str, str] = {
     "named.kind.schedule": "schedule helper",
     "named.kind.zone": "zone helper",
     "named.kind.tag": "tag helper",
+    "named.kind.person": "person helper",
     "named.resource.createTitle": "Create {kind} '{label}'",
     "named.resource.editTitle": "Edit {kind} '{label}'",
     "named.resource.deleteTitle": "Delete {kind} '{label}'",

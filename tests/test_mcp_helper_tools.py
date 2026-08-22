@@ -32,6 +32,8 @@ def _token(**caps) -> TokenRecord:
         "schedule": PermissionNode(state="GREEN"),
         "zone": PermissionNode(state="GREEN"),
         "tag": PermissionNode(state="GREEN"),
+        "person": PermissionNode(state="GREEN"),
+        "device_tracker": PermissionNode(state="GREEN"),
         "sensor": PermissionNode(state="GREEN"),
     }))
     base = {"cap_helper_write": "allow", "cap_registry_read": "allow"}
@@ -1390,6 +1392,210 @@ class TestTagLifecycle:
             allow_token, hass, data,
         )
         assert outcome == "allowed"
+
+
+class TestPersonLifecycle:
+    """Prove person CRUD is storage-only and keeps private relationships private."""
+
+    @staticmethod
+    async def _setup(hass: HomeAssistant) -> None:
+        assert await async_setup_component(
+            hass, "person",
+            {"person": [{"id": "yaml_person", "name": "YAML person"}]},
+        )
+        hass.states.async_set("device_tracker.phone", "home")
+        hass.states.async_set("device_tracker.watch", "not_home")
+        await hass.async_block_till_done()
+
+    async def test_precheck_and_relationship_scope_before_approval(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        await self._setup(hass)
+        data = MagicMock()
+        for forbidden in ("user_id", "picture"):
+            result, outcome, _ = await _call_tool(
+                "create_helper",
+                {"helper_type": "person", "config": {
+                    "name": "Private", forbidden: "secret",
+                }},
+                _token(cap_helper_write="confirm"), hass, data,
+            )
+            assert outcome == "invalid_request"
+            assert "Unknown person configuration fields" in result["content"][0]["text"]
+        malformed, outcome, _ = await _call_tool(
+            "create_helper",
+            {"helper_type": "person", "config": {
+                "name": "Duplicate",
+                "device_trackers": ["device_tracker.phone", "device_tracker.phone"],
+            }},
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "duplicate-free" in malformed["content"][0]["text"]
+        unscoped, outcome, _ = await _call_tool(
+            "create_helper",
+            {"helper_type": "person", "config": {
+                "name": "Hidden tracker",
+                "device_trackers": ["device_tracker.phone"],
+            }},
+            _token(cap_helper_write="confirm", permissions=PermissionTree(domains={
+                "person": PermissionNode(state="GREEN"),
+                "device_tracker": PermissionNode(state="RED"),
+            })),
+            hass, data,
+        )
+        assert outcome == "denied"
+        assert "out-of-scope device tracker" in unscoped["content"][0]["text"]
+
+    async def test_private_projection_merge_scope_delete_and_restore(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.mcp_view import async_restore_version
+        from custom_components.phoenix_mcp.ws_dispatch import async_ws_command
+
+        await self._setup(hass)
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=versions,
+        )
+        token = _token()
+        linked_user = await hass.auth.async_create_user("Linked person user")
+        raw = await async_ws_command(hass, "person/create", {
+            "name": "Private person",
+            "user_id": linked_user.id,
+            "device_trackers": ["device_tracker.phone"],
+            "picture": "/local/private-person.png",
+        })
+        helper_id = raw["id"]
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id("person", "person", helper_id)
+        assert entity_id is not None
+        listed_result, outcome, _ = await _call_tool(
+            "list_helpers", {"helper_type": "person"}, token, hass, data,
+        )
+        assert outcome == "allowed"
+        listed = _json(listed_result)["helpers"]
+        assert listed == [{
+            "entity_id": entity_id, "helper_type": "person",
+            "name": "Private person", "helper_id": helper_id,
+            "device_trackers": ["device_tracker.phone"],
+            "tracker_count": 1, "has_user_link": True,
+        }]
+        assert linked_user.id not in json.dumps(listed_result)
+        assert "private-person.png" not in json.dumps(listed_result)
+        assert all(row["helper_id"] != "yaml_person" for row in listed)
+        edited_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {"helper_type": "person", "helper_id": helper_id,
+             "config": {"name": "Private person renamed"}},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        edited = _json(edited_result)["helper"]
+        assert edited["device_trackers"] == ["device_tracker.phone"]
+        assert edited["has_user_link"] is True
+        assert "user_id" not in edited and "picture" not in edited
+        stored = (await async_ws_command(hass, "person/list", {}))["storage"][0]
+        assert stored["user_id"] == linked_user.id
+        assert stored["picture"] == "/local/private-person.png"
+        assert stored["device_trackers"] == ["device_tracker.phone"]
+        hidden_token = _token(permissions=PermissionTree(domains={
+            "person": PermissionNode(state="GREEN"),
+            "device_tracker": PermissionNode(state="RED"),
+        }))
+        hidden_list, outcome, _ = await _call_tool(
+            "list_helpers", {"helper_type": "person"}, hidden_token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(hidden_list)["helpers"] == []
+        denied, outcome, _ = await _call_tool(
+            "delete_helper", {"helper_type": "person", "helper_id": helper_id},
+            hidden_token, hass, data,
+        )
+        assert outcome == "not_found"
+        assert linked_user.id not in json.dumps(denied)
+        _, outcome, _ = await _call_tool(
+            "delete_helper", {"helper_type": "person", "helper_id": helper_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert registry.async_get_entity_id("person", "person", helper_id) is None
+        deleted = versions.list_for("helper", f"person:{helper_id}")[0]
+        assert deleted.before["has_user_link"] is True
+        assert deleted.before["has_picture"] is True
+        assert linked_user.id not in json.dumps(deleted.before)
+        assert "private-person.png" not in json.dumps(deleted.before)
+        restored_result, outcome, _ = await async_restore_version(
+            deleted, "admin-person", hass, data,
+        )
+        assert outcome == "allowed"
+        restored = _json(restored_result)["helper"]
+        assert restored["id"] == helper_id
+        assert restored["device_trackers"] == ["device_tracker.phone"]
+        assert restored["has_user_link"] is False
+        assert restored["has_picture"] is False
+        assert registry.async_get_entity_id("person", "person", helper_id) is not None
+        _, outcome, _ = await _call_tool(
+            "delete_helper", {"helper_type": "person", "helper_id": helper_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+
+    async def test_private_user_link_drift_invalidates_approval_without_leaking_id(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from custom_components.phoenix_mcp.mcp_view import async_execute_approved_tool
+        from custom_components.phoenix_mcp.ws_dispatch import async_ws_command
+
+        class ApprovalStore:
+            def __init__(self) -> None:
+                self.pending: list[dict] = []
+                self.async_lock = asyncio.Lock()
+                self.async_save = AsyncMock()
+
+            def get_pending_approvals(self) -> list[dict]:
+                return self.pending
+
+            def set_pending_approvals(self, value: list[dict]) -> None:
+                self.pending = value
+
+        await self._setup(hass)
+        first = await hass.auth.async_create_user("First linked user")
+        second = await hass.auth.async_create_user("Second linked user")
+        raw = await async_ws_command(
+            hass, "person/create", {"name": "Approval person", "user_id": first.id},
+        )
+        store = ApprovalStore()
+        data = PhoenixData(
+            store=store, rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=VersionStore(),
+        )
+        token = _token(cap_helper_write="confirm")
+        _, outcome, _ = await _call_tool(
+            "edit_helper",
+            {"helper_type": "person", "helper_id": raw["id"],
+             "config": {"name": "Reviewed rename"}},
+            token, hass, data,
+        )
+        assert outcome == "pending_approval"
+        approved_args = store.pending[0]["args"]
+        assert first.id not in json.dumps(approved_args)
+        await async_ws_command(
+            hass, "person/update", {"person_id": raw["id"], "user_id": second.id},
+        )
+        executed = await async_execute_approved_tool(
+            "edit_helper", approved_args, token, hass, data,
+        )
+        assert executed[1] == "invalid_request"
+        text = executed[0]["content"][0]["text"]
+        assert "changed after the request was reviewed" in text
+        assert first.id not in text and second.id not in text
+        stored = (await async_ws_command(hass, "person/list", {}))["storage"][0]
+        assert stored["name"] == "Approval person"
+        assert stored["user_id"] == second.id
+        await async_ws_command(hass, "person/delete", {"person_id": raw["id"]})
 
 
 class TestScheduleLifecycle:

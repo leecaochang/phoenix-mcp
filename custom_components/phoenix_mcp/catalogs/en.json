@@ -1813,6 +1813,7 @@
       "named.kind.input_number": "number helper",
       "named.kind.input_select": "dropdown helper",
       "named.kind.input_text": "text helper",
+      "named.kind.person": "person helper",
       "named.kind.scene": "scene",
       "named.kind.schedule": "schedule helper",
       "named.kind.script": "script",
