@@ -112,7 +112,8 @@ AGENTCLI_SECRETS_STORAGE_KEY = "phoenix_mcp_agentcli_secrets"
 AGENTCLI_SECRETS_STORAGE_VERSION = 1
 AGENTCLI_PROVIDERS = frozenset({
     "claude", "deepseek", "chatgpt", "gemini", "grok", "kimi", "meta",
-    "minimax", "mistral", "openrouter", "nvidia", "ollama", "ollama_cloud"})
+    "minimax", "mistral", "openrouter", "nvidia", "ollama", "ollama_cloud",
+    "zai", "groq", "together", "cerebras", "fireworks", "qwen"})
 # Default endpoints/models; the panel may override the model per conversation.
 AGENTCLI_CLAUDE_BASE_URL = "https://api.anthropic.com"
 AGENTCLI_CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
@@ -178,6 +179,14 @@ AGENTCLI_NVIDIA_DEFAULT_MODEL = ""
 # model from the installed list. Ollama Cloud is the same wire format but hosted
 # at a fixed URL and authenticated with an API key (Authorization: Bearer).
 AGENTCLI_OLLAMA_CLOUD_BASE_URL = "https://ollama.com"
+# Additional OpenAI-compatible providers. Z.ai has two fixed plans selected by
+# endpoint id; Qwen uses the workspace-specific URL supplied by the operator.
+AGENTCLI_ZAI_BASE_URL = "https://api.z.ai/api/paas/v4"
+AGENTCLI_ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+AGENTCLI_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+AGENTCLI_TOGETHER_BASE_URL = "https://api.together.ai/v1"
+AGENTCLI_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
+AGENTCLI_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 AGENTCLI_DEFAULT_MAX_TOKENS = 8192
 # Explicit output cap sent to DeepSeek only. DeepSeek's undocumented default
 # (historically 4K non-thinking / 32K thinking) truncated a large tool call
@@ -224,6 +233,7 @@ AGENTCLI_LEARNABLE_OPTIONS = {
     "reasoning_effort": "thinking",
     "thinking": "thinking",
     "think": "thinking",
+    "enable_thinking": "thinking",
 }
 # Per-turn cap on provider<->tool round trips before the loop pauses. In the
 # interactive chat this is a "continue?" checkpoint (the operator can grant

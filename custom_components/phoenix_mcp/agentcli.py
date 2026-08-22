@@ -70,6 +70,7 @@ from .const import (
     AGENTCLI_GEMINI_DEFAULT_MODEL,
     AGENTCLI_GROK_BASE_URL,
     AGENTCLI_GROK_DEFAULT_MODEL,
+    AGENTCLI_GROQ_BASE_URL,
     AGENTCLI_KIMI_BASE_URL,
     AGENTCLI_KIMI_DEFAULT_MODEL,
     AGENTCLI_META_BASE_URL,
@@ -78,11 +79,16 @@ from .const import (
     AGENTCLI_MINIMAX_DEFAULT_MODEL,
     AGENTCLI_MINIMAX_MODELS,
     AGENTCLI_MISTRAL_BASE_URL,
+    AGENTCLI_CEREBRAS_BASE_URL,
+    AGENTCLI_FIREWORKS_BASE_URL,
     AGENTCLI_NVIDIA_BASE_URL,
     AGENTCLI_NVIDIA_DEFAULT_MODEL,
     AGENTCLI_OLLAMA_CLOUD_BASE_URL,
     AGENTCLI_OPENAI_BASE_URL,
     AGENTCLI_OPENROUTER_BASE_URL,
+    AGENTCLI_TOGETHER_BASE_URL,
+    AGENTCLI_ZAI_BASE_URL,
+    AGENTCLI_ZAI_CODING_BASE_URL,
     AGENTCLI_DEEPSEEK_MAX_TOKENS,
     AGENTCLI_DEFAULT_EFFORT,
     AGENTCLI_DEFAULT_MAX_TOKENS,
@@ -92,7 +98,6 @@ from .const import (
     AGENTCLI_MAX_STREAM_BYTES,
     AGENTCLI_MAX_TURN_OUTPUT_BYTES,
     AGENTCLI_STREAM_READ_TIMEOUT_SECONDS,
-    AGENTCLI_PROVIDERS,
     AGENTCLI_SECRETS_STORAGE_KEY,
     AGENTCLI_SECRETS_STORAGE_VERSION,
     AGENTCLI_TOOL_RESULT_MAX_CHARS,
@@ -160,6 +165,7 @@ class ProviderConfig:
     # Tri-state: True is explicit provider/model evidence, False is explicit
     # refusal, and None means unknown. Unknown must remain text-only.
     vision: bool | None = None
+    endpoint_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,31 +188,209 @@ class ProbeConfigError:
         return out
 
 
-# Provider-kind metadata. Adding a kind here (plus a branch in build_provider if
-# it is not OpenAI-compatible) is all it takes to offer a new backend.
-_KINDS: dict[str, dict] = {
-    "claude":   {"label": "Anthropic", "keyless": False, "base_url": AGENTCLI_CLAUDE_BASE_URL,   "model": AGENTCLI_CLAUDE_DEFAULT_MODEL},
-    "deepseek": {"label": "DeepSeek", "keyless": False, "base_url": AGENTCLI_DEEPSEEK_BASE_URL, "model": AGENTCLI_DEEPSEEK_DEFAULT_MODEL},
-    "chatgpt":  {"label": "OpenAI",   "keyless": False, "base_url": AGENTCLI_OPENAI_BASE_URL,   "model": ""},
-    "gemini":   {"label": "Gemini",   "keyless": False, "base_url": AGENTCLI_GEMINI_BASE_URL,   "model": AGENTCLI_GEMINI_DEFAULT_MODEL},
-    "grok":     {"label": "Grok",     "keyless": False, "base_url": AGENTCLI_GROK_BASE_URL,     "model": AGENTCLI_GROK_DEFAULT_MODEL},
-    "kimi":     {"label": "Kimi",     "keyless": False, "base_url": AGENTCLI_KIMI_BASE_URL,     "model": AGENTCLI_KIMI_DEFAULT_MODEL},
-    "meta":     {"label": "Meta",     "keyless": False, "base_url": AGENTCLI_META_BASE_URL,     "model": AGENTCLI_META_DEFAULT_MODEL},
-    "minimax":  {"label": "MiniMax",  "keyless": False, "base_url": AGENTCLI_MINIMAX_BASE_URL,  "model": AGENTCLI_MINIMAX_DEFAULT_MODEL},
-    "mistral":  {"label": "Mistral AI", "keyless": False, "base_url": AGENTCLI_MISTRAL_BASE_URL, "model": ""},
-    "openrouter": {"label": "OpenRouter", "keyless": False, "base_url": AGENTCLI_OPENROUTER_BASE_URL, "model": ""},
-    "nvidia":   {"label": "NVIDIA",   "keyless": False, "base_url": AGENTCLI_NVIDIA_BASE_URL,   "model": AGENTCLI_NVIDIA_DEFAULT_MODEL},
-    "ollama":   {"label": "Ollama (local)", "keyless": True,  "base_url": "",                         "model": ""},
-    "ollama_cloud": {"label": "Ollama (cloud)", "keyless": False, "base_url": AGENTCLI_OLLAMA_CLOUD_BASE_URL, "model": ""},
+@dataclass(frozen=True)
+class ProviderChoice:
+    """One safe, non-secret choice rendered by a provider setup field."""
+
+    value: str
+    label: str
+    label_key: str | None = None
+    base_url: str | None = None
+
+    def public(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"value": self.value, "label": self.label}
+        if self.label_key:
+            out["label_key"] = self.label_key
+        return out
+
+
+@dataclass(frozen=True)
+class ProviderField:
+    """One declarative credential/setup field for the shared panel form."""
+
+    id: str
+    type: str
+    label_key: str
+    required: bool = True
+    placeholder: str | None = None
+    choices: tuple[ProviderChoice, ...] = ()
+
+    def public(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "id": self.id, "type": self.type, "label_key": self.label_key,
+            "required": self.required,
+        }
+        if self.placeholder:
+            out["placeholder"] = self.placeholder
+        if self.choices:
+            out["choices"] = [choice.public() for choice in self.choices]
+        return out
+
+
+@dataclass(frozen=True)
+class ProviderDefinition:
+    """Immutable provider registration, including protocol and setup policy."""
+
+    kind: str
+    label: str
+    adapter: str
+    base_url: str
+    model: str = ""
+    label_key: str | None = None
+    fields: tuple[ProviderField, ...] = ()
+    endpoints: tuple[ProviderChoice, ...] = ()
+    include_usage: bool = False
+    reasoning: str = "effort"
+    model_filter: str = "chat"
+    models_shape: str = "data"
+    validation_error: str | None = None
+    ollama: str | None = None
+
+    def public(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "kind": self.kind, "label": self.label,
+            "fields": [field.public() for field in self.fields],
+        }
+        if self.label_key:
+            out["label_key"] = self.label_key
+        return out
+
+
+_API_KEY_FIELD = ProviderField(
+    "api_key", "secret", "settings.agentcliApiKey",
+)
+_OLLAMA_URL_FIELD = ProviderField(
+    "base_url", "url", "settings.agentcliServerUrl", placeholder="http://host:11434",
+)
+_QWEN_URL_FIELD = ProviderField(
+    "base_url", "url", "settings.agentcliBaseUrl",
+    placeholder="https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+)
+_ZAI_ENDPOINTS = (
+    ProviderChoice(
+        "standard", "Standard API", "settings.agentcliZaiStandard",
+        AGENTCLI_ZAI_BASE_URL,
+    ),
+    ProviderChoice(
+        "coding", "Coding Plan", "settings.agentcliZaiCoding",
+        AGENTCLI_ZAI_CODING_BASE_URL,
+    ),
+)
+_ZAI_ENDPOINT_FIELD = ProviderField(
+    "endpoint_id", "choice", "settings.agentcliZaiPlan",
+    choices=_ZAI_ENDPOINTS,
+)
+
+_PROVIDER_LABEL_KEYS = {
+    "claude": "settings.providerAnthropic",
+    "deepseek": "settings.providerDeepSeek",
+    "chatgpt": "settings.providerOpenAI",
+    "gemini": "settings.providerGemini",
+    "grok": "settings.providerGrok",
+    "groq": "settings.providerGroq",
+    "kimi": "settings.providerKimi",
+    "meta": "settings.providerMeta",
+    "minimax": "settings.providerMiniMax",
+    "mistral": "settings.providerMistral",
+    "nvidia": "settings.providerNvidia",
+    "ollama_cloud": "settings.providerOllamaCloud",
+    "ollama": "settings.providerOllamaLocal",
+    "openrouter": "settings.providerOpenRouter",
+    "together": "settings.providerTogether",
+    "cerebras": "settings.providerCerebras",
+    "fireworks": "settings.providerFireworks",
+    "qwen": "settings.providerQwen",
+    "zai": "settings.providerZai",
 }
 
 
-def _default_base_url(kind: str) -> str:
-    return _KINDS.get(kind, {}).get("base_url", "")
+def _definition(
+    kind: str, label: str, base_url: str, *, adapter: str = "openai",
+    model: str = "", label_key: str | None = None,
+    fields: tuple[ProviderField, ...] = (_API_KEY_FIELD,),
+    endpoints: tuple[ProviderChoice, ...] = (), include_usage: bool = False,
+    reasoning: str = "effort", model_filter: str = "chat",
+    models_shape: str = "data", validation_error: str | None = None,
+    ollama: str | None = None,
+) -> ProviderDefinition:
+    return ProviderDefinition(
+        kind, label, adapter, base_url, model,
+        label_key or _PROVIDER_LABEL_KEYS[kind], fields, endpoints,
+        include_usage, reasoning, model_filter, models_shape, validation_error,
+        ollama,
+    )
+
+
+PROVIDER_DEFINITIONS: dict[str, ProviderDefinition] = {
+    item.kind: item for item in (
+        _definition("claude", "Anthropic", AGENTCLI_CLAUDE_BASE_URL, adapter="anthropic", model=AGENTCLI_CLAUDE_DEFAULT_MODEL),
+        _definition("deepseek", "DeepSeek", AGENTCLI_DEEPSEEK_BASE_URL, model=AGENTCLI_DEEPSEEK_DEFAULT_MODEL, include_usage=True, reasoning="deepseek"),
+        _definition("chatgpt", "OpenAI", AGENTCLI_OPENAI_BASE_URL, include_usage=True, model_filter="openai"),
+        _definition("gemini", "Gemini", AGENTCLI_GEMINI_BASE_URL, model=AGENTCLI_GEMINI_DEFAULT_MODEL, reasoning="gemini", model_filter="gemini"),
+        _definition("grok", "Grok", AGENTCLI_GROK_BASE_URL, model=AGENTCLI_GROK_DEFAULT_MODEL),
+        _definition("groq", "Groq", AGENTCLI_GROQ_BASE_URL, include_usage=True),
+        _definition("kimi", "Kimi", AGENTCLI_KIMI_BASE_URL, model=AGENTCLI_KIMI_DEFAULT_MODEL, include_usage=True, reasoning="kimi"),
+        _definition("meta", "Meta", AGENTCLI_META_BASE_URL, model=AGENTCLI_META_DEFAULT_MODEL, reasoning="meta"),
+        _definition("minimax", "MiniMax", AGENTCLI_MINIMAX_BASE_URL, adapter="anthropic", model=AGENTCLI_MINIMAX_DEFAULT_MODEL),
+        _definition("mistral", "Mistral AI", AGENTCLI_MISTRAL_BASE_URL, reasoning="mistral", model_filter="mistral"),
+        _definition("nvidia", "NVIDIA", AGENTCLI_NVIDIA_BASE_URL, model=AGENTCLI_NVIDIA_DEFAULT_MODEL, reasoning="probed_effort", model_filter="nvidia"),
+        _definition("ollama_cloud", "Ollama (cloud)", AGENTCLI_OLLAMA_CLOUD_BASE_URL, reasoning="ollama", ollama="cloud"),
+        _definition("ollama", "Ollama (local)", "", fields=(_OLLAMA_URL_FIELD,), reasoning="ollama", ollama="local"),
+        _definition("openrouter", "OpenRouter", AGENTCLI_OPENROUTER_BASE_URL, include_usage=True, reasoning="probed_effort", model_filter="openrouter"),
+        _definition(
+            "together", "Together", AGENTCLI_TOGETHER_BASE_URL,
+            model_filter="together", models_shape="list",
+        ),
+        _definition("cerebras", "Cerebras", AGENTCLI_CEREBRAS_BASE_URL),
+        _definition(
+            "fireworks", "Fireworks", AGENTCLI_FIREWORKS_BASE_URL,
+            validation_error="fireworks",
+        ),
+        _definition(
+            "qwen", "Alibaba Cloud Model Studio / Qwen", "",
+            fields=(_API_KEY_FIELD, _QWEN_URL_FIELD), include_usage=True,
+            reasoning="qwen", validation_error="qwen_openai",
+        ),
+        _definition("zai", "Z.ai", AGENTCLI_ZAI_BASE_URL, fields=(_ZAI_ENDPOINT_FIELD, _API_KEY_FIELD), endpoints=_ZAI_ENDPOINTS, reasoning="zai"),
+    )
+}
+
+# Compatibility projection for tests and internal code being moved to the typed
+# registry. It contains no independent provider facts.
+_KINDS: dict[str, dict[str, Any]] = {
+    kind: {
+        "label": definition.label,
+        "keyless": not any(field.id == "api_key" for field in definition.fields),
+        "base_url": definition.base_url,
+        "model": definition.model,
+    }
+    for kind, definition in PROVIDER_DEFINITIONS.items()
+}
+
+
+def _provider_catalog() -> list[dict[str, Any]]:
+    return [
+        definition.public()
+        for definition in sorted(PROVIDER_DEFINITIONS.values(), key=lambda item: item.label.lower())
+    ]
+
+
+def _default_base_url(kind: str, endpoint_id: str | None = None) -> str:
+    definition = PROVIDER_DEFINITIONS.get(kind)
+    if definition is None:
+        return ""
+    if definition.endpoints:
+        selected = endpoint_id or definition.endpoints[0].value
+        return next(
+            (choice.base_url or "" for choice in definition.endpoints if choice.value == selected),
+            "",
+        )
+    return definition.base_url
 
 
 def _default_model(kind: str) -> str:
-    return _KINDS.get(kind, {}).get("model", "")
+    definition = PROVIDER_DEFINITIONS.get(kind)
+    return definition.model if definition else ""
 
 
 def _host_of(url: str) -> str:
@@ -226,6 +410,16 @@ def _instance_name(inst: dict, has_dupes: bool) -> str:
     if kind == "ollama":
         host = _host_of(inst.get("base_url", ""))
         return f"{label} ({host})" if host else label
+    if kind == "qwen":
+        host = _host_of(inst.get("base_url", ""))
+        return f"{label} ({host})" if host else label
+    if kind == "zai":
+        endpoint_id = str(inst.get("endpoint_id") or "standard")
+        endpoint = next(
+            (choice.label for choice in _ZAI_ENDPOINTS if choice.value == endpoint_id),
+            endpoint_id,
+        )
+        return f"{label} ({endpoint})"
     key = inst.get("api_key", "") or ""
     tail = key[-4:] if len(key) >= 4 else key
     return f"{label} ({tail})" if tail else label
@@ -290,8 +484,18 @@ def _normalized_provider_url(value: object) -> str:
 
 def _provider_identity(kind: str, cfg: dict) -> tuple[str, str]:
     """Return the non-secret identity used to reject exact duplicate accounts."""
-    if _KINDS.get(kind, {}).get("keyless"):
+    if kind == "ollama":
         return kind, _normalized_provider_url(cfg.get("base_url"))
+    if kind == "qwen":
+        return kind, "\0".join((
+            _normalized_provider_url(cfg.get("base_url")),
+            str(cfg.get("api_key") or "").strip(),
+        ))
+    if kind == "zai":
+        return kind, "\0".join((
+            str(cfg.get("endpoint_id") or "standard"),
+            str(cfg.get("api_key") or "").strip(),
+        ))
     return kind, str(cfg.get("api_key") or "").strip()
 
 
@@ -432,6 +636,7 @@ class AgentCliStore:
                 "name": _instance_name(inst, counts[kind] > 1),
                 "model": inst.get("model", ""),
                 "base_url": inst.get("base_url", ""),
+                "endpoint_id": inst.get("endpoint_id") or None,
                 "capabilities": _with_learned(inst),
                 "capabilities_checked_at": inst.get("capabilities_checked_at") or None,
             })
@@ -451,7 +656,10 @@ class AgentCliStore:
         if cfg is None:
             return None
         kind = cfg.get("kind", "")
-        base_url = (cfg.get("base_url") or _default_base_url(kind) or "").rstrip("/")
+        endpoint_id = str(cfg.get("endpoint_id") or "") or None
+        base_url = (
+            cfg.get("base_url") or _default_base_url(kind, endpoint_id) or ""
+        ).rstrip("/")
         if not base_url:
             return None
         model = model_override or cfg.get("model") or _default_model(kind)
@@ -459,7 +667,7 @@ class AgentCliStore:
         vision = model_caps.get("vision") if isinstance(model_caps.get("vision"), bool) else None
         return ProviderConfig(
             kind=kind, model=model, base_url=base_url, api_key=cfg.get("api_key"),
-            vision=vision,
+            endpoint_id=endpoint_id, vision=vision,
         )
 
 
@@ -1003,6 +1211,28 @@ def _filter_chatgpt_models(models: list[str]) -> list[str]:
     return chat or models
 
 
+_NON_CHAT_MODEL_RE = re.compile(
+    r"embed|rerank|re-rank|image|imagen|audio|realtime|transcrib|tts|"
+    r"whisper|moderation|dall-e|speech",
+    re.I,
+)
+
+
+def _filter_generic_chat_models(models: list[str]) -> list[str]:
+    """Drop catalog entries whose identifiers prove they are not chat models."""
+    chat = sorted(model for model in models if not _NON_CHAT_MODEL_RE.search(model))
+    return chat or sorted(models)
+
+
+def _filter_together_models(data: list[dict]) -> list[str]:
+    """Together publishes a bare array with an explicit model type."""
+    chat = sorted(
+        str(model["id"]) for model in data
+        if model.get("id") and model.get("type") == "chat"
+    )
+    return chat or sorted(str(model["id"]) for model in data if model.get("id"))
+
+
 def _strip_models_prefix(model_id: str) -> str:
     # Google's /models lists ids as "models/gemini-...", but the chat endpoint's
     # model field wants the bare name.
@@ -1113,7 +1343,8 @@ def _effort_probe_body(kind: str, level: str) -> dict | None:
         return {"thinking": {"type": "enabled"}, "reasoning_effort": level}
     if kind in (
         "chatgpt", "grok", "gemini", "kimi", "meta", "mistral", "openrouter",
-        "nvidia", "ollama", "ollama_cloud",
+        "nvidia", "ollama", "ollama_cloud", "groq", "together", "cerebras",
+        "fireworks",
     ):
         return {"reasoning_effort": level}
     return None
@@ -1288,16 +1519,6 @@ def _filter_nvidia_models(models: list[str]) -> list[str]:
     return chat or sorted(models)
 
 
-# Kinds that get stream_options {"include_usage": true} on chat requests.
-# Curated, not universal: OpenAI omits streaming usage unless asked, and
-# DeepSeek, OpenRouter and Kimi document accepting the flag. The other kinds are
-# excluded because an unrecognized stream_options could reject the whole
-# request there; they either volunteer usage on the final chunk anyway
-# (harvested wherever it appears) or simply produce no token counter. Meta is
-# excluded on exactly that rule: its Model API docs do not mention the flag.
-_USAGE_INCLUDE_KINDS = ("chatgpt", "deepseek", "kimi", "openrouter")
-
-
 class OpenAICompatProvider:
     """OpenAI-compatible chat/completions, streaming. Backs DeepSeek, ChatGPT,
     Gemini, Grok, Kimi, Meta, Mistral, OpenRouter, NVIDIA, and both Ollama
@@ -1314,19 +1535,20 @@ class OpenAICompatProvider:
     def __init__(self, cfg: ProviderConfig) -> None:
         self.cfg = cfg
         self.kind = cfg.kind
+        self.definition = PROVIDER_DEFINITIONS[cfg.kind]
 
     @property
     def _is_ollama(self) -> bool:
         # Ollama-shaped (local or cloud): drives /v1 chat plus /api/tags metadata.
-        return self.cfg.kind in ("ollama", "ollama_cloud")
+        return self.definition.ollama is not None
 
     @property
     def _is_ollama_local(self) -> bool:
-        return self.cfg.kind == "ollama"
+        return self.definition.ollama == "local"
 
     @property
     def _is_ollama_cloud(self) -> bool:
-        return self.cfg.kind == "ollama_cloud"
+        return self.definition.ollama == "cloud"
 
     def _chat_url(self) -> str:
         # Ollama exposes the OpenAI shape under /v1; DeepSeek at the root.
@@ -1372,7 +1594,10 @@ class OpenAICompatProvider:
                         "type": "image_url",
                         # Mistral takes the URL itself here; OpenAI and the other
                         # compatible APIs take an object containing `url`.
-                        "image_url": data_uri if self.kind == "mistral" else {"url": data_uri},
+                        "image_url": (
+                            data_uri if self.definition.model_filter == "mistral"
+                            else {"url": data_uri}
+                        ),
                     })
                 messages.append({"role": "user", "content": parts})
 
@@ -1393,6 +1618,18 @@ class OpenAICompatProvider:
                     return True, ""
                 if resp.status in (401, 403):
                     return False, "API key rejected."
+                if self.definition.validation_error == "fireworks" and resp.status == 412:
+                    return False, (
+                        "Fireworks reports that this account is not active for API inference. "
+                        "Check the account status and confirm that billing or free-trial credits "
+                        "are activated."
+                    )
+                if self.definition.validation_error == "qwen_openai" and resp.status == 404:
+                    return False, (
+                        "Qwen returned HTTP 404. Phoenix uses the OpenAI-compatible Chat "
+                        "Completions endpoint; enter that Base URL, not the "
+                        "Anthropic-compatible /apps/anthropic URL."
+                    )
                 return False, f"Provider returned HTTP {resp.status}."
         try:
             return await _retry_transient(_probe)
@@ -1431,18 +1668,26 @@ class OpenAICompatProvider:
                 if resp.status != 200:
                     return [self.cfg.model] if self.cfg.model else []
                 body = await resp.json(content_type=None)
-            data = body.get("data", [])
-            if self.cfg.kind == "openrouter":
+            data = (
+                body if self.definition.models_shape == "list" and isinstance(body, list)
+                else body.get("data", []) if isinstance(body, dict)
+                else []
+            )
+            if self.definition.model_filter == "openrouter":
                 return _filter_openrouter_models(data) or ([self.cfg.model] if self.cfg.model else [])
-            if self.cfg.kind == "mistral":
+            if self.definition.model_filter == "mistral":
                 return _filter_mistral_models(data)
             models = [m["id"] for m in data if m.get("id")]
-            if self.cfg.kind == "chatgpt":
+            if self.definition.model_filter == "openai":
                 models = _filter_chatgpt_models(models)
-            elif self.cfg.kind == "gemini":
+            elif self.definition.model_filter == "gemini":
                 models = _filter_gemini_models(models)
-            elif self.cfg.kind == "nvidia":
+            elif self.definition.model_filter == "nvidia":
                 models = _filter_nvidia_models(models)
+            elif self.definition.model_filter == "together":
+                return _filter_together_models(data)
+            elif self.definition.model_filter == "chat":
+                models = _filter_generic_chat_models(models)
             return models or ([self.cfg.model] if self.cfg.model else [])
         except (ClientError, asyncio.TimeoutError):
             return [self.cfg.model] if self.cfg.model else []
@@ -1480,7 +1725,7 @@ class OpenAICompatProvider:
             if self._is_ollama:
                 return await _ollama_capabilities(
                     session, self.cfg.base_url, self._headers(), models)
-            if self.cfg.kind == "openrouter":
+            if self.definition.model_filter == "openrouter":
                 async with session.get(
                     f"{self.cfg.base_url}/models", headers=self._headers(),
                     timeout=_PROBE_TIMEOUT, allow_redirects=False,
@@ -1489,7 +1734,7 @@ class OpenAICompatProvider:
                         return {}
                     body = await resp.json(content_type=None)
                 return _openrouter_capabilities(body.get("data", []))
-            if self.cfg.kind == "mistral":
+            if self.definition.model_filter == "mistral":
                 async with session.get(
                     f"{self.cfg.base_url}/models", headers=self._headers(),
                     timeout=_PROBE_TIMEOUT, allow_redirects=False,
@@ -1498,6 +1743,8 @@ class OpenAICompatProvider:
                         return {}
                     body = await resp.json(content_type=None)
                 return _mistral_capabilities(body.get("data", []), models)
+            if self.definition.reasoning in ("zai", "qwen"):
+                return {model: {"thinking": True} for model in models}
         except (ClientError, asyncio.TimeoutError, ValueError):
             return {}
         return {}
@@ -1514,7 +1761,7 @@ class OpenAICompatProvider:
             "tools": tools,
             "stream": True,
         }
-        if self.cfg.kind in _USAGE_INCLUDE_KINDS:
+        if self.definition.include_usage:
             body["stream_options"] = {"include_usage": True}
         thinking = options.get("thinking")
         effort = options.get("effort")
@@ -1532,7 +1779,7 @@ class OpenAICompatProvider:
         #     no established level omits the field and uses the model's default.
         thinking_on = False
         reasoning_model = False
-        if self.cfg.kind == "deepseek":
+        if self.definition.reasoning == "deepseek":
             if thinking is not None:
                 body["thinking"] = {"type": "enabled" if thinking else "disabled"}
                 thinking_on = bool(thinking)
@@ -1554,21 +1801,21 @@ class OpenAICompatProvider:
             # ever raises the ceiling; see const.py. Other kinds deliberately get
             # no max_tokens (OpenAI reasoning models reject the field).
             body["max_tokens"] = AGENTCLI_DEEPSEEK_MAX_TOKENS
-        elif self.cfg.kind in ("chatgpt", "grok"):
+        elif self.definition.reasoning == "effort":
             # OpenAI and xAI both take a top-level reasoning_effort on chat
             # completions; sending it marks a reasoning turn (skip temperature).
             # A model that does not accept the level returns a clean error.
             if effort:
                 body["reasoning_effort"] = effort
                 reasoning_model = True
-        elif self.cfg.kind == "gemini":
+        elif self.definition.reasoning == "gemini":
             # Gemini's OpenAI-compatible endpoint maps reasoning_effort to Gemini's
             # thinking_level (minimal/low/medium/high). Google strongly recommends
             # NOT setting temperature on Gemini 3 (reasoning is tuned for the
             # default), so Phoenix MCP never sends it for Gemini.
             if effort:
                 body["reasoning_effort"] = effort
-        elif self.cfg.kind == "kimi":
+        elif self.definition.reasoning == "kimi":
             # Kimi splits the knob by model family, so the two fields are emitted
             # independently rather than as an if/else: K3 takes reasoning_effort
             # (low/high/max, default max) and cannot turn reasoning off, while K2.x
@@ -1579,7 +1826,7 @@ class OpenAICompatProvider:
                 body["thinking"] = {"type": "enabled" if thinking else "disabled"}
             if effort:
                 body["reasoning_effort"] = effort
-        elif self.cfg.kind in ("openrouter", "nvidia"):
+        elif self.definition.reasoning == "probed_effort":
             # Aggregators: one key fronting many vendors' models. Phoenix used to
             # offer no thinking control here at all, on the grounds that a single
             # control cannot fit every model behind the key. That reasoning is
@@ -1594,33 +1841,43 @@ class OpenAICompatProvider:
             # never fires. The wrong guess costs nothing.
             if effort:
                 body["reasoning_effort"] = effort
-        elif self.cfg.kind == "meta":
+        elif self.definition.reasoning == "meta":
             # Meta's Model API takes a top-level reasoning_effort (minimal/low/
             # medium/high/xhigh; "none" is rejected by Muse Spark, which always
             # reasons, so the panel never offers an off state). Meta tunes the model
             # for its default temperature, so Phoenix MCP does not send one.
             if effort:
                 body["reasoning_effort"] = effort
-        elif self.cfg.kind == "mistral":
+        elif self.definition.reasoning == "mistral":
             # Mistral Small latest and Medium 3.5 accept `none` and `high`.
             # The panel only offers this control for those documented models.
             if effort:
                 body["reasoning_effort"] = effort
-        elif self._is_ollama:
+        elif self.definition.reasoning == "zai":
+            if thinking is not None:
+                body["thinking"] = {"type": "enabled" if thinking else "disabled"}
+            if tools:
+                body["tool_stream"] = True
+                body["clear_thinking"] = False
+        elif self.definition.reasoning == "qwen":
+            if thinking is not None:
+                body["enable_thinking"] = bool(thinking)
+        elif self.definition.reasoning == "ollama":
             if effort:
                 body["reasoning_effort"] = effort
             elif thinking is False:
                 body["reasoning_effort"] = "none"
         temp = options.get("temperature")
         skip_temp = (
-            (self.cfg.kind == "deepseek" and thinking_on)
+            (self.definition.reasoning == "deepseek" and thinking_on)
             or reasoning_model
-            or self.cfg.kind == "gemini"
+            or self.definition.reasoning == "gemini"
             # Only Kimi's legacy moonshot-v1 models accept temperature, and those
             # have no reasoning control at all: a thinking or effort selection
             # therefore means a kimi-k* model, which rejects the field.
-            or (self.cfg.kind == "kimi" and (thinking is not None or bool(effort)))
-            or self.cfg.kind == "meta"
+            or (self.definition.reasoning == "kimi" and (thinking is not None or bool(effort)))
+            or self.definition.reasoning == "meta"
+            or (self.definition.reasoning in ("zai", "qwen") and thinking is True)
         )
         if temp is not None and not skip_temp:
             try:
@@ -1646,7 +1903,7 @@ class OpenAICompatProvider:
                             code = "quota"
                     rate_limit = (
                         _mistral_rate_limit_headers(resp.headers)
-                        if self.kind == "mistral" and resp.status == 429 else {}
+                        if self.definition.model_filter == "mistral" and resp.status == 429 else {}
                     )
                     yield _norm(EV_ERROR, status=resp.status, code=code,
                                 message=msg[:600], retryable=retryable,
@@ -1660,6 +1917,10 @@ class OpenAICompatProvider:
 
     async def _parse(self, resp: Any, show_thinking: bool) -> AsyncIterator[dict]:
         text_parts: list[str] = []
+        # Z.ai requires its reasoning_content to be returned verbatim with the
+        # assistant tool call on the next round. Other compatible providers use
+        # this field for display only, so retention is profile-controlled.
+        replay_reasoning_parts: list[str] = []
         # Mistral emits reasoning as structured ThinkChunk content. Unlike the
         # display-only reasoning fields used by other compatible APIs, Mistral
         # requires these chunks to be replayed in the assistant message on the
@@ -1713,10 +1974,12 @@ class OpenAICompatProvider:
             # uses reasoning. Both are display-only and never enter the assistant
             # message that Phoenix sends back on the next round.
             reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            if reasoning and self.definition.reasoning == "zai":
+                replay_reasoning_parts.append(str(reasoning))
             if reasoning and show_thinking:
                 yield _norm(EV_THINKING, text=reasoning)
             content = delta.get("content")
-            if self.kind == "mistral" and isinstance(content, list):
+            if self.definition.model_filter == "mistral" and isinstance(content, list):
                 for block in content:
                     if not isinstance(block, dict):
                         continue
@@ -1737,7 +2000,7 @@ class OpenAICompatProvider:
                         seg = str(block["text"])
                         text_parts.append(seg)
                         yield _norm(EV_TEXT, text=seg)
-            elif self.kind == "mistral" and isinstance(content, str) \
+            elif self.definition.model_filter == "mistral" and isinstance(content, str) \
                     and content and mistral_content_parts:
                 # Mistral may switch from structured ThinkChunk content to
                 # ordinary string deltas for the answer. Materialize those as
@@ -1810,6 +2073,8 @@ class OpenAICompatProvider:
         else:
             assistant_content = answer_text
         assistant_msg: dict = {"role": "assistant", "content": assistant_content}
+        if replay_reasoning_parts:
+            assistant_msg["reasoning_content"] = "".join(replay_reasoning_parts)
         if assistant_tool_calls:
             assistant_msg["tool_calls"] = assistant_tool_calls
         if bad:
@@ -1868,9 +2133,10 @@ def _norm_stop(raw: str) -> str:
 
 
 def build_provider(cfg: ProviderConfig) -> ClaudeProvider | OpenAICompatProvider:
-    # MiniMax speaks the Anthropic Messages wire format, so it runs through the
-    # same provider as Claude (with kind-aware auth and thinking options).
-    if cfg.kind in ("claude", "minimax"):
+    definition = PROVIDER_DEFINITIONS.get(cfg.kind)
+    if definition is None:
+        raise ValueError(f"Unknown provider kind: {cfg.kind}")
+    if definition.adapter == "anthropic":
         return ClaudeProvider(cfg)
     return OpenAICompatProvider(cfg)
 
@@ -3343,14 +3609,20 @@ class PhoenixAgentCliChatView(PhoenixView):
         return cast(web.Response, resp)
 
 
-def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """A metadata/link-local address Phoenix MCP must never be pointed at. Loopback and
-    private are NOT blocked, a local Ollama legitimately lives on those."""
-    return ip.is_link_local or ip.is_multicast or ip.is_reserved
+def _ip_is_blocked(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_private: bool,
+) -> bool:
+    """Return whether an operator-supplied endpoint may target this address."""
+    return (
+        ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+        or (not allow_private and (ip.is_private or ip.is_loopback))
+    )
 
 
-async def _validate_base_url(url: str) -> ProbeConfigError | None:
-    """Validate an admin-supplied provider base URL (the local Ollama server).
+async def _validate_base_url(
+    url: str, *, allow_private: bool = True,
+) -> ProbeConfigError | None:
+    """Validate an admin-supplied provider base URL.
 
     Phoenix MCP makes server-side requests to this URL, so an admin with a stolen session
     could otherwise use it as an SSRF pivot from the HA host. Constrain it:
@@ -3368,10 +3640,16 @@ async def _validate_base_url(url: str) -> ProbeConfigError | None:
         parts = urlparse(url)
     except ValueError:
         return ProbeConfigError("Enter a valid server URL.", "providerUrlInvalid")
-    if parts.scheme not in ("http", "https"):
+    schemes = ("http", "https") if allow_private else ("https",)
+    if parts.scheme not in schemes:
+        if allow_private:
+            return ProbeConfigError(
+                "The server URL must start with http:// or https://.",
+                "providerUrlScheme",
+            )
         return ProbeConfigError(
-            "The server URL must start with http:// or https://.",
-            "providerUrlScheme",
+            "The provider URL must start with https://.",
+            "providerRemoteUrlScheme",
         )
     if not parts.hostname:
         return ProbeConfigError(
@@ -3392,10 +3670,16 @@ async def _validate_base_url(url: str) -> ProbeConfigError | None:
     except ValueError:
         literal = None
     if literal is not None:
-        if _ip_is_blocked(literal):
+        if _ip_is_blocked(literal, allow_private=allow_private):
+            if allow_private:
+                return ProbeConfigError(
+                    "The server URL must not point at a link-local or metadata address.",
+                    "providerUrlAddressForbidden",
+                )
             return ProbeConfigError(
-                "The server URL must not point at a link-local or metadata address.",
-                "providerUrlAddressForbidden",
+                "The provider URL must not point at a private, loopback, "
+                "link-local, multicast, or reserved address.",
+                "providerRemoteUrlAddressForbidden",
             )
         return None
     # A hostname: resolve it and reject if ANY address is link-local/metadata.
@@ -3408,34 +3692,73 @@ async def _validate_base_url(url: str) -> ProbeConfigError | None:
             ip = ipaddress.ip_address(info[4][0])
         except (ValueError, IndexError):
             continue
-        if _ip_is_blocked(ip):
+        if _ip_is_blocked(ip, allow_private=allow_private):
+            if allow_private:
+                return ProbeConfigError(
+                    "The server URL resolves to a link-local or metadata address.",
+                    "providerUrlResolutionForbidden",
+                )
             return ProbeConfigError(
-                "The server URL resolves to a link-local or metadata address.",
-                "providerUrlResolutionForbidden",
+                "The provider URL resolves to a private, loopback, link-local, "
+                "multicast, or reserved address.",
+                "providerRemoteUrlResolutionForbidden",
             )
     return None
 
 
 async def _probe_config(kind: str, body: dict) -> ProviderConfig | ProbeConfigError:
     """Build a throwaway config or a localized setup error contract."""
-    if _KINDS.get(kind, {}).get("keyless"):
-        base_url = str(body.get("base_url") or "").strip().rstrip("/")
-        if not base_url:
-            return ProbeConfigError(
-                "Enter the Ollama server URL.", "ollamaUrlRequired",
-            )
-        err = await _validate_base_url(base_url)
-        if err:
-            return err
-        api_key = None
-    else:
-        base_url = _default_base_url(kind)
+    definition = PROVIDER_DEFINITIONS.get(kind)
+    if definition is None:
+        return ProbeConfigError("Unknown provider.", "providerUnknown")
+    api_key: str | None = None
+    if any(field.id == "api_key" for field in definition.fields):
         api_key = str(body.get("api_key") or "").strip()
         if not api_key:
             return ProbeConfigError("Enter your API key.", "providerApiKeyRequired")
+
+    endpoint_id: str | None = None
+    if definition.endpoints:
+        endpoint_id = str(body.get("endpoint_id") or definition.endpoints[0].value)
+        if endpoint_id not in {choice.value for choice in definition.endpoints}:
+            return ProbeConfigError(
+                "Choose a valid provider plan.", "providerEndpointInvalid",
+            )
+
+    if any(field.id == "base_url" for field in definition.fields):
+        base_url = str(body.get("base_url") or "").strip().rstrip("/")
+        if not base_url:
+            if kind == "ollama":
+                return ProbeConfigError(
+                    "Enter the Ollama server URL.", "ollamaUrlRequired",
+                )
+            return ProbeConfigError(
+                "Enter the provider base URL.", "providerBaseUrlRequired",
+            )
+        err = await _validate_base_url(base_url, allow_private=kind == "ollama")
+        if err:
+            return err
+    else:
+        base_url = _default_base_url(kind, endpoint_id)
     model = str(body.get("model") or "").strip()
     return ProviderConfig(kind=kind, model=model or _default_model(kind),
-                          base_url=base_url.rstrip("/"), api_key=api_key)
+                          base_url=base_url.rstrip("/"), api_key=api_key,
+                          endpoint_id=endpoint_id)
+
+
+def _stored_setup_config(cfg: ProviderConfig, model: str = "") -> dict[str, Any]:
+    """Return only the setup values this provider persists, never fixed URLs."""
+    definition = PROVIDER_DEFINITIONS[cfg.kind]
+    out: dict[str, Any] = {}
+    if any(field.id == "api_key" for field in definition.fields):
+        out["api_key"] = cfg.api_key
+    if any(field.id == "base_url" for field in definition.fields):
+        out["base_url"] = cfg.base_url
+    if cfg.endpoint_id:
+        out["endpoint_id"] = cfg.endpoint_id
+    if model:
+        out["model"] = model
+    return out
 
 
 class PhoenixAgentCliProvidersView(PhoenixView):
@@ -3449,7 +3772,10 @@ class PhoenixAgentCliProvidersView(PhoenixView):
     async def get(self, request: web.Request) -> web.Response:
         rid = request.get("phoenix_mcp_rid", "")
         store = await _get_secret_store(self.hass)
-        return _ok({"instances": store.list_instances()}, request_id=rid)
+        return _ok({
+            "instances": store.list_instances(),
+            "provider_types": _provider_catalog(),
+        }, request_id=rid)
 
     @require_admin
     async def post(self, request: web.Request) -> web.Response:
@@ -3458,7 +3784,7 @@ class PhoenixAgentCliProvidersView(PhoenixView):
         if isinstance(body, web.Response):
             return body
         kind = str(body.get("kind") or "")
-        if kind not in AGENTCLI_PROVIDERS:
+        if kind not in PROVIDER_DEFINITIONS:
             return _err(
                 "invalid_request", "Unknown provider.", 400, rid,
                 key="providerUnknown",
@@ -3471,14 +3797,8 @@ class PhoenixAgentCliProvidersView(PhoenixView):
                 key=probe.key, params=probe.params,
             )
 
-        cfg: dict = {}
-        if _KINDS[kind]["keyless"]:
-            cfg["base_url"] = probe.base_url
-        else:
-            cfg["api_key"] = probe.api_key
         model = str(body.get("model") or "").strip()
-        if model:
-            cfg["model"] = model
+        cfg = _stored_setup_config(probe, model)
 
         store = await _get_secret_store(self.hass)
         if store.has_duplicate(kind, cfg):
@@ -3741,7 +4061,7 @@ class PhoenixAgentCliProbeView(PhoenixView):
         if isinstance(body, web.Response):
             return body
         kind = str(body.get("kind") or "")
-        if kind not in AGENTCLI_PROVIDERS:
+        if kind not in PROVIDER_DEFINITIONS:
             return _err(
                 "invalid_request", "Unknown provider.", 400, rid,
                 key="providerUnknown",
@@ -3750,11 +4070,7 @@ class PhoenixAgentCliProbeView(PhoenixView):
         probe = await _probe_config(kind, body)
         if isinstance(probe, ProbeConfigError):
             return _ok(probe.payload(), request_id=rid)
-        cfg = (
-            {"base_url": probe.base_url}
-            if _KINDS[kind]["keyless"]
-            else {"api_key": probe.api_key}
-        )
+        cfg = _stored_setup_config(probe)
         store = await _get_secret_store(self.hass)
         if store.has_duplicate(kind, cfg):
             return _err(

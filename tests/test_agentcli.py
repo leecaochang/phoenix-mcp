@@ -289,12 +289,14 @@ async def test_openai_usage_chunk_with_empty_choices_reports_usage():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("kind", "expects_flag"), [
     ("chatgpt", True), ("deepseek", True), ("openrouter", True), ("kimi", True),
+    ("groq", True),
     ("gemini", False), ("grok", False), ("mistral", False), ("nvidia", False), ("meta", False),
-    ("ollama", False), ("ollama_cloud", False),
+    ("ollama", False), ("ollama_cloud", False), ("zai", False),
+    ("together", False), ("cerebras", False), ("fireworks", False), ("qwen", True),
 ])
 async def test_stream_options_include_usage_only_for_curated_kinds(kind, expects_flag):
-    # OpenAI omits streaming usage unless asked; DeepSeek/OpenRouter/Kimi document
-    # accepting the flag. Everyone else must NOT get it (an unrecognized
+    # OpenAI omits streaming usage unless asked; DeepSeek, OpenRouter, Kimi,
+    # Groq, and Qwen document accepting the flag. Everyone else must NOT get it (an unrecognized
     # stream_options could reject the whole request there).
     body = _sse("data: [DONE]")
     cfg = ProviderConfig(kind=kind, model="m", base_url="https://h", api_key="k")
@@ -654,6 +656,92 @@ def test_provider_kinds_match_the_const_allowlist():
     assert set(agentcli._KINDS) == set(AGENTCLI_PROVIDERS)
 
 
+def test_provider_registry_catalog_is_complete_and_secret_free():
+    catalog = agentcli._provider_catalog()
+    assert [row["label"] for row in catalog] == sorted(
+        (row["label"] for row in catalog), key=str.lower,
+    )
+    assert {row["kind"] for row in catalog} == set(AGENTCLI_PROVIDERS)
+    encoded = json.dumps(catalog)
+    assert "api.z.ai" not in encoded
+    assert "api_key\"" in encoded
+    assert "secret" in encoded
+    assert "sk-" not in encoded
+
+
+@pytest.mark.parametrize(("kind", "base_url"), [
+    ("groq", "https://api.groq.com/openai/v1"),
+    ("together", "https://api.together.ai/v1"),
+    ("cerebras", "https://api.cerebras.ai/v1"),
+    ("fireworks", "https://api.fireworks.ai/inference/v1"),
+])
+def test_new_openai_compatible_provider_routes(kind, base_url):
+    cfg = ProviderConfig(kind=kind, model="m", base_url=base_url, api_key="key")
+    provider = agentcli.build_provider(cfg)
+    assert isinstance(provider, OpenAICompatProvider)
+    assert provider._chat_url() == f"{base_url}/chat/completions"
+    assert provider._headers()["Authorization"] == "Bearer key"
+
+
+@pytest.mark.asyncio
+async def test_zai_preserves_reasoning_and_enables_streamed_tools():
+    body = _sse(
+        'data: {"choices":[{"delta":{"reasoning_content":"check "}}]}',
+        'data: {"choices":[{"delta":{"reasoning_content":"state","tool_calls":[{"index":0,"id":"t1","function":{"name":"get_state","arguments":"{\\"entity_id\\":\\"light.kitchen\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+    )
+    cfg = ProviderConfig(
+        kind="zai", model="glm", base_url="https://api.z.ai/api/paas/v4",
+        api_key="key", endpoint_id="standard",
+    )
+    session = _FakeSession(_FakeResp(200, body))
+    events = await _collect(OpenAICompatProvider(cfg).stream_turn(
+        session, system_prompt="s", messages=[], tools=[{"type": "function"}],
+        options={"thinking": True, "show_thinking": False},
+    ))
+    sent = session.calls[-1][1]["json"]
+    assert sent["thinking"] == {"type": "enabled"}
+    assert sent["tool_stream"] is True
+    assert sent["clear_thinking"] is False
+    done = next(event for event in events if event["type"] == agentcli.EV_DONE)
+    assert done["assistant_msg"]["reasoning_content"] == "check state"
+
+
+@pytest.mark.asyncio
+async def test_probe_config_selects_zai_plan_and_qwen_url(monkeypatch):
+    coding = await agentcli._probe_config("zai", {
+        "api_key": "key", "endpoint_id": "coding",
+    })
+    assert isinstance(coding, ProviderConfig)
+    assert coding.base_url == "https://api.z.ai/api/coding/paas/v4"
+    assert coding.endpoint_id == "coding"
+
+    async def public_url(_url, *, allow_private=True):
+        assert allow_private is False
+        return None
+
+    monkeypatch.setattr(agentcli, "_validate_base_url", public_url)
+    qwen = await agentcli._probe_config("qwen", {
+        "api_key": "key",
+        "base_url": "https://workspace.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/",
+    })
+    assert isinstance(qwen, ProviderConfig)
+    assert qwen.base_url.endswith("/compatible-mode/v1")
+
+
+@pytest.mark.asyncio
+async def test_qwen_private_url_and_unknown_zai_plan_are_rejected():
+    private = await agentcli._probe_config("qwen", {
+        "api_key": "key", "base_url": "https://127.0.0.1/v1",
+    })
+    assert isinstance(private, agentcli.ProbeConfigError)
+    invalid_plan = await agentcli._probe_config("zai", {
+        "api_key": "key", "endpoint_id": "enterprise",
+    })
+    assert isinstance(invalid_plan, agentcli.ProbeConfigError)
+    assert invalid_plan.key == "providerEndpointInvalid"
+
+
 @pytest.mark.asyncio
 async def test_minimax_runs_through_claude_provider_bearer_and_adaptive():
     cfg = ProviderConfig(kind="minimax", model="MiniMax-M2",
@@ -791,6 +879,53 @@ async def test_nvidia_bearer_url_and_non_chat_model_filter():
     ]}
     models = await provider.list_models(_FakeSession(_FakeResp(200, b"", json_data=models_json)))
     assert models == ["deepseek-ai/deepseek-r1", "meta/llama-3.3-70b-instruct"]
+
+
+@pytest.mark.asyncio
+async def test_together_lists_chat_models_from_top_level_array():
+    cfg = ProviderConfig(kind="together", model="",
+                         base_url="https://api.together.ai/v1", api_key="together-key")
+    provider = agentcli.build_provider(cfg)
+    models_json = [
+        {"id": "vendor/chat-z", "type": "chat"},
+        {"id": "vendor/embed", "type": "embedding"},
+        {"id": "vendor/chat-a", "type": "chat"},
+    ]
+
+    models = await provider.list_models(
+        _FakeSession(_FakeResp(200, b"", json_data=models_json)))
+
+    assert models == ["vendor/chat-a", "vendor/chat-z"]
+
+
+@pytest.mark.asyncio
+async def test_fireworks_412_explains_account_activation():
+    cfg = ProviderConfig(kind="fireworks", model="",
+                         base_url="https://api.fireworks.ai/inference/v1",
+                         api_key="fireworks-key")
+    provider = agentcli.build_provider(cfg)
+
+    ok, message = await provider.validate(
+        _FakeSession(_FakeResp(412, b"", text_data="account suspended")))
+
+    assert ok is False
+    assert "account is not active" in message
+    assert "free-trial credits" in message
+
+
+@pytest.mark.asyncio
+async def test_qwen_404_explains_openai_compatible_endpoint_requirement():
+    cfg = ProviderConfig(kind="qwen", model="",
+                         base_url="https://dashscope-intl.aliyuncs.com/apps/anthropic",
+                         api_key="qwen-key")
+    provider = agentcli.build_provider(cfg)
+
+    ok, message = await provider.validate(
+        _FakeSession(_FakeResp(404, b"", text_data="not found")))
+
+    assert ok is False
+    assert "OpenAI-compatible Chat Completions" in message
+    assert "/apps/anthropic" in message
 
 
 @pytest.mark.asyncio
@@ -1304,6 +1439,22 @@ async def test_secret_store_rejects_duplicate_provider_identity():
     with pytest.raises(agentcli.DuplicateProviderError):
         await store.add("openrouter", {"api_key": "same-key", "model": "two"})
     await store.add("openrouter", {"api_key": "different-key", "model": "one"})
+
+    await store.add("zai", {"api_key": "zai-key", "endpoint_id": "standard"})
+    await store.add("zai", {"api_key": "zai-key", "endpoint_id": "coding"})
+    with pytest.raises(agentcli.DuplicateProviderError):
+        await store.add("zai", {"api_key": "zai-key", "endpoint_id": "standard"})
+
+    await store.add("qwen", {
+        "api_key": "qwen-key", "base_url": "https://workspace.example/v1/",
+    })
+    with pytest.raises(agentcli.DuplicateProviderError):
+        await store.add("qwen", {
+            "api_key": "qwen-key", "base_url": "https://WORKSPACE.example/v1",
+        })
+    await store.add("qwen", {
+        "api_key": "qwen-key", "base_url": "https://other.example/v1",
+    })
 
 
 @pytest.mark.asyncio

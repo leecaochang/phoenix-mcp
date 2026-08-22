@@ -18,7 +18,10 @@ const localizedApiMessage = vi.fn((
 vi.mock("../api", () => ({
   localizedApiMessage: (...a: [string, string?, Record<string, string | number>?]) => localizedApiMessage(...a),
   api: {
-    getAgentCliProviders: (...a: unknown[]) => getAgentCliProviders(...a),
+    getAgentCliProviders: async (...a: unknown[]) => {
+      const response = await getAgentCliProviders(...a);
+      return { ...response, provider_types: response.provider_types ?? instances().provider_types };
+    },
     probeAgentCliProvider: (...a: unknown[]) => probeAgentCliProvider(...a),
     createAgentCliProvider: (...a: unknown[]) => createAgentCliProvider(...a),
     deleteAgentCliProvider: (...a: unknown[]) => deleteAgentCliProvider(...a),
@@ -32,7 +35,38 @@ vi.mock("../api", () => ({
 import { AgentCliSettings } from "../components/AgentCliSettings";
 
 function instances() {
-  return { instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" }] };
+  return {
+    instances: [{ id: "i1", kind: "deepseek", name: "DeepSeek", model: "deepseek-v4-flash" }],
+    provider_types: [
+      { kind: "claude", label: "Anthropic", label_key: "settings.providerAnthropic",
+        fields: [{ id: "api_key", type: "secret", required: true,
+          label_key: "settings.agentcliApiKey" }] },
+      { kind: "ollama", label: "Ollama (local)", label_key: "settings.providerOllamaLocal",
+        fields: [{ id: "base_url", type: "url", required: true,
+          label_key: "settings.agentcliServerUrl", placeholder: "http://host:11434" }] },
+      { kind: "zai", label: "Z.ai", label_key: "settings.providerZai", fields: [
+        { id: "endpoint_id", type: "choice", required: true,
+          label_key: "settings.agentcliZaiPlan", choices: [
+            { value: "standard", label: "Standard API", label_key: "settings.agentcliZaiStandard" },
+            { value: "coding", label: "Coding Plan", label_key: "settings.agentcliZaiCoding" },
+          ] },
+        { id: "api_key", type: "secret", required: true,
+          label_key: "settings.agentcliApiKey" },
+      ] },
+      { kind: "qwen", label: "Alibaba Cloud Model Studio / Qwen",
+        label_key: "settings.providerQwen", fields: [
+          { id: "api_key", type: "secret", required: true,
+            label_key: "settings.agentcliApiKey" },
+          { id: "base_url", type: "url", required: true,
+            label_key: "settings.agentcliBaseUrl", placeholder: "https://workspace.example/v1" },
+        ] },
+    ],
+  };
+}
+
+async function beginAdd(kind = "claude") {
+  const picker = await screen.findByLabelText("Provider type");
+  fireEvent.change(picker, { target: { value: kind } });
 }
 
 function renderCard() {
@@ -63,16 +97,16 @@ describe("AgentCliSettings", () => {
   it("Validate with no API key shows an error and does not create", async () => {
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Add new provider…"));  // claude selected by default
+    await beginAdd();
     fireEvent.click(screen.getByText("Validate"));
-    await waitFor(() => expect(screen.getByText(/Enter your API key/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Enter API key/i)).toBeInTheDocument());
     expect(createAgentCliProvider).not.toHaveBeenCalled();
   });
 
   it("Validate lists models and turns into Done, which creates the account", async () => {
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByPlaceholderText("API key"), { target: { value: "sk-abc" } });
     fireEvent.click(screen.getByText("Validate"));
     await waitFor(() => expect(probeAgentCliProvider).toHaveBeenCalledWith("claude", { api_key: "sk-abc" }));
@@ -87,7 +121,7 @@ describe("AgentCliSettings", () => {
     probeAgentCliProvider.mockRejectedValueOnce(new Error("This provider account is already configured."));
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByPlaceholderText("API key"), { target: { value: "sk-abc" } });
     fireEvent.click(screen.getByText("Validate"));
 
@@ -105,7 +139,7 @@ describe("AgentCliSettings", () => {
     });
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByPlaceholderText("API key"), { target: { value: "sk-invalid" } });
     fireEvent.click(screen.getByText("Validate"));
 
@@ -120,11 +154,53 @@ describe("AgentCliSettings", () => {
   it("Cancel abandons the add without creating", async () => {
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.click(screen.getByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByPlaceholderText("API key"), { target: { value: "sk-abc" } });
     fireEvent.click(screen.getByText("Cancel"));
     await waitFor(() => expect(screen.queryByPlaceholderText("API key")).toBeNull());
     expect(createAgentCliProvider).not.toHaveBeenCalled();
+  });
+
+  it("uses the disabled placeholder as the first option and has no Add button", async () => {
+    renderCard();
+    const picker = await screen.findByLabelText("Provider type") as HTMLSelectElement;
+    expect(picker.value).toBe("");
+    expect(picker.options[0].textContent).toBe("Add new provider…");
+    expect(picker.options[0].disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Add new provider…" })).toBeNull();
+  });
+
+  it("resets the picker on failed validation while retaining the form", async () => {
+    renderCard();
+    await beginAdd();
+    const picker = screen.getByLabelText("Provider type") as HTMLSelectElement;
+    fireEvent.click(screen.getByText("Validate"));
+    expect(picker.value).toBe("");
+    expect(screen.getByLabelText("API key")).toBeInTheDocument();
+  });
+
+  it("serializes the Z.ai endpoint choice", async () => {
+    renderCard();
+    await beginAdd("zai");
+    fireEvent.change(screen.getByLabelText("Z.ai plan"), { target: { value: "coding" } });
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "z-key" } });
+    fireEvent.click(screen.getByText("Validate"));
+    await waitFor(() => expect(probeAgentCliProvider).toHaveBeenCalledWith("zai", {
+      endpoint_id: "coding", api_key: "z-key",
+    }));
+  });
+
+  it("serializes the Qwen workspace URL", async () => {
+    renderCard();
+    await beginAdd("qwen");
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "q-key" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://workspace.example/compatible-mode/v1" },
+    });
+    fireEvent.click(screen.getByText("Validate"));
+    await waitFor(() => expect(probeAgentCliProvider).toHaveBeenCalledWith("qwen", {
+      api_key: "q-key", base_url: "https://workspace.example/compatible-mode/v1",
+    }));
   });
 
   it("Remove asks for confirmation before deleting the instance", async () => {
@@ -154,8 +230,7 @@ describe("AgentCliSettings", () => {
   it("supports adding a second account of an existing kind (Ollama URL field)", async () => {
     renderCard();
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
-    fireEvent.change(screen.getByLabelText("Provider type"), { target: { value: "ollama" } });
-    fireEvent.click(screen.getByText("Add new provider…"));
+    await beginAdd("ollama");
     // Ollama shows a base-URL field, not an API key field.
     expect(screen.getByPlaceholderText("http://host:11434")).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("API key")).toBeNull();
@@ -595,7 +670,7 @@ describe("AgentCliSettings account actions", () => {
       model: "claude-opus-4-8", probed: {}, calls: 2, checked_at: "x", effort_checkable: true, answered: true,
     });
     renderCard();
-    fireEvent.click(await screen.findByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
     fireEvent.click(screen.getByText("Validate"));
     fireEvent.click(await screen.findByText("Done"));
@@ -605,7 +680,7 @@ describe("AgentCliSettings account actions", () => {
   it("adding without the check spends nothing", async () => {
     createAgentCliProvider.mockResolvedValue({ instance: { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" } });
     renderCard();
-    fireEvent.click(await screen.findByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
     fireEvent.click(screen.getByText("Validate"));
     fireEvent.click(await screen.findByLabelText(/Check which options this model accepts/));
@@ -619,7 +694,7 @@ describe("AgentCliSettings account actions", () => {
     createAgentCliProvider.mockResolvedValue({ instance: { id: "new1", kind: "claude", name: "Anthropic", model: "claude-opus-4-8" } });
     probeAgentCliCapabilities.mockRejectedValue(new Error("rate limited"));
     renderCard();
-    fireEvent.click(await screen.findByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
     fireEvent.click(screen.getByText("Validate"));
     fireEvent.click(await screen.findByText("Done"));
@@ -717,7 +792,7 @@ describe("AgentCliSettings reports every check", () => {
       instances: [{ id: "i1", kind: "openrouter", name: "OpenRouter", model: "a/one" }, added],
     });
     renderCard();
-    fireEvent.click(await screen.findByText("Add new provider…"));
+    await beginAdd();
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
     fireEvent.click(screen.getByText("Validate"));
     fireEvent.click(await screen.findByText("Done"));

@@ -184,7 +184,35 @@ export interface AiTaskPreferredStatus {
 
 export type AgentCliProviderKind =
   "claude" | "deepseek" | "chatgpt" | "gemini" | "grok" | "kimi" | "meta"
-  | "minimax" | "mistral" | "openrouter" | "nvidia" | "ollama" | "ollama_cloud";
+  | "minimax" | "mistral" | "openrouter" | "nvidia" | "ollama" | "ollama_cloud"
+  | "zai" | "groq" | "together" | "cerebras" | "fireworks" | "qwen";
+
+export interface AgentCliProviderChoice {
+  value: string;
+  label: string;
+  label_key?: string;
+}
+
+export interface AgentCliProviderField {
+  id: "api_key" | "base_url" | "endpoint_id";
+  type: "secret" | "url" | "choice";
+  label_key: string;
+  required: boolean;
+  placeholder?: string;
+  choices?: AgentCliProviderChoice[];
+}
+
+export interface AgentCliProviderType {
+  kind: AgentCliProviderKind;
+  label: string;
+  label_key?: string;
+  fields: AgentCliProviderField[];
+}
+
+export interface AgentCliProvidersResponse {
+  instances: AgentCliInstance[];
+  provider_types: AgentCliProviderType[];
+}
 
 // One configured provider account. Multiple of the same kind are allowed (e.g.
 // two Claude keys, two Ollama servers); `name` disambiguates duplicates.
@@ -213,6 +241,7 @@ export interface AgentCliInstance {
   name: string;
   model: string;
   base_url?: string;
+  endpoint_id?: string | null;
   /** Per-model declared capabilities, keyed by model id. Empty when this
  *  provider publishes none, which is most of them. */
   capabilities?: Record<string, DeclaredModelCaps>;

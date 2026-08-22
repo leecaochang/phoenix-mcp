@@ -687,6 +687,7 @@ body[data-home] .content { max-width: 1120px; }
    currentColor (used by the monochrome marks) follows the page ink colour. */
 .card-icon.provider { background: var(--surface); border: 1px solid var(--border); color: var(--ink); }
 .card-icon.provider svg { width: 24px; height: 24px; }
+.card-icon.provider img { width: 24px; height: 24px; object-fit: contain; }
 /* The Kimi mark is a white glyph with no ground of its own, so it needs its
    brand colour behind it; the neutral chip would render it invisible in light
    themes. */

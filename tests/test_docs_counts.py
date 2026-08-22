@@ -123,6 +123,14 @@ def test_docs_directory_is_present() -> None:
     assert len(_pages()) > 5
 
 
+def test_agent_chat_provider_cards_are_alphabetical() -> None:
+    """Keep the provider scan predictable as the catalog grows."""
+    html = (DOCS / "agentcli.html").read_text(encoding="utf-8")
+    names = re.findall(r"<h3>([^<]+)</h3>", html)
+    assert len(names) == len(AGENTCLI_PROVIDERS)
+    assert names == sorted(names, key=str.casefold)
+
+
 def test_word_list_has_no_gaps() -> None:
     """The 86 blind spot: every value 9..99 must be representable."""
     assert sorted(WORDS.values()) == list(range(9, 100))

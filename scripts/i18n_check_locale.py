@@ -140,6 +140,26 @@ ALLOW_IDENTICAL = frozenset({
     "panel.perms.colId",              # "ID"
     "panel.tokens.namePlaceholder",   # "my_token", a literal example value
     "panel.changes.typeEsphomeYaml",  # "ESPHome YAML": a product name plus a format name
+    # Product and plan names are proper nouns rather than translatable prose.
+    "panel.settings.agentcliZaiCoding",
+    "panel.settings.agentcliZaiStandard",
+    "panel.settings.providerAnthropic",
+    "panel.settings.providerCerebras",
+    "panel.settings.providerDeepSeek",
+    "panel.settings.providerFireworks",
+    "panel.settings.providerGemini",
+    "panel.settings.providerGrok",
+    "panel.settings.providerGroq",
+    "panel.settings.providerKimi",
+    "panel.settings.providerMeta",
+    "panel.settings.providerMiniMax",
+    "panel.settings.providerMistral",
+    "panel.settings.providerNvidia",
+    "panel.settings.providerOpenAI",
+    "panel.settings.providerOpenRouter",
+    "panel.settings.providerQwen",
+    "panel.settings.providerTogether",
+    "panel.settings.providerZai",
 })
 
 # Keys whose leading or trailing ASCII space is allowed to disappear, because

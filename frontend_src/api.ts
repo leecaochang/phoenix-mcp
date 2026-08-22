@@ -1,6 +1,7 @@
 import type {
   AgentCliProviderKind,
   AgentCliInstance,
+  AgentCliProvidersResponse,
   AiTaskPreferredStatus,
   ApprovalListParams,
   ApprovalListResponse,
@@ -362,10 +363,10 @@ export const api = {
   // agentCLI: provider accounts live on the admin surface. Multiple accounts of
   // the same kind are allowed; each has an opaque instance id.
   getAgentCliProviders: () =>
-    req<{ instances: AgentCliInstance[] }>("GET", "/agentcli/providers"),
+    req<AgentCliProvidersResponse>("GET", "/agentcli/providers"),
   createAgentCliProvider: (
     kind: AgentCliProviderKind,
-    body: { api_key?: string; base_url?: string; model?: string },
+    body: { api_key?: string; base_url?: string; endpoint_id?: string; model?: string },
   ) => req<{ instance: AgentCliInstance }>("POST", "/agentcli/providers", { kind, ...body }),
   refreshAgentCliProvider: (id: string) =>
     req<{ models: string[]; capabilities: Record<string, DeclaredModelCaps>; declared: boolean; checked_at: string }>(
@@ -382,7 +383,7 @@ export const api = {
     req<{ models: string[] }>("GET", `/agentcli/providers/${encodeURIComponent(id)}/models`),
   probeAgentCliProvider: (
     kind: AgentCliProviderKind,
-    body: { api_key?: string; base_url?: string },
+    body: { api_key?: string; base_url?: string; endpoint_id?: string },
   ) => req<{
     ok: boolean;
     models: string[];

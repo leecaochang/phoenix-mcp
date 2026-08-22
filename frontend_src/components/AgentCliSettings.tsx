@@ -1,39 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { api, localizedApiMessage } from "../api";
+import { api } from "../api";
 import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
 import { effortLevelLabel, formatDateTime } from "../utils";
-import type { AgentCliInstance, AgentCliProviderKind } from "../types";
+import type { AgentCliInstance, AgentCliProviderType } from "../types";
 import { t } from "../i18n";
 import { tRich } from "../i18n/rich";
-
-// Alphabetical by label so the provider dropdown reads in order. Exported for
-// the onboarding wizard's provider-setup step, which mirrors this add flow.
-export const KINDS: { kind: AgentCliProviderKind; label: string; labelKey?: string; keyless: boolean }[] = [
-  // Labels name the VENDOR, not the model family, so an account reads as the
-  // credential it holds ("Anthropic", not "Claude"). The `kind` keys are the
-  // stored identifiers and stay as they are. Ordered alphabetically by label.
-  { kind: "claude", label: "Anthropic", keyless: false },
-  { kind: "deepseek", label: "DeepSeek", keyless: false },
-  { kind: "gemini", label: "Gemini", keyless: false },
-  { kind: "grok", label: "Grok", keyless: false },
-  { kind: "kimi", label: "Kimi", keyless: false },
-  { kind: "meta", label: "Meta", keyless: false },
-  { kind: "minimax", label: "MiniMax", keyless: false },
-  { kind: "mistral", label: "Mistral AI", keyless: false },
-  { kind: "nvidia", label: "NVIDIA", keyless: false },
-  { kind: "ollama_cloud", label: "Ollama (cloud)", labelKey: "settings.providerOllamaCloud", keyless: false },
-  { kind: "ollama", label: "Ollama (local)", labelKey: "settings.providerOllamaLocal", keyless: true },
-  { kind: "chatgpt", label: "OpenAI", keyless: false },
-  { kind: "openrouter", label: "OpenRouter", keyless: false },
-];
-
-// Only the two Ollama entries carry a labelKey: the rest are bare brand names
-// with nothing to translate, and inventing a catalog entry per provider would
-// just be a list of identical strings in every locale.
-export function kindLabel(k: { label: string; labelKey?: string }): string {
-  return k.labelKey ? t(k.labelKey) : k.label;
-}
+import { ProviderAddForm } from "./ProviderAddForm";
 
 // Which account warnings the operator has closed. Persisted, because the point
 // of closing one is that it stays closed across visits; an in-memory dismissal
@@ -198,24 +171,9 @@ interface Props {
   saving: boolean;
 }
 
-interface FormState {
-  credential: string;   // api key, or base_url for Ollama
-  model: string;
-  models: string[];
-  validating: boolean;
-  validated: boolean;
-  error: string | null;
-  /** Check the model's real options right after the account is stored. */
-  probe: boolean;
-}
-
-const EMPTY_FORM: FormState = { credential: "", model: "", models: [], validating: false, validated: false, error: null, probe: true };
-
 export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations, onMaxIterationsChange, globalVisible, onGlobalChange, saving }: Props) {
   const [instances, setInstances] = useState<AgentCliInstance[] | null>(null);
-  const [newKind, setNewKind] = useState<AgentCliProviderKind>("claude");
-  const [adding, setAdding] = useState<AgentCliProviderKind | null>(null);
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [providerTypes, setProviderTypes] = useState<AgentCliProviderType[]>([]);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<AgentCliInstance | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -232,7 +190,13 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   const [probeOnSave, setProbeOnSave] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
 
-  const load = () => api.getAgentCliProviders().then((r) => setInstances(r.instances)).catch(() => setInstances([]));
+  const load = () => api.getAgentCliProviders().then((response) => {
+    setInstances(response.instances);
+    setProviderTypes(response.provider_types ?? []);
+  }).catch(() => {
+    setInstances([]);
+    setProviderTypes([]);
+  });
   useEffect(() => { void load(); }, []);
 
   // Refresh every account's model list when the card is shown. This is the free
@@ -395,62 +359,10 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   useEffect(() => { setScrollInput(String(scrollback)); }, [scrollback]);
   useEffect(() => { setMaxIterInput(String(maxIterations)); }, [maxIterations]);
 
-  const meta = (kind: AgentCliProviderKind) => KINDS.find((k) => k.kind === kind);
-
-  const openAdd = () => { setAdding(newKind); setForm(EMPTY_FORM); };
-
-  // Validate (probe) the entered credential and list models, WITHOUT storing.
-  const validate = async () => {
-    if (!adding) return;
-    const value = form.credential.trim();
-    if (!value) {
-      setForm((f) => ({ ...f, error: meta(adding)?.keyless ? t("settings.agentcliEnterUrl") : t("settings.agentcliEnterKey") }));
-      return;
-    }
-    setForm((f) => ({ ...f, validating: true, error: null }));
-    try {
-      const r = await api.probeAgentCliProvider(adding, meta(adding)?.keyless ? { base_url: value } : { api_key: value });
-      // Read off the response HERE, not inside the updaters below: see probedCard.
-      if (!r || typeof r !== "object" || !r.ok || !Array.isArray(r.models)) {
-        const error = r && typeof r === "object" && r.error
-          ? localizedApiMessage(r.error, r.message_key, r.message_params)
-          : t("settings.agentcliConnectionFailed");
-        setForm((f) => ({ ...f, validating: false, validated: false, models: [], error }));
-        return;
-      }
-      const models = r.models;
-      setForm((f) => ({
-        ...f, validating: false, validated: true, error: null,
-        models, model: models.includes(f.model) ? f.model : (models[0] ?? ""),
-      }));
-    } catch (err: unknown) {
-      setForm((f) => ({ ...f, validating: false, validated: false, models: [], error: err instanceof Error ? err.message : t("settings.agentcliConnectionFailed") }));
-    }
-  };
-
-  // Commit a validated account (creates a new instance).
-  const done = async () => {
-    if (!adding) return;
-    const value = form.credential.trim();
-    setBusy(true);
-    try {
-      const created = await api.createAgentCliProvider(adding, {
-        ...(meta(adding)?.keyless ? { base_url: value } : { api_key: value }),
-        ...(form.model ? { model: form.model } : {}),
-      });
-      // Best-effort: a failed check must not fail the account, which is already
-      // stored and working. The operator can run it again from the card.
-      if (form.probe && form.model && created.instance?.id) {
-        await runProbe(created.instance.id);
-      }
-      await load();
-      notifyChanged();
-      setAdding(null);
-    } catch (err: unknown) {
-      setForm((f) => ({ ...f, error: err instanceof Error ? err.message : t("settings.agentcliSaveFailed") }));
-    } finally {
-      setBusy(false);
-    }
+  const providerCreated = async (instance: AgentCliInstance, probe: boolean) => {
+    if (probe && instance.id) await runProbe(instance.id);
+    await load();
+    notifyChanged();
   };
 
   const remove = async (id: string) => {
@@ -515,8 +427,6 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
   };
   useEffect(() => () => window.clearTimeout(maxIterTimer.current), []);
 
-  const addingMeta = adding ? meta(adding) : undefined;
-
   return (
     <div className="card">
       <h3 className="card-header">
@@ -527,55 +437,13 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
         {t("settings.agentcliIntro")}
       </p>
 
-      {/* Add a new account. */}
-      <div className="agentcli-add-row">
-        <select className="input input-auto" value={newKind} disabled={busy || adding !== null}
-                onChange={(e) => setNewKind(e.target.value as AgentCliProviderKind)} aria-label={t("settings.agentcliProviderType")}>
-          {KINDS.map((k) => <option key={k.kind} value={k.kind}>{kindLabel(k)}</option>)}
-        </select>
-        <button className="btn btn-outline btn-sm" disabled={busy || adding !== null} onClick={openAdd}>{t("settings.agentcliAddProvider")}</button>
-      </div>
-
-      {adding && (
-        <div className="agentcli-settings-form agentcli-add-form">
-          <div className="agentcli-settings-hint">{t("settings.agentcliAdding", { name: addingMeta ? kindLabel(addingMeta) : "" })}</div>
-          {addingMeta?.keyless ? (
-            <input placeholder="http://host:11434" aria-label={t("settings.agentcliServerUrl")} value={form.credential} disabled={form.validating || busy}
-                   onChange={(e) => setForm((s) => ({ ...s, credential: e.target.value, validated: false }))} />
-          ) : (
-            <input type="password" placeholder={t("settings.agentcliApiKey")} aria-label={t("settings.agentcliApiKey")} value={form.credential} disabled={form.validating || busy}
-                   onChange={(e) => setForm((s) => ({ ...s, credential: e.target.value, validated: false }))} />
-          )}
-          {form.validating && <div className="agentcli-settings-hint" role="status">{t("settings.agentcliValidating")}</div>}
-          {form.error && <div className="banner banner-error" role="alert">{form.error}</div>}
-          {form.validated && (
-            <label className="agentcli-settings-model-row">
-              <span>{t("settings.agentcliSelectModel")}</span>
-              <select value={form.model} disabled={busy || !form.models.length}
-                      onChange={(e) => setForm((s) => ({ ...s, model: e.target.value }))}>
-                {form.models.length
-                  ? form.models.map((m) => <option key={m} value={m}>{m}</option>)
-                  : <option value="">{t("settings.agentcliNoModels")}</option>}
-              </select>
-            </label>
-          )}
-          {form.validated && (
-            <label className="agentcli-settings-probe-opt">
-              <input type="checkbox" checked={form.probe}
-                     onChange={(e) => setForm((f) => ({ ...f, probe: e.target.checked }))} />
-              <span>{t("settings.agentcliProbeOnAdd")}</span>
-            </label>
-          )}
-          <div className="agentcli-settings-form-actions">
-            {form.validated ? (
-              <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void done()}>{t("settings.agentcliDone")}</button>
-            ) : (
-              <button className="btn btn-primary btn-sm" disabled={busy || form.validating} onClick={() => void validate()}>{t("settings.agentcliValidate")}</button>
-            )}
-            <button className="btn btn-sm" disabled={busy} onClick={() => setAdding(null)}>{t("settings.cancel")}</button>
-          </div>
-        </div>
-      )}
+      <ProviderAddForm
+        providerTypes={providerTypes}
+        disabled={busy}
+        completeLabel={t("settings.agentcliDone")}
+        addingLabelKey="settings.agentcliAdding"
+        onCreated={providerCreated}
+      />
 
       {/* Configured accounts. */}
       <div className="agentcli-settings-providers">
@@ -684,7 +552,7 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
             )}
           </div>
         ))}
-        {instances && instances.length === 0 && !adding && (
+        {instances && instances.length === 0 && (
           <div className="agentcli-settings-hint">{t("settings.agentcliNoAccounts")}</div>
         )}
       </div>

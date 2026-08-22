@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentCliInstance, AgentCliProviderKind, CreateTokenBody, EntityTree as EntityTreeData, Persona, PermissionTree } from "../types";
-import { api, ApiError, localizedApiMessage } from "../api";
+import type { AgentCliInstance, AgentCliProviderType, CreateTokenBody, EntityTree as EntityTreeData, Persona, PermissionTree } from "../types";
+import { api, ApiError } from "../api";
 import { PersonaPicker } from "../components/PersonaPicker";
 import { EntityTree } from "../components/EntityTree";
 import { CopyButton } from "../components/TokenCreateModal";
 import { ConnectInstructions } from "../components/ConnectInstructions";
-import { KINDS, kindLabel } from "../components/AgentCliSettings";
+import { ProviderAddForm } from "../components/ProviderAddForm";
 import { PERSONA_CAP_DEFAULTS } from "../personas";
 import { buildTestPrompt, firstGreenTarget } from "../wizard_helpers";
 import { patchDurable as patchAgentCliDurable } from "../utils/agentcli_state";
@@ -377,19 +377,14 @@ export function OnboardingWizard({ onCancel, onFinish }: Props) {
 // probe, exactly like the Settings > Agent Chat card). "Try now" commits a
 // validated new account (or uses the selected existing one) and hands its
 // instance id + model to the wizard to launch the chat window.
-function WizardProviderSetup({ onBack, onTryNow }: {
+export function WizardProviderSetup({ onBack, onTryNow }: {
   onBack: () => void;
   onTryNow: (instanceId: string, model: string) => void;
 }) {
   const [instances, setInstances] = useState<AgentCliInstance[] | null>(null);
+  const [providerTypes, setProviderTypes] = useState<AgentCliProviderType[]>([]);
   const [selected, setSelected] = useState("");
-  const [newKind, setNewKind] = useState<AgentCliProviderKind>("claude");
-  const [adding, setAdding] = useState<AgentCliProviderKind | null>(null);
-  const [credential, setCredential] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState("");
-  const [validating, setValidating] = useState(false);
-  const [validated, setValidated] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -397,82 +392,30 @@ function WizardProviderSetup({ onBack, onTryNow }: {
     api.getAgentCliProviders()
       .then((r) => {
         setInstances(r.instances);
+        setProviderTypes(r.provider_types ?? []);
         if (r.instances.length > 0) setSelected(r.instances[0].id);
       })
-      .catch(() => setInstances([]));
+      .catch(() => { setInstances([]); setProviderTypes([]); });
   }, []);
 
-  const meta = (kind: AgentCliProviderKind) => KINDS.find((k) => k.kind === kind);
-  const addingMeta = adding ? meta(adding) : undefined;
-
-  const openAdd = () => {
-    setAdding(newKind);
-    setCredential("");
-    setModels([]);
-    setModel("");
-    setValidated(false);
-    setErr(null);
-  };
-
-  const closeAdd = () => {
-    setAdding(null);
-    setValidated(false);
-    setErr(null);
-  };
-
-  // Validate (probe) the credential and list models, WITHOUT storing anything.
-  const validate = async () => {
-    if (!adding) return;
-    const value = credential.trim();
-    if (!value) {
-      setErr(addingMeta?.keyless ? t("wizard.enterOllamaUrl") : t("wizard.enterApiKey"));
-      return;
-    }
-    setValidating(true);
-    setErr(null);
-    try {
-      const r = await api.probeAgentCliProvider(adding, addingMeta?.keyless ? { base_url: value } : { api_key: value });
-      if (!r.ok) {
-        setValidated(false);
-        setModels([]);
-        setErr(r.error
-          ? localizedApiMessage(r.error, r.message_key, r.message_params)
-          : t("wizard.connectionFailed"));
-        return;
-      }
-      setValidated(true);
-      setModels(r.models);
-      setModel((m) => (r.models.includes(m) ? m : (r.models[0] ?? "")));
-    } catch (e: unknown) {
-      setValidated(false);
-      setModels([]);
-      setErr(e instanceof Error ? e.message : t("wizard.connectionFailed"));
-    } finally {
-      setValidating(false);
-    }
-  };
-
-  const canTry = adding ? validated : !!selected;
-
-  const tryNow = async () => {
+  const tryExisting = async () => {
     setBusy(true);
     setErr(null);
     try {
-      if (adding && validated) {
-        const r = await api.createAgentCliProvider(adding, {
-          ...(addingMeta?.keyless ? { base_url: credential.trim() } : { api_key: credential.trim() }),
-          ...(model ? { model } : {}),
-        });
-        window.dispatchEvent(new CustomEvent("phx-agentcli-providers-changed"));
-        onTryNow(r.instance.id, model);
-      } else {
-        const inst = instances?.find((i) => i.id === selected);
-        onTryNow(selected, inst?.model ?? "");
-      }
+      const inst = instances?.find((i) => i.id === selected);
+      onTryNow(selected, inst?.model ?? "");
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : t("wizard.providerSaveFailed"));
       setBusy(false);
     }
+  };
+
+  const providerCreated = async (instance: AgentCliInstance, probe: boolean) => {
+    if (probe) {
+      try { await api.probeAgentCliCapabilities(instance.id); } catch { /* advisory */ }
+    }
+    window.dispatchEvent(new CustomEvent("phx-agentcli-providers-changed"));
+    onTryNow(instance.id, instance.model ?? "");
   };
 
   return (
@@ -489,65 +432,30 @@ function WizardProviderSetup({ onBack, onTryNow }: {
         <div className="field">
           <label htmlFor="wiz-provider-account">{t("wizard.providerAccount")}</label>
           <select id="wiz-provider-account" className="input" value={selected}
-                  disabled={busy || adding !== null}
+                  disabled={busy || adding}
                   onChange={(e) => setSelected(e.target.value)}>
             {instances.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
           </select>
         </div>
       )}
 
-      <div className="agentcli-add-row">
-        <select className="input input-auto" value={newKind} disabled={busy || adding !== null}
-                onChange={(e) => setNewKind(e.target.value as AgentCliProviderKind)} aria-label={t("wizard.providerType")}>
-          {KINDS.map((k) => <option key={k.kind} value={k.kind}>{kindLabel(k)}</option>)}
-        </select>
-        <button className="btn btn-outline btn-sm" disabled={busy || adding !== null} onClick={openAdd}>
-          {t("wizard.addNewProvider")}
-        </button>
-      </div>
-
-      {adding && (
-        <div className="agentcli-settings-form agentcli-add-form">
-          <div className="agentcli-settings-hint">{t("wizard.addingProvider", { label: addingMeta ? kindLabel(addingMeta) : "" })}</div>
-          {addingMeta?.keyless ? (
-            <input placeholder="http://host:11434" aria-label={t("wizard.serverUrl")} value={credential}
-                   disabled={validating || busy}
-                   onChange={(e) => { setCredential(e.target.value); setValidated(false); }} />
-          ) : (
-            <input type="password" placeholder={t("wizard.apiKey")} aria-label={t("wizard.apiKey")} value={credential}
-                   disabled={validating || busy}
-                   onChange={(e) => { setCredential(e.target.value); setValidated(false); }} />
-          )}
-          {validating && <div className="agentcli-settings-hint" role="status">{t("wizard.validating")}</div>}
-          {err && <div className="banner banner-error" role="alert">{err}</div>}
-          {validated && (
-            <label className="agentcli-settings-model-row">
-              <span>{t("wizard.selectDefaultModel")}</span>
-              <select value={model} disabled={busy || !models.length}
-                      onChange={(e) => setModel(e.target.value)}>
-                {models.length
-                  ? models.map((m) => <option key={m} value={m}>{m}</option>)
-                  : <option value="">{t("wizard.noModels")}</option>}
-              </select>
-            </label>
-          )}
-          <div className="agentcli-settings-form-actions">
-            {!validated && (
-              <button className="btn btn-primary btn-sm" disabled={busy || validating} onClick={() => void validate()}>
-                {t("wizard.validate")}
-              </button>
-            )}
-            <button className="btn btn-sm" disabled={busy} onClick={closeAdd}>{t("common.cancel")}</button>
-          </div>
-        </div>
-      )}
+      <ProviderAddForm
+        providerTypes={providerTypes}
+        disabled={busy}
+        completeLabel={t("wizard.tryNow")}
+        addingLabelKey="wizard.addingProvider"
+        onActiveChange={setAdding}
+        onCreated={providerCreated}
+      />
       {!adding && err && <div className="banner banner-error" role="alert">{err}</div>}
 
       <div className="wizard-actions">
         <button className="btn btn-text" disabled={busy} onClick={onBack}>{t("wizard.back")}</button>
-        <button className="btn btn-primary" disabled={!canTry || busy} onClick={() => void tryNow()}>
-          {busy ? t("wizard.working") : t("wizard.tryNow")}
-        </button>
+        {!adding && (
+          <button className="btn btn-primary" disabled={!selected || busy} onClick={() => void tryExisting()}>
+            {busy ? t("wizard.working") : t("wizard.tryNow")}
+          </button>
+        )}
       </div>
     </>
   );

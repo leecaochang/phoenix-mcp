@@ -3,7 +3,6 @@ import type { AgentCliProviderKind, MesaProfileScope, TokenRecord, VersionResour
 import { CASCADING_SCOPES, EDITOR_SCOPES } from "../views/MesaView";
 import { QUICK_ADD_SCOPES } from "../inject/QuickAdd";
 import { SUBPAGE_SURFACES } from "../inject/dom";
-import { KINDS } from "../components/AgentCliSettings";
 import { RESOURCE_TYPE_LABEL_KEYS } from "../views/ChangesView";
 import contract from "../../tests/contract/token_record_keys.json";
 import versionContract from "../../tests/contract/version_resource_types.json";
@@ -117,16 +116,16 @@ describe("frontend/backend version resource type contract", () => {
 });
 
 // Contract drift guard for the Agent Chat provider allowlist, which is
-// hand-mirrored three times: const.AGENTCLI_PROVIDERS (gates creation), this
-// union, and the KINDS table that IS the "Add new provider" dropdown. A kind
-// present in the backend but missing from KINDS ships unreachable, with nothing
-// failing, so the table itself is pinned and not just the type.
+// mirrored between the backend allowlist and the frontend's transport union.
+// The dropdown itself is supplied by the backend registry at runtime and is
+// pinned by the backend catalog tests.
 const PROVIDER_KINDS = {
   claude: true,
   deepseek: true,
   chatgpt: true,
   gemini: true,
   grok: true,
+  groq: true,
   kimi: true,
   meta: true,
   minimax: true,
@@ -135,17 +134,16 @@ const PROVIDER_KINDS = {
   nvidia: true,
   ollama: true,
   ollama_cloud: true,
+  together: true,
+  cerebras: true,
+  fireworks: true,
+  qwen: true,
+  zai: true,
 } satisfies Record<AgentCliProviderKind, true>;
 
 describe("frontend/backend agentCLI provider contract", () => {
   it("the TS union covers exactly the backend allowlist", () => {
     expect(Object.keys(PROVIDER_KINDS).sort()).toEqual(
-      [...providerContract.agentcli_provider_kinds].sort(),
-    );
-  });
-
-  it("every allowed kind is offered in the provider dropdown", () => {
-    expect(KINDS.map((k) => k.kind).sort()).toEqual(
       [...providerContract.agentcli_provider_kinds].sort(),
     );
   });

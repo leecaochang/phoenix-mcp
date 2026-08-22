@@ -2527,6 +2527,10 @@ hui-card { display: block; min-width: 0; }
   border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm);
   background: var(--phx-surface); color: var(--phx-text);
 }
+.agentcli-settings-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.agentcli-settings-field > span { color: var(--phx-text-muted); font-weight: 600; }
+.agentcli-settings-field > input,
+.agentcli-settings-field > select { width: 100%; min-width: 0; }
 .agentcli-settings-form-actions { display: flex; gap: 6px; }
 .agentcli-add-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .agentcli-add-row select { flex: 0 1 auto; }

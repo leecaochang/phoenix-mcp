@@ -321,6 +321,20 @@ function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: bool
       // it. Until then the model still reasons at its own default; what is
       // missing is the ability to choose.
       return { thinking: [], style: "effort", defaultLevel: "high", temperature: true };
+    case "zai":
+    case "qwen":
+      // These providers publish a boolean thinking control. Their APIs own the
+      // reasoning depth, so Phoenix exposes only on and off and omits a custom
+      // temperature while thinking is enabled.
+      return { thinking: thinkOpts(["off", "on"]), style: "boolean",
+               defaultLevel: "on", temperature: !thinkingOn };
+    case "groq":
+    case "together":
+    case "cerebras":
+    case "fireworks":
+      // The protocol accepts ordinary sampling controls. Reasoning remains
+      // unknown until the account probe proves model-specific effort levels.
+      return { thinking: [], style: "effort", defaultLevel: "high", temperature: true };
     default:
       return { thinking: [], style: "effort", defaultLevel: "high", temperature: false };
   }

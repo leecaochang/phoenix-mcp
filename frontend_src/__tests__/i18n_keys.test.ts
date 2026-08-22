@@ -72,6 +72,8 @@ function collectLiterals(): Set<string> {
 const BACKEND_NAMED = [
   "diff.", "approvalSummary.", "version.", "mesaSuggestion.", "agentchat.notice.",
   "agentchat.progress.", "adminError.",
+  "settings.provider", "settings.agentcliApiKey", "settings.agentcliBaseUrl",
+  "settings.agentcliServerUrl", "settings.agentcliZai",
 ];
 
 const catalog = flattenCatalog(en.panel);

@@ -1,10 +1,13 @@
 {
   "agentcli_provider_kinds": [
     "chatgpt",
+    "cerebras",
     "claude",
     "deepseek",
+    "fireworks",
     "gemini",
     "grok",
+    "groq",
     "kimi",
     "meta",
     "minimax",
@@ -12,6 +15,9 @@
     "nvidia",
     "ollama",
     "ollama_cloud",
-    "openrouter"
+    "openrouter",
+    "qwen",
+    "together",
+    "zai"
   ]
 }
