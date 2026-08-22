@@ -1811,6 +1811,7 @@
       "named.kind.input_text": "テキストヘルパー",
       "named.kind.scene": "シーン",
       "named.kind.schedule": "スケジュールヘルパー",
+      "named.kind.zone": "ゾーンヘルパー",
       "named.kind.script": "スクリプト",
       "named.kind.timer": "タイマーヘルパー",
       "named.removeDevice.body": "{integration}インテグレーションに{device}の削除を依頼します。デバイスの再追加が必要になる場合があり、この操作はPhoenix MCPから元に戻せません。",

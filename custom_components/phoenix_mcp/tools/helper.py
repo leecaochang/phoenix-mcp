@@ -2,7 +2,7 @@
 
 The storage-based helper domains only, listed in HELPER_TYPES: each publishes a
 uniform {type}/create|update|delete WS command whose item id key is
-"{type}_id", which is what makes one set of handlers cover all nine.
+"{type}_id", which is what makes one set of handlers cover all ten.
 Config-flow helpers use HA's config-entry flow manager instead. create_helper
 can replay their cumulative form steps, returning the next real schema until a
 last step is supplied; only that last step is approval-gated and submitted.
@@ -58,8 +58,13 @@ _NOT_A_HELPER_ENTRY = (
 # types (template, group, utility_meter, etc.) are out of scope for now.
 HELPER_TYPES = frozenset({
     "input_boolean", "input_number", "input_text",
-    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule",
+    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule", "zone",
 })
+
+_ZONE_CONFIG_FIELDS = frozenset({
+    "name", "latitude", "longitude", "radius", "passive", "icon",
+})
+_HELPER_CONTEXT_FINGERPRINT = "_phoenix_helper_context_fingerprint"
 
 # A generated OTP cannot be created noninteractively: HA shows the secret and
 # requires a current TOTP code in a later confirmation step. Keeping it out is a
@@ -257,6 +262,30 @@ async def _tool_list_helpers(
         return _tool_error("Forbidden."), "denied", "list_helpers"
     type_filter = args.get("helper_type")
     registry = er.async_get(hass)
+    storage_zone_ids: set[str] = set()
+    if type_filter in (None, "zone") and "zone" in hass.config.components:
+        try:
+            zone_items = await async_ws_command(hass, "zone/list", {})
+        except WsDispatchError:
+            if type_filter == "zone":
+                return (
+                    _tool_error("Zone helper storage is unavailable."),
+                    "invalid_request",
+                    "list_helpers",
+                )
+        else:
+            if not isinstance(zone_items, list):
+                if type_filter == "zone":
+                    return (
+                        _tool_error("Zone helper storage is unavailable."),
+                        "invalid_request",
+                        "list_helpers",
+                    )
+            else:
+                storage_zone_ids = {
+                    row["id"] for row in zone_items
+                    if isinstance(row, dict) and isinstance(row.get("id"), str)
+                }
     helpers: list[dict] = []
     for e in filter_entities_for_token(hass.states.async_all(), token, hass):
         domain = e["entity_id"].split(".")[0]
@@ -265,6 +294,10 @@ async def _tool_list_helpers(
         if type_filter and domain != type_filter:
             continue
         entry = registry.async_get(e["entity_id"])
+        if domain == "zone" and (
+            entry is None or entry.unique_id not in storage_zone_ids
+        ):
+            continue
         helpers.append({
             "entity_id": e["entity_id"],
             "helper_type": domain,
@@ -294,7 +327,120 @@ def _helper_write_precheck(args: dict, tool_name: str, *, require_id: bool) -> t
             return _tool_error("config must be an object."), "invalid_request", tool_name
     elif not isinstance(config, dict) or not config:
         return _tool_error("config must be a non-empty object (at least 'name')."), "invalid_request", tool_name
+    if args.get("helper_type") == "zone" and isinstance(config, dict):
+        unknown = sorted(set(config) - _ZONE_CONFIG_FIELDS)
+        if unknown:
+            return (
+                _tool_error(
+                    "Unknown zone configuration fields: "
+                    f"{', '.join(unknown)}. Allowed fields are: "
+                    f"{', '.join(sorted(_ZONE_CONFIG_FIELDS))}."
+                ),
+                "invalid_request",
+                tool_name,
+            )
     return None
+
+
+def _zone_create_scope_error(token: TokenRecord) -> str | None:
+    """Require inherited WRITE scope before creating a new zone entity.
+
+    A new entity cannot already have an entity-specific grant. Requiring a
+    GREEN zone-domain grant (or pass-through scope) ensures the entity will be
+    visible and manageable after it materializes. The executor still verifies
+    the concrete entity because an entity-specific RED rule may override the
+    inherited grant once the final entity_id is known.
+    """
+    if token.pass_through:
+        return None
+    domain = token.permissions.domains.get("zone")
+    if domain is not None and domain.state == "GREEN":
+        return None
+    return (
+        "Creating a zone requires write access to the entire zone domain, "
+        "because the new zone does not have an entity ID that can be scoped yet."
+    )
+
+
+async def _zone_helper_context(
+    args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str,
+) -> tuple[dict[str, Any] | None, tuple[dict, str, str] | None]:
+    """Resolve one writable storage zone and its approval-bound snapshot.
+
+    Zone authoring is stricter than ordinary helper authoring because its stored
+    record contains a precise location. The storage list proves the item is an
+    editable storage zone rather than the core home zone or a YAML-backed zone;
+    the entity permission check keeps an accessible zone from becoming a route
+    to another token's location data. A list failure is reported as unavailable,
+    never collapsed into an authoritative not-found result.
+    """
+    helper_id = str(args.get("helper_id") or "").strip()
+    entity_id = _resolve_helper_entity_id(hass, "zone", helper_id)
+    if entity_id is None or resolve(entity_id, token, hass) != Permission.WRITE:
+        return None, (
+            _tool_error("Helper not found."), "not_found", f"helper:zone:{helper_id}"
+        )
+    try:
+        items = await async_ws_command(hass, "zone/list", {})
+    except WsDispatchError:
+        return None, (
+            _tool_error("Zone helper storage is unavailable; nothing changed."),
+            "invalid_request",
+            tool_name,
+        )
+    if not isinstance(items, list):
+        return None, (
+            _tool_error("Zone helper storage is unavailable; nothing changed."),
+            "invalid_request",
+            tool_name,
+        )
+    item = next(
+        (row for row in items if isinstance(row, dict) and row.get("id") == helper_id),
+        None,
+    )
+    if item is None:
+        return None, (
+            _tool_error("Helper not found."), "not_found", f"helper:zone:{helper_id}"
+        )
+    return {"entity_id": entity_id, "config": item}, None
+
+
+async def _bind_zone_helper_context(
+    args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str,
+) -> tuple[dict, tuple[dict, str, str] | None]:
+    """Attach an exact zone snapshot to edit/delete approval arguments."""
+    if args.get("helper_type") != "zone":
+        return args, None
+    context, error = await _zone_helper_context(args, token, hass, tool_name)
+    if error is not None:
+        return args, error
+    assert context is not None
+    bound = dict(args)
+    bound[_HELPER_CONTEXT_FINGERPRINT] = content_hash(context)
+    return bound, None
+
+
+async def _revalidate_zone_helper_context(
+    args: dict, token: TokenRecord, hass: HomeAssistant, tool_name: str,
+) -> tuple[dict[str, Any] | None, tuple[dict, str, str] | None]:
+    """Re-check zone scope, storage ownership, and any approval snapshot."""
+    if args.get("helper_type") != "zone":
+        return None, None
+    context, error = await _zone_helper_context(args, token, hass, tool_name)
+    if error is not None:
+        return None, error
+    assert context is not None
+    saved = args.get(_HELPER_CONTEXT_FINGERPRINT)
+    if saved is not None and content_hash(context) != saved:
+        return None, (
+            _tool_error(
+                "This zone changed after the request was reviewed; nothing changed. "
+                "Read it again and submit a new request."
+            ),
+            "invalid_request",
+            tool_name,
+        )
+    return context, None
 
 
 async def _tool_create_helper(
@@ -314,6 +460,8 @@ async def _tool_create_helper(
         pre = _helper_write_precheck(args, "create_helper", require_id=False)
         if pre is not None:
             return pre
+        if helper_type == "zone" and (scope_error := _zone_create_scope_error(token)):
+            return _tool_error(scope_error), "denied", "create_helper"
     else:
         if not await _is_config_flow_helper(hass, helper_type):
             extra = (
@@ -418,11 +566,44 @@ async def _execute_create_helper(
         )
     if not isinstance(config, dict) or not config:
         return _tool_error("config must be a non-empty object (at least 'name')."), "invalid_request", "create_helper"
+    pre = _helper_write_precheck(args, "create_helper", require_id=False)
+    if pre is not None:
+        return pre
+    if helper_type == "zone" and (scope_error := _zone_create_scope_error(token)):
+        return _tool_error(scope_error), "denied", "create_helper"
     try:
         item = await async_ws_command(hass, f"{helper_type}/create", dict(config))
     except WsDispatchError as exc:
         return _tool_error(f"Failed to create helper: {exc}"), "invalid_request", "create_helper"
     new_id = item.get("id") if isinstance(item, dict) else None
+    if helper_type == "zone":
+        entity_id = (
+            _resolve_helper_entity_id(hass, "zone", str(new_id))
+            if new_id is not None else None
+        )
+        if entity_id is None or resolve(entity_id, token, hass) != Permission.WRITE:
+            if new_id is not None:
+                try:
+                    await async_ws_command(
+                        hass, "zone/delete", {"zone_id": str(new_id)}
+                    )
+                except WsDispatchError:
+                    return (
+                        _tool_error(
+                            "The new zone did not enter this token's write scope, and "
+                            "automatic cleanup failed. Remove it in Home Assistant."
+                        ),
+                        "invalid_request",
+                        "create_helper",
+                    )
+            return (
+                _tool_error(
+                    "The new zone did not enter this token's write scope, so it was "
+                    "removed and nothing changed."
+                ),
+                "denied",
+                "create_helper",
+            )
     await _record_version(
         data, token, resource_type="helper", resource_id=f"{helper_type}:{new_id}",
         action="create", before=None, after=config, alias=config.get("name"),
@@ -561,14 +742,20 @@ async def _tool_edit_helper(
     pre = _helper_write_precheck(args, "edit_helper", require_id=True)
     if pre is not None:
         return pre
+    approval_args, context_error = await _bind_zone_helper_context(
+        args, token, hass, "edit_helper"
+    )
+    if context_error is not None:
+        return context_error
     blocked = await _gate(
         "cap_helper_write", token, hass, data,
-        tool_name="edit_helper", args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_edit_helper(args, token, hass),
+        tool_name="edit_helper", args=approval_args, request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda: _build_diff_edit_helper(approval_args, token, hass),
     )
     if blocked is not None:
         return blocked
-    return await _execute_edit_helper(args, token, hass, data)
+    return await _execute_edit_helper(approval_args, token, hass, data)
 
 
 async def _execute_edit_helper(
@@ -583,13 +770,25 @@ async def _execute_edit_helper(
         return _tool_error("helper_id is required."), "invalid_request", "edit_helper"
     if not isinstance(config, dict):
         return _tool_error("config must be an object."), "invalid_request", "edit_helper"
-    # Helper authoring is cap-gated (cap_helper_write), not entity-scoped: like
-    # scripts and automations, a token that may write helpers may edit any helper
-    # entity-scoped. We still require the helper to exist.
+    pre = _helper_write_precheck(args, "edit_helper", require_id=True)
+    if pre is not None:
+        return pre
+    zone_context, context_error = await _revalidate_zone_helper_context(
+        args, token, hass, "edit_helper"
+    )
+    if context_error is not None:
+        return context_error
+    # Ordinary helper authoring is cap-gated rather than entity-scoped. Zone is
+    # the narrow exception above because its record contains a precise location.
+    # Every path still requires a real storage-backed helper entity.
     entity_id = _resolve_helper_entity_id(hass, str(helper_type), str(helper_id))
     if entity_id is None:
         return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
-    before_cfg = await _read_helper_config(hass, str(helper_type), str(helper_id))
+    before_cfg = (
+        zone_context["config"]
+        if zone_context is not None
+        else await _read_helper_config(hass, str(helper_type), str(helper_id))
+    )
     payload = {f"{helper_type}_id": helper_id, **config}
     try:
         item = await async_ws_command(hass, f"{helper_type}/update", payload)
@@ -607,14 +806,27 @@ async def _tool_delete_helper(
     request_id: str = "", client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
     """MCP tool: delete a helper (Confirm-gated)."""
+    if effective_cap(token, "cap_helper_write") == CAP_DENY:
+        return _tool_error(_CAP_FORBIDDEN_MESSAGE), "denied", "delete_helper"
+    pre = _helper_write_precheck(
+        {**args, "config": {}}, "delete_helper", require_id=True
+    )
+    if pre is not None:
+        return pre
+    approval_args, context_error = await _bind_zone_helper_context(
+        args, token, hass, "delete_helper"
+    )
+    if context_error is not None:
+        return context_error
     blocked = await _gate(
         "cap_helper_write", token, hass, data,
-        tool_name="delete_helper", args=args, request_id=request_id,
-        client_ip=client_ip, diff=lambda: _build_diff_delete_helper(args, token, hass),
+        tool_name="delete_helper", args=approval_args, request_id=request_id,
+        client_ip=client_ip,
+        diff=lambda: _build_diff_delete_helper(approval_args, token, hass),
     )
     if blocked is not None:
         return blocked
-    return await _execute_delete_helper(args, token, hass, data)
+    return await _execute_delete_helper(approval_args, token, hass, data)
 
 
 async def _execute_delete_helper(
@@ -626,11 +838,21 @@ async def _execute_delete_helper(
         return _tool_error(f"helper_type must be one of: {', '.join(sorted(HELPER_TYPES))}."), "invalid_request", "delete_helper"
     if not helper_id:
         return _tool_error("helper_id is required."), "invalid_request", "delete_helper"
-    # Cap-gated, not entity-scoped; existence still required.
+    zone_context, context_error = await _revalidate_zone_helper_context(
+        args, token, hass, "delete_helper"
+    )
+    if context_error is not None:
+        return context_error
+    # Ordinary helpers are cap-gated rather than entity-scoped. Zone has already
+    # passed the stricter storage ownership and WRITE-scope check above.
     entity_id = _resolve_helper_entity_id(hass, str(helper_type), str(helper_id))
     if entity_id is None:
         return _tool_error("Helper not found."), "not_found", f"helper:{helper_type}:{helper_id}"
-    before_cfg = await _read_helper_config(hass, str(helper_type), str(helper_id))
+    before_cfg = (
+        zone_context["config"]
+        if zone_context is not None
+        else await _read_helper_config(hass, str(helper_type), str(helper_id))
+    )
     try:
         await async_ws_command(hass, f"{helper_type}/delete", {f"{helper_type}_id": helper_id})
     except WsDispatchError as exc:

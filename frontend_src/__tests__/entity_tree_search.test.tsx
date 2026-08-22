@@ -154,4 +154,16 @@ describe("permission tree search and device cleanup", () => {
       "No domains, devices, entities, or stored grants match this filter.",
     );
   });
+
+  it("shows an empty grantable domain without a nonfunctional expander", async () => {
+    mocks.getEntityTree.mockResolvedValue({
+      zone: { devices: {}, deviceless_entities: [], entity_details: {} },
+    });
+
+    renderTree();
+
+    expect(await screen.findByText("zone")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Permission for domain zone" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Expand zone" })).not.toBeInTheDocument();
+  });
 });

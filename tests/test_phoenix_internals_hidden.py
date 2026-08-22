@@ -127,6 +127,13 @@ class TestAdminEntityTree:
         ids = self._entity_ids(self._tree(hass))
         assert ORDINARY in ids, "the tree is empty; the absence test above proves nothing"
 
+    def test_zone_domain_is_grantable_before_a_user_zone_exists(
+            self, hass, registry_with_a_phoenix_sensor):
+        tree = self._tree(hass)
+        assert tree["zone"] == {
+            "devices": {}, "deviceless_entities": [], "entity_details": {},
+        }
+
     def test_a_disabled_entity_is_absent(self, hass, registry_with_a_phoenix_sensor):
         reg = registry_with_a_phoenix_sensor
         reg.async_update_entity(ORDINARY, disabled_by=er.RegistryEntryDisabler.USER)

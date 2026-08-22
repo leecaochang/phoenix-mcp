@@ -2241,7 +2241,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "list_helpers",
         "description": (
             "List Home Assistant helpers this token can access (input_boolean, input_number, "
-            "input_text, input_select, input_datetime, input_button, counter, timer, schedule), with each helper's id for editing."
+            "input_text, input_select, input_datetime, input_button, counter, timer, schedule, zone), with each helper's id for editing."
         ),
         "cap": "cap_registry_read",
         "inputSchema": {
@@ -2255,11 +2255,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "name": "create_helper",
         "description": (
             "Create a Home Assistant helper. Storage helpers (input_boolean, input_number, input_text, "
-            "input_select, input_datetime, input_button, counter, timer, schedule) use config. A helper "
+            "input_select, input_datetime, input_button, counter, timer, schedule, zone) use config. A helper "
             "integration that Home Assistant creates through a config flow, such as mold_indicator or "
             "history_stats, uses cumulative flow_steps instead: start with [] to receive its first real "
             "form schema, then append each {step_id, data} and call again. Incomplete flows are closed "
-            "without creating anything; the final form is approval-gated. OTP is excluded."
+            "without creating anything; the final form is approval-gated. Creating a zone requires "
+            "write access to the entire zone domain so the new entity remains manageable. OTP is excluded."
         ),
         "cap": "cap_helper_write",
         "inputSchema": {
@@ -2286,12 +2287,12 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     },
     {
         "name": "edit_helper",
-        "description": "Update an existing helper's config by its helper_type and helper_id.",
+        "description": "Update an existing helper's config by its helper_type and helper_id. Zone edits require write access to that zone and reject unknown configuration fields.",
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, or timer."},
+                "helper_type": {"type": "string", "description": "Helper domain, such as input_boolean, counter, timer, or zone."},
                 "helper_id": {"type": "string", "description": "The helper id (from list_helpers)."},
                 "config": {"type": "object", "description": "Complete helper configuration to apply."},
             },
@@ -2300,7 +2301,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
     },
     {
         "name": "delete_helper",
-        "description": "Permanently delete a helper by its helper_type and helper_id.",
+        "description": "Permanently delete a helper by its helper_type and helper_id. Zone deletion requires write access to that storage-backed zone.",
         "cap": "cap_helper_write",
         "inputSchema": {
             "type": "object",

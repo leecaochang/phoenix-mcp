@@ -707,6 +707,9 @@ function DomainGroup({
   }
 
   const ghostEntityIds = ghostEntitiesForDomain(domainKey, permissions, allEntityIds);
+  const hasChildren = domainData.deviceless_entities.length > 0
+    || Object.keys(domainData.devices).length > 0
+    || ghostEntityIds.length > 0;
 
   const hasVisible = domainMatchesSearch(
     filterText, domainKey, domainData, permissions, allEntityIds,
@@ -717,9 +720,11 @@ function DomainGroup({
   return (
     <div className="tree-domain-group">
       <div ref={headerRef} className={`tree-node${isRevealed ? " tree-node-revealed" : ""}`}>
-        <button type="button" className="tree-expand" onClick={() => setExpanded((x) => !x)} aria-expanded={expanded} aria-label={expanded ? t("perms.treeCollapse", { name: domainKey }) : t("perms.treeExpand", { name: domainKey })}>
-          <span className={`collapsible-chevron${expanded ? " open" : ""}`} aria-hidden="true" />
-        </button>
+        {hasChildren ? (
+          <button type="button" className="tree-expand" onClick={() => setExpanded((x) => !x)} aria-expanded={expanded} aria-label={expanded ? t("perms.treeCollapse", { name: domainKey }) : t("perms.treeExpand", { name: domainKey })}>
+            <span className={`collapsible-chevron${expanded ? " open" : ""}`} aria-hidden="true" />
+          </button>
+        ) : <span className="tree-spacer" />}
         {onOpenMesa && (
           // Domain scope is the broadest level the tree can offer, and the
           // bluntest: it reaches every entity in the domain, including ones
@@ -731,9 +736,15 @@ function DomainGroup({
             onOpen={onOpenMesa}
           />
         )}
-        <button type="button" className="tree-name tree-cursor-pointer" onClick={() => setExpanded((x) => !x)} aria-expanded={expanded}>
-          <span className="tree-friendly tree-domain-label">{domainKey}</span>
-        </button>
+        {hasChildren ? (
+          <button type="button" className="tree-name tree-cursor-pointer" onClick={() => setExpanded((x) => !x)} aria-expanded={expanded}>
+            <span className="tree-friendly tree-domain-label">{domainKey}</span>
+          </button>
+        ) : (
+          <span className="tree-name">
+            <span className="tree-friendly tree-domain-label">{domainKey}</span>
+          </span>
+        )}
         {isDynamic && (
           <span className="tree-badge tree-badge-dynamic" title={t("perms.dynamicDomainTitle")}>{t("perms.dynamicBadge")}</span>
         )}
@@ -747,7 +758,7 @@ function DomainGroup({
         <PermissionSelector value={state} onChange={setDomainState} label={t("perms.permForDomain", { name: domainKey })} />
         {permError && <span className="tree-perm-error" role="alert" title={permError}>{t("perms.saveFailedShort")}</span>}
       </div>
-      {expanded && (
+      {hasChildren && expanded && (
         <div className="tree-children">
           {domainData.deviceless_entities.length > 0 && (
             <div>

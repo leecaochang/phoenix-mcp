@@ -7,6 +7,7 @@ cap_registry_read read scoped to accessible helper entities.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +30,7 @@ def _token(**caps) -> TokenRecord:
         "input_boolean": PermissionNode(state="GREEN"),
         "input_button": PermissionNode(state="GREEN"),
         "schedule": PermissionNode(state="GREEN"),
+        "zone": PermissionNode(state="GREEN"),
         "sensor": PermissionNode(state="GREEN"),
     }))
     base = {"cap_helper_write": "allow", "cap_registry_read": "allow"}
@@ -672,8 +674,336 @@ class TestInputButtonLifecycle:
         )
         assert outcome == "allowed"
 
+class TestZoneLifecycle:
+    """Prove storage-zone CRUD stays scoped and approval-bound."""
+
+    @staticmethod
+    async def _setup(hass: HomeAssistant) -> None:
+        assert await async_setup_component(
+            hass,
+            "zone",
+            {
+                "zone": [{
+                    "name": "YAML test zone",
+                    "latitude": 1.0,
+                    "longitude": 2.0,
+                    "radius": 100,
+                }]
+            },
+        )
+        await hass.async_block_till_done()
+
+    async def test_create_requires_zone_domain_write_before_approval(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.helpers import entity_registry as er
+
+        await self._setup(hass)
+        token = _token(
+            cap_helper_write="confirm",
+            permissions=PermissionTree(domains={}),
+        )
+        result, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "zone",
+                "config": {
+                    "name": "Unscoped zone",
+                    "latitude": 1.0,
+                    "longitude": 2.0,
+                    "radius": 100,
+                },
+            },
+            token, hass, MagicMock(),
+        )
+        assert outcome == "denied"
+        assert "entire zone domain" in result["content"][0]["text"]
+        assert er.async_get(hass).async_get_entity_id(
+            "zone", "zone", "unscoped_zone"
+        ) is None
+
+    async def test_create_rolls_back_entity_specific_scope_override(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.helpers import entity_registry as er
+
+        await self._setup(hass)
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=versions,
+        )
+        token = _token(permissions=PermissionTree(
+            domains={"zone": PermissionNode(state="GREEN")},
+            entities={"zone.blocked_new_zone": PermissionNode(state="RED")},
+        ))
+        result, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "zone",
+                "config": {
+                    "name": "Blocked new zone",
+                    "latitude": 1.0,
+                    "longitude": 2.0,
+                    "radius": 100,
+                },
+            },
+            token, hass, data,
+        )
+        assert outcome == "denied"
+        assert "removed and nothing changed" in result["content"][0]["text"]
+        assert er.async_get(hass).async_get_entity_id(
+            "zone", "zone", "blocked_new_zone"
+        ) is None
+        assert versions.list_for("helper", "zone:blocked_new_zone") == []
+
+    async def test_crud_scope_storage_filter_and_deleted_restore(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.mcp_view import async_restore_version
+
+        await self._setup(hass)
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=versions,
+        )
+        token = _token()
+        initial = {
+            "name": "Scoped test zone",
+            "latitude": 13.7563,
+            "longitude": 100.5018,
+            "radius": 125,
+            "passive": True,
+            "icon": "mdi:map-marker-radius",
+        }
+
+        unknown_create, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "zone",
+                "config": {**initial, "unexpected": True},
+            },
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "Unknown zone configuration fields" in unknown_create["content"][0]["text"]
+
+        created_result, outcome, _ = await _call_tool(
+            "create_helper",
+            {"helper_type": "zone", "config": initial},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        created = _json(created_result)["helper"]
+        helper_id = created["id"]
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id("zone", "zone", helper_id)
+        assert entity_id is not None
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.attributes["friendly_name"] == "Scoped test zone"
+        assert state.attributes["latitude"] == initial["latitude"]
+        assert state.attributes["longitude"] == initial["longitude"]
+
+        listed_result, outcome, _ = await _call_tool(
+            "list_helpers", {"helper_type": "zone"}, token, hass, data,
+        )
+        assert outcome == "allowed"
+        listed = _json(listed_result)["helpers"]
+        assert listed == [{
+            "entity_id": entity_id,
+            "helper_type": "zone",
+            "name": "Scoped test zone",
+            "helper_id": helper_id,
+        }]
+        assert all(row["name"] != "YAML test zone" for row in listed)
+        assert all(row["entity_id"] != "zone.home" for row in listed)
+
+        unknown_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "zone",
+                "helper_id": helper_id,
+                "config": {"name": "Bad", "unexpected": True},
+            },
+            _token(cap_helper_write="confirm"), hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert "Unknown zone configuration fields" in unknown_result["content"][0]["text"]
+
+        unscoped = _token(permissions=PermissionTree(domains={}))
+        _, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "zone",
+                "helper_id": helper_id,
+                "config": {"name": "Hidden"},
+            },
+            unscoped, hass, data,
+        )
+        assert outcome == "not_found"
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "zone", "helper_id": helper_id},
+            unscoped, hass, data,
+        )
+        assert outcome == "not_found"
+        assert hass.states.get(entity_id) is not None
+
+        edited_config = {
+            "name": "Scoped zone renamed",
+            "latitude": 13.75,
+            "longitude": 100.52,
+            "radius": 175,
+            "passive": False,
+            "icon": "mdi:map-marker-check",
+        }
+        edited_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "zone",
+                "helper_id": helper_id,
+                "config": edited_config,
+            },
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(edited_result)["helper"]["radius"] == 175.0
+        assert registry.async_get_entity_id("zone", "zone", helper_id) == entity_id
+        assert hass.states.get(entity_id).attributes["friendly_name"] == "Scoped zone renamed"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "zone", "helper_id": helper_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert registry.async_get_entity_id("zone", "zone", helper_id) is None
+        assert hass.states.get(entity_id) is None
+
+        history = versions.list_for("helper", f"zone:{helper_id}")
+        assert [record.action for record in history] == ["delete", "edit", "create"]
+        assert history[0].before["latitude"] == edited_config["latitude"]
+        assert history[1].before["longitude"] == initial["longitude"]
+
+        restored_result, outcome, _ = await async_restore_version(
+            history[0], "admin-zone", hass, data,
+        )
+        assert outcome == "allowed"
+        restored_id = _json(restored_result)["helper"]["id"]
+        restored_entity_id = registry.async_get_entity_id("zone", "zone", restored_id)
+        assert restored_entity_id is not None
+        assert hass.states.get(restored_entity_id).attributes["latitude"] == edited_config["latitude"]
+        assert versions.list_for("helper", f"zone:{restored_id}")[0].action == "rollback"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "zone", "helper_id": restored_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+
+    async def test_explicit_zone_list_reports_storage_failure(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError
+
+        await self._setup(hass)
+        with patch(
+            "custom_components.phoenix_mcp.tools.helper.async_ws_command",
+            AsyncMock(side_effect=WsDispatchError("unavailable")),
+        ):
+            result, outcome, _ = await _call_tool(
+                "list_helpers", {"helper_type": "zone"}, _token(), hass,
+                PhoenixData(
+                    store=MagicMock(), rate_limiter=MagicMock(),
+                    audit=MagicMock(), versions=VersionStore(),
+                ),
+            )
+        assert outcome == "invalid_request"
+        assert "storage is unavailable" in result["content"][0]["text"]
+
+    async def test_stale_confirmed_edit_is_refused(
+        self, hass: HomeAssistant, hass_admin_user,
+    ):
+        from custom_components.phoenix_mcp.mcp_view import async_execute_approved_tool
+        from custom_components.phoenix_mcp.ws_dispatch import async_ws_command
+
+        class ApprovalStore:
+            def __init__(self) -> None:
+                self.pending: list[dict] = []
+                self.async_lock = asyncio.Lock()
+                self.async_save = AsyncMock()
+
+            def get_pending_approvals(self) -> list[dict]:
+                return self.pending
+
+            def set_pending_approvals(self, value: list[dict]) -> None:
+                self.pending = value
+
+        await self._setup(hass)
+        store = ApprovalStore()
+        data = PhoenixData(
+            store=store, rate_limiter=MagicMock(), audit=MagicMock(),
+            versions=VersionStore(),
+        )
+        allow_token = _token()
+        created_result, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "zone",
+                "config": {
+                    "name": "Approval zone",
+                    "latitude": 10.0,
+                    "longitude": 20.0,
+                    "radius": 100,
+                },
+            },
+            allow_token, hass, data,
+        )
+        assert outcome == "allowed"
+        helper_id = _json(created_result)["helper"]["id"]
+
+        confirm_token = _token(cap_helper_write="confirm")
+        pending_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "zone",
+                "helper_id": helper_id,
+                "config": {"name": "Approved name"},
+            },
+            confirm_token, hass, data,
+        )
+        assert outcome == "pending_approval", pending_result
+        approved_args = store.pending[0]["args"]
+
+        await async_ws_command(
+            hass,
+            "zone/update",
+            {"zone_id": helper_id, "radius": 250},
+        )
+        executed = await async_execute_approved_tool(
+            "edit_helper", approved_args, confirm_token, hass, data,
+        )
+        assert executed[1] == "invalid_request"
+        assert "changed after the request was reviewed" in executed[0]["content"][0]["text"]
+        current = await async_ws_command(hass, "zone/list", {})
+        item = next(row for row in current if row["id"] == helper_id)
+        assert item["name"] == "Approval zone"
+        assert item["radius"] == 250.0
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "zone", "helper_id": helper_id},
+            allow_token, hass, data,
+        )
+        assert outcome == "allowed"
+
+
 class TestScheduleLifecycle:
-    """Prove schedule CRUD preserves HA's nested time-range contract."""
+    """Prove schedule CRUD, validation, deletion, and restore."""
 
     async def test_schema_crud_and_deleted_restore(self, hass, hass_admin_user):
         from homeassistant.helpers import entity_registry as er
@@ -696,7 +1026,6 @@ class TestScheduleLifecycle:
             }],
             "sunday": [{"from": "23:00:00", "to": "24:00:00"}],
         }
-
         created_result, outcome, _ = await _call_tool(
             "create_helper",
             {"helper_type": "schedule", "config": initial_config},

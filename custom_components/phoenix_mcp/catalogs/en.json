@@ -1817,6 +1817,7 @@
       "named.kind.schedule": "schedule helper",
       "named.kind.script": "script",
       "named.kind.timer": "timer helper",
+      "named.kind.zone": "zone helper",
       "named.removeDevice.body": "This will ask the {integration} integration to remove {device}. You may need to add the device again, and this action cannot be undone from Phoenix MCP.",
       "named.removeDevice.integrationFallback": "its current integration",
       "named.removeDevice.title": "Remove {device} from {integration}",

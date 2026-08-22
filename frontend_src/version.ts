@@ -1,1 +1,1 @@
-export const JS_BUILD = "1.0.122";
+export const JS_BUILD = "1.0.124";

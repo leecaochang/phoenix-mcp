@@ -177,6 +177,37 @@ class TestCreateMaterialization:
             "create_helper returned before the entity existed"
         )
 
+    async def test_zone_exists_the_moment_create_returns(self, hass: HomeAssistant, admin_user):
+        """The sensitive storage-helper path has the same synchronous lifecycle."""
+        assert await async_setup_component(hass, "zone", {"zone": []})
+        await hass.async_block_till_done()
+
+        result, outcome, _res = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "zone",
+                "config": {
+                    "name": "Materialization Zone",
+                    "latitude": 10.0,
+                    "longitude": 20.0,
+                    "radius": 100,
+                },
+            },
+            _token(
+                PermissionTree(domains={"zone": PermissionNode(state="GREEN")}),
+                cap_helper_write="allow",
+            ),
+            hass,
+            _data(),
+        )
+        assert outcome == "allowed", _text(result)
+
+        created = _json(result)["helper"]
+        state = hass.states.get(f"zone.{created['id']}")
+        assert state is not None, "create_helper returned before the zone existed"
+        assert state.attributes["latitude"] == 10.0
+        assert state.attributes["longitude"] == 20.0
+
     async def test_edit_is_visible_the_moment_edit_returns(self, hass: HomeAssistant):
         """The same property for a rename, which is what an agent reads back to
         confirm its own edit landed."""

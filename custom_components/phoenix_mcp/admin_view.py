@@ -422,6 +422,16 @@ def _build_entity_tree(hass: HomeAssistant) -> dict:
 
         tree[domain]["entity_details"][entity_id] = entity_info
 
+    # Zone creation requires inherited domain WRITE scope because the entity ID
+    # does not exist until Home Assistant creates it. Keep that grantable domain
+    # in the permission UI even when the installation has no registry-backed
+    # user zone yet; otherwise the operator faces an impossible chicken-and-egg
+    # requirement. The empty domain gains its ordinary children automatically
+    # as soon as a storage zone materializes and invalidates this cache.
+    tree.setdefault(
+        "zone", {"devices": {}, "deviceless_entities": [], "entity_details": {}}
+    )
+
     return tree
 
 
