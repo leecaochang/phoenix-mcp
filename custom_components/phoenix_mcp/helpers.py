@@ -928,6 +928,26 @@ _LONG_HEX_RE = re.compile(r"\b[0-9a-f]{32,}\b", re.IGNORECASE)
 _ENTITY_ID_TEXT_RE = re.compile(r"(?<![\w.])([a-z0-9_]+\.[a-z0-9_]+)(?![\w.])")
 
 
+def redact_inaccessible_entity_ids_in_text(
+    text: str,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    *,
+    sentinel: str = "<redacted-entity>",
+) -> str:
+    """Redact inaccessible entity IDs embedded in otherwise free-form text."""
+    def _replacement(match: re.Match[str]) -> str:
+        try:
+            permission = resolve(match.group(1), token, hass)
+        except Exception:
+            return sentinel
+        if permission in (Permission.READ, Permission.WRITE):
+            return match.group(1)
+        return sentinel
+
+    return _ENTITY_ID_TEXT_RE.sub(_replacement, text)
+
+
 def _logger_prefix_matches(logger_name: str, prefix: str) -> bool:
     """Match one complete logger namespace, never an adjacent lookalike."""
     return logger_name == prefix or logger_name.startswith(prefix + ".")
@@ -993,17 +1013,7 @@ def _strict_phoenix_log_text(text: str, token: TokenRecord, hass: HomeAssistant)
     scrubbed = _ULID_RE.sub("<redacted-id>", scrubbed)
     scrubbed = _LONG_HEX_RE.sub("<redacted-id>", scrubbed)
 
-    def _entity_replacement(match: re.Match[str]) -> str:
-        entity_id = match.group(1)
-        try:
-            permission = resolve(entity_id, token, hass)
-        except Exception:
-            return "<redacted-entity>"
-        if permission in (Permission.READ, Permission.WRITE):
-            return entity_id
-        return "<redacted-entity>"
-
-    return _ENTITY_ID_TEXT_RE.sub(_entity_replacement, scrubbed)
+    return redact_inaccessible_entity_ids_in_text(scrubbed, token, hass)
 
 
 def _log_filter_fingerprint(filters: dict[str, Any], phoenix_only: bool) -> str:

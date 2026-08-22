@@ -1634,6 +1634,45 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_repairs",
+        "description": (
+            "List active Home Assistant repair issues as a bounded diagnostic projection. "
+            "Issues are ordered by severity and recency. Raw issue IDs, repair data, URLs, "
+            "credentials, private topology, and out-of-scope entity IDs are not exposed; "
+            "use the token-specific repair_ref to distinguish rows and open Home Assistant "
+            "Repairs for localized descriptions and repair flows. Ignored issues are omitted "
+            "unless include_ignored is true."
+        ),
+        "cap": "cap_diagnostics",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Optional integration domain filter.",
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["critical", "error", "warning"],
+                    "description": "Optional severity filter.",
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include issues currently ignored in Home Assistant.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": 50,
+                    "description": "Maximum issues to return.",
+                },
+            },
+        },
+    },
+    {
         "name": "get_esphome_yaml",
         "requires": "esphome",
         "description": (
@@ -3340,6 +3379,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "find_available_actions": _annot(True, False, True),
     "get_automation_traces": _annot(True, False, True),
     "get_system_health": _annot(True, False, True),
+    "get_repairs": _annot(True, False, True),
     "get_esphome_overview": _annot(True, False, True),
     "get_esphome_yaml": _annot(True, False, True),
     "set_esphome_yaml": _annot(False, True, True),

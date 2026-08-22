@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 135 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 136 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 135 of its own, 158 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 136 of its own, 159 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 158 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 159 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -232,6 +232,12 @@
           <article class="tool" data-cap="discovery" data-search="get_system_health version integrations">
             <div class="tool-head"><span class="tool-name">get_system_health</span><span class="badge badge-cap">Diagnostics</span></div>
             <p class="tool-desc">Home Assistant version and per-integration system health. Secret-keyed values and URL-embedded credentials in the integration data are scrubbed before they are returned, as are network-topology details (LAN IP addresses, hostnames inside URLs, and filesystem paths) that Phoenix MCP withholds elsewhere. This is an elevated read; treat <code>cap_diagnostics</code> accordingly.</p>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="get_repairs repairs issues warnings errors ignored diagnostics">
+            <div class="tool-head"><span class="tool-name">get_repairs</span><span class="badge badge-cap">Diagnostics</span></div>
+            <p class="tool-desc">Active Home Assistant Repairs issues, ordered by severity and recency. Ignored issues are omitted unless requested. Each result has a token-specific reference, safe status fields, and scrubbed translation placeholders; raw issue IDs, repair data, links, credentials, private network details, filesystem paths, and out-of-scope entity IDs are not returned. Open Home Assistant Repairs to read the localized explanation or start a repair flow.</p>
+            <dl><dt>params</dt><dd>optional <code>domain</code>, <code>severity</code> (<code>critical</code>, <code>error</code>, or <code>warning</code>), <code>include_ignored</code>, <code>limit</code> (1-50)</dd></dl>
           </article>
 
           <article class="tool" data-cap="discovery" data-search="get_esphome_overview esphome firmware update bluetooth proxy device builder actions">

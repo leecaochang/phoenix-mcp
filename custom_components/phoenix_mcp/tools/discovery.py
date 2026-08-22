@@ -35,6 +35,8 @@ from typing import Any
 import dataclasses
 import difflib
 import functools
+import hashlib
+import hmac
 import json
 import logging
 import math
@@ -46,6 +48,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import as_utc, parse_datetime, utcnow
 
@@ -56,12 +59,12 @@ from ..tool_contracts import normalize_tool_args
 from ..mesa import async_semantic_moments, build_expand_target, entity_control_mode, evaluate_service_entities
 from ..mesa_core.trigger_validator import entities_by_role
 from ..mesa_tools import MESA_TOOLS_CAP, authored_restrictions
-from ..helpers import effective_cap, parse_time_param as _parse_time_param, redact_diagnostics as _redact_diagnostics, sanitize_service_data as _sanitize_service_data, str_arg, str_list_arg
+from ..helpers import effective_cap, parse_time_param as _parse_time_param, redact_diagnostics as _redact_diagnostics, redact_inaccessible_entity_ids_in_text, sanitize_service_data as _sanitize_service_data, str_arg, str_list_arg
 from .authoring import _AUTOMATION_YAML, _SCRIPT_CONFIG_PATH, _read_automations_yaml, _read_scripts_yaml
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
 from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
-from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, physical_gate_applies, resolve, resolve_device_registry_access, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
+from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, physical_gate_applies, resolve, resolve_device_registry_access, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
 from ..token_store import TokenRecord
 from .. import yaml_includes
 
@@ -1274,6 +1277,127 @@ async def _tool_get_system_health(
         "integrations": _redact_diagnostics(integrations),
     }
     return _tool_success(json.dumps(body, default=str)), "allowed", "get_system_health"
+
+
+_REPAIR_SEVERITIES = frozenset({"critical", "error", "warning"})
+_MAX_REPAIR_ISSUES = 50
+
+
+def _repair_ref(token: TokenRecord, domain: str, issue_id: str) -> str:
+    """Return a stable per-token reference without disclosing HA's raw issue id."""
+    digest = hmac.new(
+        token.token_hash.encode(),
+        f"{domain}\0{issue_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()[:20]
+    return f"repair_{digest}"
+
+
+def _safe_repair_text(value: Any, token: TokenRecord, hass: HomeAssistant) -> Any:
+    """Scrub diagnostic text and any entity IDs embedded within it."""
+    scrubbed = _redact_diagnostics(value)
+    if not isinstance(scrubbed, str):
+        return scrubbed
+    return redact_inaccessible_entity_ids_in_text(
+        scrubbed, token, hass, sentinel="<redacted>"
+    )
+
+
+async def _tool_get_repairs(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> tuple[dict, str, str]:
+    """MCP tool: bounded, privacy-scrubbed Home Assistant repair issues."""
+    if effective_cap(token, "cap_diagnostics") == CAP_DENY:
+        return _tool_error("Forbidden."), "denied", "get_repairs"
+
+    domain = args.get("domain")
+    if domain is not None and (
+        not isinstance(domain, str) or not domain.strip() or len(domain) > 64
+    ):
+        return (
+            _tool_error("domain must be a non-empty string of at most 64 characters."),
+            "invalid_request",
+            "get_repairs",
+        )
+    domain = domain.strip().lower() if isinstance(domain, str) else None
+    severity = args.get("severity")
+    if severity is not None and (
+        not isinstance(severity, str) or severity not in _REPAIR_SEVERITIES
+    ):
+        return (
+            _tool_error("severity must be critical, error, or warning."),
+            "invalid_request",
+            "get_repairs",
+        )
+    include_ignored = args.get("include_ignored", False)
+    if not isinstance(include_ignored, bool):
+        return (
+            _tool_error("include_ignored must be a boolean."),
+            "invalid_request",
+            "get_repairs",
+        )
+    limit = args.get("limit", _MAX_REPAIR_ISSUES)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_REPAIR_ISSUES:
+        return (
+            _tool_error(f"limit must be an integer from 1 to {_MAX_REPAIR_ISSUES}."),
+            "invalid_request",
+            "get_repairs",
+        )
+
+    registry = ir.async_get(hass)
+    matches = [
+        issue for issue in registry.issues.values()
+        if issue.active
+        and (include_ignored or issue.dismissed_version is None)
+        and (severity is None or str(issue.severity) == severity)
+        and (
+            domain is None
+            or issue.domain.lower() == domain
+            or (isinstance(issue.issue_domain, str) and issue.issue_domain.lower() == domain)
+        )
+    ]
+    severity_rank = {"critical": 0, "error": 1, "warning": 2}
+    matches.sort(key=lambda issue: (
+        severity_rank.get(str(issue.severity), 3),
+        -issue.created.timestamp(),
+        issue.domain,
+        issue.issue_id,
+    ))
+    projected: list[dict[str, Any]] = []
+    for issue in matches[:limit]:
+        placeholders = filter_service_response(
+            _redact_diagnostics(issue.translation_placeholders or {}), token, hass
+        )
+        placeholders = {
+            key: _safe_repair_text(value, token, hass)
+            for key, value in placeholders.items()
+        }
+        projected.append({
+            "repair_ref": _repair_ref(token, issue.domain, issue.issue_id),
+            "domain": _safe_repair_text(issue.domain, token, hass),
+            "issue_domain": _safe_repair_text(issue.issue_domain, token, hass),
+            "severity": str(issue.severity) if issue.severity is not None else None,
+            "created": issue.created.isoformat(),
+            "ignored": issue.dismissed_version is not None,
+            "is_fixable": issue.is_fixable,
+            "breaks_in_ha_version": _safe_repair_text(
+                issue.breaks_in_ha_version, token, hass
+            ),
+            "translation_key": _safe_repair_text(issue.translation_key, token, hass),
+            "translation_placeholders": placeholders,
+            "has_learn_more": bool(issue.learn_more_url),
+        })
+    body = {
+        "count": len(projected),
+        "matching_count": len(matches),
+        "truncated": len(matches) > limit,
+        "issues": projected,
+        "note": (
+            "Repair references are token-specific. Open Home Assistant Repairs "
+            "to view localized descriptions, links, and repair flows."
+        ),
+    }
+    return _tool_success(json.dumps(body, default=str)), "allowed", "get_repairs"
 
 
 # ---------------------------------------------------------------------------

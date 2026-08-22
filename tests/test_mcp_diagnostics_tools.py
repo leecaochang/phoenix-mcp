@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util.dt import utcnow
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -348,6 +349,135 @@ class TestDiagnostics:
         assert "/config/.storage" not in text      # filesystem path scrubbed
         assert "ok" in text                         # benign value preserved
         assert "4.8.0.1" in text                    # version string NOT a private IP, preserved
+
+    async def test_repairs_deny(self, hass):
+        _, outcome, _ = await _call(
+            "get_repairs", {}, _token(cap_diagnostics="deny"), hass,
+        )
+        assert outcome == "denied"
+
+    async def test_repairs_safe_projection_filters_and_ignored_default(self, hass):
+        hass.states.async_set("light.allowed", "on")
+        hass.states.async_set("light.secret", "off")
+        ir.async_create_issue(
+            hass,
+            "demo",
+            "private_issue_light.secret_0123456789abcdef0123456789abcdef",
+            breaks_in_ha_version="2027.1.0",
+            data={"api_key": "raw-repair-data-secret"},
+            learn_more_url="http://192.168.1.20/private/help",
+            is_fixable=True,
+            is_persistent=True,
+            issue_domain="http://192.168.1.20/private/domain",
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="http://192.168.1.20/private/translation",
+            translation_placeholders={
+                "visible": "Entity `light.allowed` remains visible",
+                "hidden": "Entity `light.secret` is hidden",
+                "path": "/config/.storage/core.config_entries",
+                "api_key": "placeholder-secret",
+            },
+        )
+        ir.async_create_issue(
+            hass,
+            "demo",
+            "ignored_issue",
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="ignored_problem",
+        )
+        ir.async_ignore_issue(hass, "demo", "ignored_issue", True)
+        token = _token(
+            permissions=PermissionTree(
+                domains={"light": PermissionNode(state="GREEN")},
+                entities={"light.secret": PermissionNode(state="RED")},
+            ),
+            cap_diagnostics="allow",
+        )
+        content, outcome, _ = await _call(
+            "get_repairs", {"domain": "DEMO", "severity": "error"},
+            token, hass,
+        )
+        assert outcome == "allowed"
+        body = _json(content)
+        assert body["count"] == body["matching_count"] == 1
+        assert body["truncated"] is False
+        issue = body["issues"][0]
+        assert issue["repair_ref"].startswith("repair_")
+        assert issue["domain"] == "demo"
+        assert issue["severity"] == "error"
+        assert issue["issue_domain"] == "<redacted-url>"
+        assert issue["translation_key"] == "<redacted-url>"
+        assert issue["breaks_in_ha_version"] == "2027.1.0"
+        assert issue["is_fixable"] is True
+        assert issue["has_learn_more"] is True
+        assert issue["translation_placeholders"]["visible"] == (
+            "Entity `light.allowed` remains visible"
+        )
+        assert issue["translation_placeholders"]["hidden"] == (
+            "Entity `<redacted>` is hidden"
+        )
+        text = json.dumps(body)
+        for forbidden in (
+            "private_issue", "0123456789abcdef", "raw-repair-data-secret",
+            "placeholder-secret", "192.168.1.20", "/config/.storage",
+            "light.secret", "ignored_problem",
+        ):
+            assert forbidden not in text
+
+        with_ignored, outcome, _ = await _call(
+            "get_repairs",
+            {"domain": "demo", "include_ignored": True, "limit": 2},
+            token, hass,
+        )
+        assert outcome == "allowed"
+        included = _json(with_ignored)
+        assert included["matching_count"] == 2
+        assert any(issue["ignored"] for issue in included["issues"])
+
+    async def test_repairs_refs_are_stable_per_token_and_results_are_bounded(self, hass):
+        for index in range(3):
+            ir.async_create_issue(
+                hass,
+                "bounded",
+                f"issue_{index}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="bounded_issue",
+            )
+        first_token = _token(cap_diagnostics="allow")
+        second_token = _token(cap_diagnostics="allow")
+        second_token.token_hash = "different-token-hash"
+        first = _json((await _call(
+            "get_repairs", {"domain": "bounded", "limit": 2}, first_token, hass,
+        ))[0])
+        repeated = _json((await _call(
+            "get_repairs", {"domain": "bounded", "limit": 2}, first_token, hass,
+        ))[0])
+        second = _json((await _call(
+            "get_repairs", {"domain": "bounded", "limit": 2}, second_token, hass,
+        ))[0])
+        assert first["count"] == 2
+        assert first["matching_count"] == 3
+        assert first["truncated"] is True
+        assert [row["repair_ref"] for row in first["issues"]] == [
+            row["repair_ref"] for row in repeated["issues"]
+        ]
+        assert [row["repair_ref"] for row in first["issues"]] != [
+            row["repair_ref"] for row in second["issues"]
+        ]
+
+    @pytest.mark.parametrize("args", [
+        {"limit": True}, {"limit": 0}, {"limit": 51},
+        {"include_ignored": "yes"}, {"severity": "fatal"}, {"severity": []},
+        {"domain": ""},
+    ])
+    async def test_repairs_rejects_invalid_filters(self, hass, args):
+        _, outcome, _ = await _call(
+            "get_repairs", args, _token(cap_diagnostics="allow"), hass,
+        )
+        assert outcome == "invalid_request"
 
     async def test_check_ha_config_deny(self, hass):
         _, outcome, _ = await _call("check_ha_config", {}, _token(cap_diagnostics="deny"), hass)
