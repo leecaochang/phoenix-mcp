@@ -2,7 +2,7 @@
 
 The storage-based helper domains only, listed in HELPER_TYPES: each publishes a
 uniform {type}/create|update|delete WS command whose item id key is
-"{type}_id", which is what makes one set of handlers cover all eight.
+"{type}_id", which is what makes one set of handlers cover all nine.
 Config-entry helper types (template, group, utility_meter) do not work that way
 and are deliberately out of scope.
 
@@ -57,7 +57,7 @@ _NOT_A_HELPER_ENTRY = (
 # types (template, group, utility_meter, etc.) are out of scope for now.
 HELPER_TYPES = frozenset({
     "input_boolean", "input_number", "input_text",
-    "input_select", "input_datetime", "input_button", "counter", "timer",
+    "input_select", "input_datetime", "input_button", "counter", "timer", "schedule",
 })
 
 

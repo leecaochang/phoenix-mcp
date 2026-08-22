@@ -179,6 +179,21 @@ describe("friendly approval summary", () => {
       },
     }).title).toBe("Edit button helper 'Doorbell helper'");
   });
+
+  it("uses the friendly schedule kind for helper approvals", () => {
+    expect(friendlyApprovalSummary({
+      summary_key: "diff.edit_helper",
+      summary_params: {
+        helper_type: "schedule",
+        helper_id: "weekly_schedule",
+      },
+      target: {
+        type: "helper",
+        id: "weekly_schedule",
+        label: "Weekly schedule",
+      },
+    }).title).toBe("Edit schedule helper 'Weekly schedule'");
+  });
 });
 
 describe("approval Summary preference", () => {

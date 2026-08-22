@@ -1464,6 +1464,7 @@ APPROVAL_SUMMARY_UI: dict[str, str] = {
     "named.kind.input_button": "button helper",
     "named.kind.counter": "counter helper",
     "named.kind.timer": "timer helper",
+    "named.kind.schedule": "schedule helper",
     "named.resource.createTitle": "Create {kind} '{label}'",
     "named.resource.editTitle": "Edit {kind} '{label}'",
     "named.resource.deleteTitle": "Delete {kind} '{label}'",

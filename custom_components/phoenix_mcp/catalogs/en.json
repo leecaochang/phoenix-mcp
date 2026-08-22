@@ -1814,6 +1814,7 @@
       "named.kind.input_select": "dropdown helper",
       "named.kind.input_text": "text helper",
       "named.kind.scene": "scene",
+      "named.kind.schedule": "schedule helper",
       "named.kind.script": "script",
       "named.kind.timer": "timer helper",
       "named.removeDevice.body": "This will ask the {integration} integration to remove {device}. You may need to add the device again, and this action cannot be undone from Phoenix MCP.",

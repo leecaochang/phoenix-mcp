@@ -27,6 +27,7 @@ def _token(**caps) -> TokenRecord:
     tree = PermissionTree(domains={
         "input_boolean": PermissionNode(state="GREEN"),
         "input_button": PermissionNode(state="GREEN"),
+        "schedule": PermissionNode(state="GREEN"),
     })
     base = {"cap_helper_write": "allow", "cap_registry_read": "allow"}
     base.update(caps)
@@ -396,6 +397,140 @@ class TestInputButtonLifecycle:
         _, outcome, _ = await _call_tool(
             "delete_helper",
             {"helper_type": "input_button", "helper_id": restored_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+
+class TestScheduleLifecycle:
+    """Prove schedule CRUD preserves HA's nested time-range contract."""
+
+    async def test_schema_crud_and_deleted_restore(self, hass, hass_admin_user):
+        from homeassistant.helpers import entity_registry as er
+        from custom_components.phoenix_mcp.mcp_view import async_restore_version
+
+        assert await async_setup_component(hass, "schedule", {"schedule": {}})
+        await hass.async_block_till_done()
+        versions = VersionStore()
+        data = PhoenixData(
+            store=MagicMock(), rate_limiter=MagicMock(), audit=MagicMock(), versions=versions,
+        )
+        token = _token()
+        initial_config = {
+            "name": "Weekly test",
+            "icon": "mdi:calendar-clock",
+            "monday": [{
+                "from": "08:00:00",
+                "to": "09:30:00",
+                "data": {"mode": "office", "enabled": True},
+            }],
+            "sunday": [{"from": "23:00:00", "to": "24:00:00"}],
+        }
+
+        created_result, outcome, _ = await _call_tool(
+            "create_helper",
+            {"helper_type": "schedule", "config": initial_config},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        created = _json(created_result)["helper"]
+        helper_id = created["id"]
+        assert created["monday"] == initial_config["monday"]
+        assert created["sunday"] == initial_config["sunday"]
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id("schedule", "schedule", helper_id)
+        assert entity_id is not None
+        assert hass.states.get(entity_id) is not None
+        assert hass.states.get(entity_id).attributes["friendly_name"] == "Weekly test"
+        assert hass.states.get(entity_id).attributes["icon"] == "mdi:calendar-clock"
+
+        listed_result, outcome, _ = await _call_tool(
+            "list_helpers", {"helper_type": "schedule"}, token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert _json(listed_result)["helpers"] == [{
+            "entity_id": entity_id,
+            "helper_type": "schedule",
+            "name": "Weekly test",
+            "helper_id": helper_id,
+        }]
+
+        invalid_result, outcome, _ = await _call_tool(
+            "create_helper",
+            {
+                "helper_type": "schedule",
+                "config": {
+                    "name": "Overlapping test",
+                    "monday": [
+                        {"from": "08:00:00", "to": "10:00:00"},
+                        {"from": "09:00:00", "to": "11:00:00"},
+                    ],
+                },
+            },
+            token, hass, data,
+        )
+        assert outcome == "invalid_request"
+        assert invalid_result["isError"] is True
+        assert registry.async_get_entity_id(
+            "schedule", "schedule", "overlapping_test"
+        ) is None
+
+        edited_config = {
+            "name": "Weekly renamed",
+            "icon": "mdi:calendar-refresh",
+            "tuesday": [{
+                "from": "12:15:00",
+                "to": "13:45:00",
+                "data": {"mode": "lunch", "priority": 2},
+            }],
+        }
+        edited_result, outcome, _ = await _call_tool(
+            "edit_helper",
+            {
+                "helper_type": "schedule",
+                "helper_id": helper_id,
+                "config": edited_config,
+            },
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        edited = _json(edited_result)["helper"]
+        assert edited["tuesday"] == edited_config["tuesday"]
+        assert registry.async_get_entity_id("schedule", "schedule", helper_id) == entity_id
+        assert hass.states.get(entity_id).attributes["friendly_name"] == "Weekly renamed"
+        assert hass.states.get(entity_id).attributes["icon"] == "mdi:calendar-refresh"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "schedule", "helper_id": helper_id},
+            token, hass, data,
+        )
+        assert outcome == "allowed"
+        assert registry.async_get_entity_id("schedule", "schedule", helper_id) is None
+        assert hass.states.get(entity_id) is None
+
+        history = versions.list_for("helper", f"schedule:{helper_id}")
+        assert [record.action for record in history] == ["delete", "edit", "create"]
+        assert history[0].before["tuesday"] == edited_config["tuesday"]
+        assert history[1].before["monday"] == initial_config["monday"]
+        assert history[1].after == edited_config
+
+        restored_result, outcome, _ = await async_restore_version(
+            history[0], "admin-schedule", hass, data,
+        )
+        assert outcome == "allowed"
+        restored = _json(restored_result)["helper"]
+        restored_id = restored["id"]
+        assert restored_id != helper_id
+        restored_entity_id = registry.async_get_entity_id("schedule", "schedule", restored_id)
+        assert restored_entity_id is not None
+        assert restored["tuesday"] == edited_config["tuesday"]
+        restored_history = versions.list_for("helper", f"schedule:{restored_id}")
+        assert restored_history[0].action == "rollback"
+        assert restored_history[0].approved_by_user_id == "admin-schedule"
+
+        _, outcome, _ = await _call_tool(
+            "delete_helper",
+            {"helper_type": "schedule", "helper_id": restored_id},
             token, hass, data,
         )
         assert outcome == "allowed"
