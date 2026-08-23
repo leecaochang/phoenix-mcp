@@ -249,6 +249,63 @@ ALLOW_IDENTICAL_BY_LANGUAGE: dict[str, frozenset[str]] = {
         "panel.wizard.stepToken",
         "panel.wizard.tokenLabel",
     }),
+    "nl": frozenset({
+        # Dutch keeps these as shared loanwords, technical terms, HA concepts,
+        # units, and bare separator/template fragments. Each is a genuine
+        # cognate or machine value, not an untranslated sentence.
+        "panel.agentchat.approvalReason",      # " - {reason}", a bare separator fragment
+        "panel.agentchat.levelMax",            # "Max"
+        "panel.agentchat.model",               # "Model"
+        "panel.agentchat.provider",            # "Provider"
+        "panel.agentchat.resultOk",            # "ok"
+        "panel.agentchat.title",               # "Agent Chat", a product name
+        "panel.agentchat.token",               # "Token"
+        "panel.agentchat.toolResult",          # "<code>{name}</code>: {summary}", no prose to translate
+        "panel.agentchat.usageContext",        # " · context {tokens}", "context" is a cognate
+        "panel.approvalSummary.named.kind.helper",  # "helper"
+        "panel.approvalSummary.named.kind.script",  # "script"
+        "panel.approvalSummary.view.details",  # "Details"
+        "panel.approvals.detailTabDiff",       # "Diff"
+        "panel.approvals.energyGas",           # "Gas"
+        "panel.approvals.energyWater",         # "Water"
+        "panel.approvals.metaStatus",          # "Status"
+        "panel.approvals.metaToken",           # "Token"
+        "panel.approvals.metaTool",            # "Tool"
+        "panel.audit.resourcePlaceholder",     # "Resource..."
+        "panel.audit.rowPayload",              # "Payload"
+        "panel.audit.rowResource",             # "Resource"
+        "panel.audit.rowToken",                # "Token"
+        "panel.changes.colType",               # "Type"
+        "panel.changes.typeBlueprint",         # "Blueprint"
+        "panel.changes.typeDashboard",         # "Dashboard"
+        "panel.changes.typeHelper",            # "Helper"
+        "panel.changes.typeScript",            # "Script"
+        "panel.common.diff",                   # "Diff"
+        "panel.mesa.helpAria",                 # "Help: {text}", "Help" is a cognate
+        "panel.mesaSuggestion.noun.script",    # "script"
+        "panel.perms.colType",                 # "Type"
+        "panel.selectBy.label",                # "Label"
+        "panel.settings.agentcliCard",         # "Agent Chat", a product name
+        "panel.settings.languageAuto",         # "Auto"
+        "panel.settings.model",                # "Model"
+        "panel.settings.providerOllamaCloud",  # "Ollama (cloud)", "cloud" is a cognate
+        "panel.settings.token",                # "Token"
+        "panel.shell.agentChat",               # "Agent Chat", a product name
+        "panel.shell.tabTokens",               # "Tokens"
+        "panel.tokens.cardPersona",            # "Persona"
+        "panel.tokens.colStatus",              # "Status"
+        "panel.tokens.diffPassThrough",        # "Pass-through: {from} -> {to}", a technical template
+        "panel.tokens.rateSummary",            # "{requests}/min · burst {burst}", a technical template
+        "panel.tokens.secondsShort",           # "{n}s", the seconds unit is "s" in Dutch
+        "panel.version.size.was",              # "{size} (was {before})", "was" is a cognate
+        "panel.wizard.agentTablist",           # "Agent"
+        "panel.wizard.stepPersona",            # "Persona"
+        "panel.wizard.stepProvider",           # "Provider"
+        "panel.wizard.stepTest",               # "Test"
+        "panel.wizard.stepToken",              # "Token"
+        "panel.wizard.tokenLabel",             # "Token"
+        "voice.provider_error",                # "Sorry, {reason}.", "Sorry" is a cognate
+    }),
     "ru": frozenset({
         # A bare separator fragment and a code-span-plus-colon template carry no
         # translatable prose; Russian keeps the same separator and colon.

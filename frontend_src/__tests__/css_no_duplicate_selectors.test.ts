@@ -67,9 +67,22 @@ describe("panel stylesheet", () => {
   });
 
   it("keeps long localized change types inside their own column", () => {
+    expect(CSS).toMatch(/\.changes-row\s*\{[^}]*grid-template-columns:\s*minmax\(136px,\s*160px\)/s);
     expect(CSS).toMatch(/\.changes-row\s*>\s*\*\s*\{[^}]*min-width:\s*0;/s);
     expect(CSS).toMatch(/\.changes-col-type\s+code\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
     expect(CSS).toMatch(/@media\s*\(max-width:\s*860px\)\s*and\s*\(min-width:\s*641px\)[\s\S]*?\.changes-col-who\s*\{[^}]*display:\s*none;/);
+  });
+
+  it("keeps localized approval-history columns aligned without overflowing", () => {
+    expect(CSS).toMatch(/\.approval-history-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*190px\s+250px\s+150px\s+minmax\(0,\s*1fr\)\s+max-content;/s);
+    expect(CSS).toMatch(/\.approval-history-row\s*>\s*\.badge\s*\{[^}]*justify-self:\s*start;/s);
+    expect(CSS).toMatch(/\.approval-history-tool\s*\{[^}]*min-width:\s*0;[^}]*text-overflow:\s*ellipsis;/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*?\.approval-history-row\s*\{[^}]*grid-template-columns:\s*max-content\s+minmax\(0,\s*1fr\)\s+max-content;/);
+  });
+
+  it("keeps localized MESA mode badges visible", () => {
+    expect(CSS).toMatch(/\.mesa-group\s+\.data-table\s+td:nth-child\(2\)\s*\{[^}]*width:\s*260px;/s);
+    expect(CSS).toMatch(/\.mesa-row-modes\s*\{[^}]*white-space:\s*normal;/s);
   });
 
   it("never defines the same class in two separate blocks", () => {

@@ -1610,19 +1610,28 @@ select.input {
 /* Compact history rows (resolved approvals are read-only records) */
 .approval-history { padding: 0; overflow: hidden; }
 .approval-history-row {
-  display: flex; align-items: center; gap: 10px; width: 100%;
+  display: grid; grid-template-columns: 190px 250px 150px minmax(0, 1fr) max-content;
+  align-items: center; gap: 10px; width: 100%;
   padding: 8px 12px; background: none; border: none;
   border-bottom: 1px solid var(--phx-border); cursor: pointer; text-align: left;
   font-size: 13px; color: var(--phx-text);
 }
 .approval-history-row:last-child { border-bottom: none; }
 .approval-history-row:hover { background: var(--phx-surface-2); }
-.approval-history-tool { font-size: 12px; color: var(--phx-text-2); flex: 0 0 auto; }
-.approval-history-token { font-weight: 600; flex: 0 0 auto; }
-.approval-history-note { color: var(--phx-text-2); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.approval-history-time { font-size: 11px; color: var(--phx-text-2); flex: 0 0 auto; }
+.approval-history-row > .badge { justify-self: start; }
+.approval-history-tool { font-size: 12px; color: var(--phx-text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approval-history-token { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approval-history-note { color: var(--phx-text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approval-history-time { font-size: 11px; color: var(--phx-text-2); white-space: nowrap; }
 .approval-history-more { display: flex; justify-content: center; margin-top: 10px; }
-@media (max-width: 600px) { .approval-history-token, .approval-history-tool { display: none; } }
+@media (max-width: 760px) {
+  .approval-history-row { grid-template-columns: 180px minmax(0, 1fr) 140px minmax(0, 1.4fr); }
+  .approval-history-time { display: none; }
+}
+@media (max-width: 600px) {
+  .approval-history-row { grid-template-columns: max-content minmax(0, 1fr) max-content; }
+  .approval-history-token, .approval-history-tool { display: none; }
+}
 
 .approval-detail-meta {
   display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px;
@@ -1684,7 +1693,7 @@ select.input {
 
 .changes-table { border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm); overflow: hidden; }
 .changes-row {
-  display: grid; grid-template-columns: 84px minmax(170px, 220px) minmax(0, 1fr) 130px 150px; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: minmax(136px, 160px) minmax(170px, 220px) minmax(0, 1fr) 130px 150px; align-items: center; gap: 12px;
   width: 100%; padding: 9px 14px; background: none; border: none;
   border-bottom: 1px solid var(--phx-border); text-align: left;
   font-size: 13px; color: var(--phx-text); font-family: inherit;
@@ -1707,12 +1716,16 @@ button.changes-row:hover { background: var(--phx-surface-2); }
 .changes-col-who { color: var(--phx-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .changes-col-when { font-size: 12px; color: var(--phx-text-2); }
 @media (max-width: 860px) and (min-width: 641px) {
-  .changes-row { grid-template-columns: 76px minmax(150px, 1fr) minmax(0, 1fr) 120px; }
+  .changes-row { grid-template-columns: minmax(136px, 150px) minmax(150px, 1fr) minmax(0, 1fr) 120px; }
   .changes-col-who { display: none; }
 }
 @media (max-width: 640px) {
-  .changes-row { grid-template-columns: 76px 1fr 120px; }
+  .changes-row { grid-template-columns: minmax(136px, 150px) minmax(0, 1fr) 120px; }
   .changes-col-type, .changes-col-who { display: none; }
+}
+@media (max-width: 480px) {
+  .changes-row { grid-template-columns: minmax(136px, 150px) minmax(0, 1fr); }
+  .changes-col-when { display: none; }
 }
 
 .change-detail-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -2149,15 +2162,16 @@ hui-card { display: block; min-width: 0; }
 }
 .mesa-group-header:hover { background: var(--phx-hover); }
 .mesa-group-count { margin-left: auto; font-size: 11px; color: var(--phx-text-2); background: var(--phx-surface); padding: 1px 8px; border-radius: 8px; }
-/* Fixed layout + shared widths so every domain group's columns line up, and a
-   long tag list truncates instead of squeezing the mode badges. */
+/* Fixed layout + shared widths so every domain group's columns line up.  The
+   mode column is deliberately generous: localized vendor and mode badges can
+   wrap between badges, while long tag lists use the remaining space. */
 .mesa-group .data-table { table-layout: fixed; }
 .mesa-group .data-table td { vertical-align: middle; overflow: hidden; }
-.mesa-group .data-table td:nth-child(2) { width: 185px; }
+.mesa-group .data-table td:nth-child(2) { width: 260px; }
 .mesa-group .data-table td:nth-child(3) { width: 22%; }
 .mesa-row-name { font-size: 13px; color: var(--phx-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mesa-row-id { font-size: 11px; color: var(--phx-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mesa-row-modes { white-space: nowrap; }
+.mesa-row-modes { white-space: normal; }
 .mesa-row-modes .badge + .badge { margin-left: 6px; }
 .mesa-row-tags { font-size: 12px; color: var(--phx-text-2); white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .mesa-search { max-width: none; } }
