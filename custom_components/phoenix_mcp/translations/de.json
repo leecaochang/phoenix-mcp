@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Klicken Sie auf „Senden“, um die Phoenix-MCP-Integration zu installieren. Bitte beachten Sie, dass jeweils nur eine Instanz gleichzeitig konfiguriert werden kann"
+      }
+    },
+    "abort": {
+      "already_configured": "Phoenix MCP ist bereits konfiguriert."
+    },
+    "create_entry": {
+      "default": "Verwenden Sie das Phoenix-MCP-Panel, um Ihre Token zu verwalten"
+    }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "MESA-Sicherheitslaufzeit ist nicht verfügbar",
+      "description": "Phoenix MCP konnte seine MESA-Sicherheitslaufzeit nicht initialisieren. Lesezugriffe und die Administratorwiederherstellung bleiben verfügbar, geschützte zustandsändernde Vorgänge werden jedoch abgelehnt, solange der MESA-Modus „Beratend“ oder „Erzwungen“ ist. Überprüfen Sie die Home Assistant-Protokolle und laden Sie die Phoenix-MCP-Integration neu. Wählen Sie den Modus „Aus“ nur, wenn Sie ohne MESA-Schutz arbeiten möchten."
+    }
+  }
+}

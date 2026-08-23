@@ -54,6 +54,7 @@ export type Params = Record<string, string | number>;
  * i18n_keys.test.ts fails if it drifts.
  */
 export const LANGUAGES: ReadonlyArray<{ code: string; endonym: string }> = [
+  { code: "de", endonym: "Deutsch" },
   { code: "en", endonym: "English" },
   { code: "es", endonym: "Español" },
   { code: "fr", endonym: "Français" },

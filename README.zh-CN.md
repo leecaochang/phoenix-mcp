@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | **简体中文** | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | **简体中文** | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 Phoenix MCP 为您的 AI 智能体提供限定范围、最小权限的 Home Assistant 访问方式。每个客户端都拥有自己的令牌，只能访问您明确允许的实体，并各自拥有独立的功能、速率限制和可选的有效期。审计默认开启，并可按结果类型分别配置；任何令牌都可以立即吊销；逐实体的语义安全层（MESA）还能根据设备本身的性质，将其设为仅可在确认后操作或完全禁止操作，无论令牌被授予了什么权限。
 
@@ -27,7 +27,7 @@ Phoenix MCP 脱胎于一个被弃置的开源项目，它的名字也由此而�
 
 ## 语言
 
-面板目前支持英语、西班牙语、法语、简体中文、繁体中文、韩语和日语。如需手动更改面板语言，请打开 **Phoenix MCP > 设置 > 语言** 并选择一种语言。选择 **自动** 即可恢复跟随 Home Assistant 个人资料语言。
+面板目前支持英语、西班牙语、法语、德语、简体中文、繁体中文、韩语和日语。如需手动更改面板语言，请打开 **Phoenix MCP > 设置 > 语言** 并选择一种语言。选择 **自动** 即可恢复跟随 Home Assistant 个人资料语言。
 
 ## 文档
 

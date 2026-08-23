@@ -1,6 +1,72 @@
 {
   "_comment": "Fingerprints of each English README block and its localized counterpart. Written by scripts/readme_i18n_stamp.py and checked by tests/test_readme_i18n.py. A source mismatch means English changed after translation.",
   "locales": {
+    "README.de.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "97f26f0e6fdb"
+      },
+      "intro.block.2": {
+        "source": "72ecfd631bae",
+        "translation": "6210eab67dc7"
+      },
+      "section.1.block.1": {
+        "source": "7b65965a49c9",
+        "translation": "7343060c78b1"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "b9496e48387c"
+      },
+      "section.2.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "776b8cb78943"
+      },
+      "section.2.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "8c5b524697cc"
+      },
+      "section.2.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "150f73a94c54"
+      },
+      "section.3.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "794493ae7858"
+      },
+      "section.3.heading": {
+        "source": "98c33b0a0714",
+        "translation": "f55a014918d8"
+      },
+      "section.4.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "997b11af7924"
+      },
+      "section.4.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "dbbfaca74d28"
+      },
+      "section.4.heading": {
+        "source": "7f8ee2187914",
+        "translation": "cc2478f8d46a"
+      },
+      "section.4.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "a8b65f472e05"
+      },
+      "section.4.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "4d6834ac12e3"
+      },
+      "section.5.block.1": {
+        "source": "741c5df4b978",
+        "translation": "1ef4bb023954"
+      },
+      "section.5.heading": {
+        "source": "9713f695ad92",
+        "translation": "ac361ba5c7eb"
+      }
+    },
     "README.es.md": {
       "intro.block.1": {
         "source": "7771475110ba",
@@ -11,8 +77,8 @@
         "translation": "886e0cca1f5e"
       },
       "section.1.block.1": {
-        "source": "28f7cde6f38d",
-        "translation": "33e39f1718ce"
+        "source": "7b65965a49c9",
+        "translation": "a2ca6455361c"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -77,8 +143,8 @@
         "translation": "997bc7535dd9"
       },
       "section.1.block.1": {
-        "source": "28f7cde6f38d",
-        "translation": "c13a338d6f68"
+        "source": "7b65965a49c9",
+        "translation": "9e73a0472a73"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -143,8 +209,8 @@
         "translation": "8dcfa43f6fd3"
       },
       "section.1.block.1": {
-        "source": "28f7cde6f38d",
-        "translation": "838d14e401c3"
+        "source": "7b65965a49c9",
+        "translation": "9009998c4105"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -209,8 +275,8 @@
         "translation": "3c30620c4096"
       },
       "section.1.block.1": {
-        "source": "28f7cde6f38d",
-        "translation": "aac4d288f25e"
+        "source": "7b65965a49c9",
+        "translation": "a7c8a707a872"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -275,8 +341,8 @@
         "translation": "4f2a35722b4a"
       },
       "section.1.block.1": {
-        "source": "28f7cde6f38d",
-        "translation": "818345006bcd"
+        "source": "7b65965a49c9",
+        "translation": "008a77fda094"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -341,8 +407,8 @@
         "translation": "8ee2dceae30d"
       },
       "section.1.block.1": {
-        "source": "28f7cde6f38d",
-        "translation": "f97efa01efa6"
+        "source": "7b65965a49c9",
+        "translation": "1fa908bab547"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",

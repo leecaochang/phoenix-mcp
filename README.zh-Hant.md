@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | [简体中文](README.zh-CN.md) | **繁體中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
+[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [简体中文](README.zh-CN.md) | **繁體中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 Phoenix MCP 為您的 AI 智慧體提供限定範圍、最小權限的 Home Assistant 存取方式。每個用戶端都有自己的權杖，只能存取您明確允許的實體，並各自擁有獨立的能力、速率限制和可選的有效期限。稽核預設開啟，並可按結果類型分別設定；任何權杖都可以立即撤銷；逐實體的語意安全層（MESA）還能根據裝置本身的性質，將其設為僅可在確認後操作或完全禁止操作，無論權杖被授予了什麼權限。
 
@@ -15,7 +15,7 @@ Phoenix MCP 完全執行於 Home Assistant 內部：無需額外程序，核心�
 
 ## 語言
 
-面板目前支援英文、西班牙文、法文、簡體中文、繁體中文、韓文和日文。如要手動變更面板語言，請開啟 **Phoenix MCP > 設定 > 語言** 並選擇語言。選擇 **自動** 即可恢復跟隨 Home Assistant 個人資料語言。
+面板目前支援英文、西班牙文、法文、德文、簡體中文、繁體中文、韓文和日文。如要手動變更面板語言，請開啟 **Phoenix MCP > 設定 > 語言** 並選擇語言。選擇 **自動** 即可恢復跟隨 Home Assistant 個人資料語言。
 
 ## 文件
 

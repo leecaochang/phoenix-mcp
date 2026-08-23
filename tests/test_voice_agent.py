@@ -459,7 +459,7 @@ async def test_decline_sentences_follow_the_conversation_language(language: str)
     assert localized != english
     assert "Phoenix MCP" in localized  # product name stays Latin in every locale
     # An unknown locale and a regional English variant both fall back cleanly.
-    assert await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="de") == english
+    assert await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="id") == english
     assert await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="en-GB") == english
 
 

@@ -166,6 +166,48 @@ ALLOW_IDENTICAL = frozenset({
 # every other locale. A global allowlist would let an untranslated Korean or
 # Chinese value such as "Token" pass silently.
 ALLOW_IDENTICAL_BY_LANGUAGE: dict[str, frozenset[str]] = {
+    "de": frozenset({
+        # German spells these the same as English: shared loanwords, technical
+        # terms, HA concepts, and units. Each is a genuine cognate, not an
+        # untranslated string.
+        "panel.agentchat.approvalReason",      # " - {reason}", a bare separator fragment
+        "panel.agentchat.levelMinimal",        # "Minimal"
+        "panel.agentchat.token",               # "Token"
+        "panel.agentchat.toolResult",          # "<code>{name}</code>: {summary}", no prose to translate
+        "panel.approvalSummary.view.details",  # "Details"
+        "panel.approvals.detailTabDiff",       # "Diff"
+        "panel.approvals.energyGas",           # "Gas"
+        "panel.approvals.energySolar",         # "Solar"
+        "panel.approvals.metaStatus",          # "Status"
+        "panel.approvals.metaToken",           # "Token"
+        "panel.approvals.metaTool",            # "Tool"
+        "panel.audit.rowToken",                # "Token"
+        "panel.caps.cap_backup.label",         # "Backup"
+        "panel.changes.actionRollback",        # "Rollback"
+        "panel.changes.colName",               # "Name"
+        "panel.changes.typeBlueprint",         # "Blueprint"
+        "panel.changes.typeDashboard",         # "Dashboard"
+        "panel.common.diff",                   # "Diff"
+        "panel.mesa.addIntegrationShort",      # "+ Integration"
+        "panel.mesa.costTrivial",              # "Trivial"
+        "panel.mesa.privNormal",               # "Normal"
+        "panel.mesa.scopeLabelIntegration",    # "Integration"
+        "panel.perms.colName",                 # "Name"
+        "panel.selectBy.integration",          # "Integration"
+        "panel.selectBy.label",                # "Label"
+        "panel.settings.token",                # "Token"
+        "panel.shell.tabTokens",               # "Tokens"
+        "panel.tokens.cardPersona",            # "Persona"
+        "panel.tokens.colName",                # "Name"
+        "panel.tokens.colStatus",              # "Status"
+        "panel.tokens.secondsShort",           # "{n}s", the seconds unit is "s" in German
+        "panel.wizard.agentTablist",           # "Agent"
+        "panel.wizard.nameLabel",              # "Name"
+        "panel.wizard.stepPersona",            # "Persona"
+        "panel.wizard.stepTest",               # "Test"
+        "panel.wizard.stepToken",              # "Token"
+        "panel.wizard.tokenLabel",             # "Token"
+    }),
     "fr": frozenset({
         "panel.approvalSummary.named.kind.script",  # HA entity type: "script"
         "panel.changes.typeBlueprint",              # HA term: "Blueprint"
