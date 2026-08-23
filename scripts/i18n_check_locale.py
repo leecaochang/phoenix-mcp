@@ -166,6 +166,20 @@ ALLOW_IDENTICAL = frozenset({
 # every other locale. A global allowlist would let an untranslated Korean or
 # Chinese value such as "Token" pass silently.
 ALLOW_IDENTICAL_BY_LANGUAGE: dict[str, frozenset[str]] = {
+    "fr": frozenset({
+        "panel.approvalSummary.named.kind.script",  # HA entity type: "script"
+        "panel.changes.typeBlueprint",              # HA term: "Blueprint"
+        "panel.changes.typeScript",                 # "Script"
+        "panel.mesa.privNormal",                    # privacy level, masculine
+        "panel.mesa.privPublic",                    # privacy level
+        "panel.mesaSuggestion.noun.script",         # "script"
+        "panel.settings.notificationsCard",         # "Notifications"
+        "panel.shell.documentation",                # "Documentation"
+        "panel.tokens.expiryMinutes",               # "Minutes"
+        "panel.version.loc.section",                # "section {index}"
+        "panel.wizard.agentTablist",                # "Agent"
+        "panel.wizard.expiryMinutes",               # "Minutes"
+    }),
     "es": frozenset({
         "panel.agentchat.announceError",
         "panel.agentchat.approvalReason",

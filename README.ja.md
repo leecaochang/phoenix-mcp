@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [Español](README.es.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | **日本語** | [한국어](README.ko.md)
+[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | **日本語** | [한국어](README.ko.md)
 
 Phoenix MCP は、AI エージェントに対して、範囲を限定した最小権限の Home Assistant アクセスを提供します。クライアントごとに専用のトークンが発行され、明示的に許可したエンティティだけにアクセスできます。各トークンには、個別の機能、レート制限、任意の有効期限を設定できます。監査はデフォルトで有効になっており、結果ごとに設定できます。どのトークンも即座に取り消せます。また、エンティティ単位のセマンティック安全レイヤー（MESA）により、トークンに付与された権限にかかわらず、デバイスの性質に応じて操作を確認必須または禁止にできます。
 
@@ -15,7 +15,7 @@ Phoenix MCP は Home Assistant 内で完結して動作します。追加のプ�
 
 ## 言語
 
-パネルの言語を手動で変更するには、**Phoenix MCP > 設定 > 言語**を開いて言語を選択します。**自動**を選ぶと、Home Assistant プロファイルの言語に戻ります。
+パネルは現在、英語、スペイン語、フランス語、簡体字中国語、繁体字中国語、韓国語、日本語に対応しています。パネルの言語を手動で変更するには、**Phoenix MCP > 設定 > 言語**を開いて言語を選択します。**自動**を選ぶと、Home Assistant プロファイルの言語に戻ります。
 
 ## ドキュメント
 

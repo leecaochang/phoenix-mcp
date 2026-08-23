@@ -56,6 +56,7 @@ export type Params = Record<string, string | number>;
 export const LANGUAGES: ReadonlyArray<{ code: string; endonym: string }> = [
   { code: "en", endonym: "English" },
   { code: "es", endonym: "Español" },
+  { code: "fr", endonym: "Français" },
   { code: "ja", endonym: "日本語" },
   { code: "ko", endonym: "한국어" },
   { code: "zh-Hans", endonym: "中文（简体）" },

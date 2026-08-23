@@ -136,6 +136,11 @@ describe("date and time formatting", () => {
     setFormatLocale({ locale: { language: "de-DE" } });
     expect(localeDateTime(ISO)).not.toMatch(/[AP]M/);
   });
+
+  it("uses France's 24-hour convention when French is the panel language", () => {
+    setFormatLocale({}, "fr");
+    expect(localeClock(Date.parse(ISO))).toMatch(/^\d{2}:\d{2}$/);
+  });
 });
 
 describe("number formatting", () => {
@@ -160,6 +165,11 @@ describe("number formatting", () => {
   it("otherwise follows the display language", () => {
     setFormatLocale({ locale: { number_format: "language" } }, "de");
     expect(localeNumber(1234567)).toBe("1.234.567");
+  });
+
+  it("uses French grouping and decimal conventions for a French panel", () => {
+    setFormatLocale({ locale: { number_format: "language" } }, "fr");
+    expect(localeNumber(1234567.8)).toMatch(/^1[\u00a0\u202f]234[\u00a0\u202f]567,8$/);
   });
 });
 

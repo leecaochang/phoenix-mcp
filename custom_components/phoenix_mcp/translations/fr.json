@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Cliquez sur Envoyer pour installer l'intégration Phoenix MCP. Veuillez noter qu'une seule instance peut être configurée à la fois"
+      }
+    },
+    "abort": {
+      "already_configured": "Phoenix MCP est déjà configuré."
+    },
+    "create_entry": {
+      "default": "Utilisez le panneau Phoenix MCP pour gérer vos jetons"
+    }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "Le moteur de sécurité MESA est indisponible",
+      "description": "Phoenix MCP n'a pas pu initialiser son moteur de sécurité MESA. Les lectures et la récupération administrative restent disponibles, mais les opérations protégées qui modifient l'état sont refusées tant que le mode MESA est Consultatif ou Appliqué. Consultez les journaux de Home Assistant, puis rechargez l'intégration Phoenix MCP. Vous pouvez sélectionner explicitement le mode Désactivé uniquement si vous souhaitez fonctionner sans protection MESA."
+    }
+  }
+}
