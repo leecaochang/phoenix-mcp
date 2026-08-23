@@ -7,8 +7,8 @@
         "translation": "db1b1d52b453"
       },
       "intro.block.2": {
-        "source": "921a0575ab39",
-        "translation": "abc77821f1cb"
+        "source": "025606dd723b",
+        "translation": "d93d3349450c"
       },
       "section.1.block.1": {
         "source": "0e378a8f6081",
@@ -65,8 +65,8 @@
         "translation": "f23b92bd0988"
       },
       "intro.block.2": {
-        "source": "921a0575ab39",
-        "translation": "bd93efd4d038"
+        "source": "025606dd723b",
+        "translation": "a5269d3ae3fb"
       },
       "section.1.block.1": {
         "source": "0e378a8f6081",
@@ -115,6 +115,64 @@
       "section.4.heading": {
         "source": "9713f695ad92",
         "translation": "d67ad5e3138a"
+      }
+    },
+    "README.zh-Hant.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "a0e4463b6284"
+      },
+      "intro.block.2": {
+        "source": "025606dd723b",
+        "translation": "802dc6a03bcc"
+      },
+      "section.1.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "b7f5c29ba255"
+      },
+      "section.1.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "1e79c84c602a"
+      },
+      "section.1.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "b3360c8b2106"
+      },
+      "section.2.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "df838c35770a"
+      },
+      "section.2.heading": {
+        "source": "98c33b0a0714",
+        "translation": "af742f7dd5f9"
+      },
+      "section.3.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "58396dee9e81"
+      },
+      "section.3.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "58b7a163bb5e"
+      },
+      "section.3.heading": {
+        "source": "7f8ee2187914",
+        "translation": "f94b0bf68a41"
+      },
+      "section.3.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "2b08a59246fd"
+      },
+      "section.3.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "062e9b22e369"
+      },
+      "section.4.block.1": {
+        "source": "741c5df4b978",
+        "translation": "36faed5fbe74"
+      },
+      "section.4.heading": {
+        "source": "9713f695ad92",
+        "translation": "0f9b3f41339b"
       }
     }
   }

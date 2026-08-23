@@ -1,0 +1,21 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Phoenix MCP 已設定。"
+    },
+    "create_entry": {
+      "default": "請在 Phoenix MCP 面板中管理您的權杖"
+    },
+    "step": {
+      "user": {
+        "description": "點選「提交」即可安裝 Phoenix MCP 整合。請注意，同一時間只能設定一個實例"
+      }
+    }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "description": "Phoenix MCP 無法初始化 MESA 安全執行時。讀取和管理員恢復功能仍然可用，但當 MESA 模式為「建議」或「強制」時，受保護的狀態更改操作將被拒絕。請檢查 Home Assistant 日誌，然後重新載入 Phoenix MCP 整合。只有在您明確打算不使用 MESA 保護時，才應選擇「關閉」模式。",
+      "title": "MESA 安全執行時不可用"
+    }
+  }
+}

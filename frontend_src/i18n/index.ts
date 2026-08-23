@@ -57,6 +57,7 @@ export const LANGUAGES: ReadonlyArray<{ code: string; endonym: string }> = [
   { code: "en", endonym: "English" },
   { code: "ja", endonym: "日本語" },
   { code: "zh-Hans", endonym: "中文（简体）" },
+  { code: "zh-Hant", endonym: "繁體中文" },
 ];
 
 /** Follow the Home Assistant user profile rather than overriding it. */

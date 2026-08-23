@@ -31,6 +31,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = REPO / "README.md"
 TRANSLATIONS = {
     "zh-CN": REPO / "README.zh-CN.md",
+    "zh-Hant": REPO / "README.zh-Hant.md",
     "ja": REPO / "README.ja.md",
 }
 BASELINE = REPO / "tests" / "contract" / "readme_i18n_source_hashes.json"
@@ -83,7 +84,7 @@ def _is_metadata(chunk: str) -> bool:
         chunk == "# Phoenix MCP"
         or all(line.startswith("[![") for line in lines)
         or sum(
-            name in chunk for name in ("README.md", "README.zh-CN.md", "README.ja.md")
+            name in chunk for name in ("README.md", "README.zh-CN.md", "README.zh-Hant.md", "README.ja.md")
         ) >= 2
     )
 

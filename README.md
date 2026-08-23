@@ -7,11 +7,11 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+**English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md)
 
 Phoenix MCP gives your AI agents scoped, least-privilege access to Home Assistant. Each client gets its own token, limited to exactly the entities you allow, with its own capabilities, rate limit, and optional expiry. Auditing is enabled by default and configurable per outcome, any token can be revoked instantly, and the per-entity semantic safety layer (MESA) can make a device confirm-only or off-limits by its nature, no matter what permissions a token is granted.
 
-Phoenix MCP runs entirely inside Home Assistant, with no extra process, no cloud dependency in the core server, and no setup beyond the Phoenix MCP panel (the optional Agent Chat, voice, and AI Task features send conversations to the model provider you configure, unless you point them at a local Ollama). It works with the MCP clients you already use (Claude Code, Cursor, ChatGPT/Codex, Gemini, and others), or you can skip installing a client altogether and chat from inside Home Assistant itself. Either way, a guided setup takes you from a new token to a working agent in minutes, backed by a catalog of 159 tools for reading, controlling, and authoring your configuration. The panel is available in English, Simplified Chinese, and Japanese, following your Home Assistant profile language by default.
+Phoenix MCP runs entirely inside Home Assistant, with no extra process, no cloud dependency in the core server, and no setup beyond the Phoenix MCP panel (the optional Agent Chat, voice, and AI Task features send conversations to the model provider you configure, unless you point them at a local Ollama). It works with the MCP clients you already use (Claude Code, Cursor, ChatGPT/Codex, Gemini, and others), or you can skip installing a client altogether and chat from inside Home Assistant itself. Either way, a guided setup takes you from a new token to a working agent in minutes, backed by a catalog of 159 tools for reading, controlling, and authoring your configuration. The panel is available in English, Simplified Chinese, Traditional Chinese, and Japanese, following your Home Assistant profile language by default.
 
 ## Documentation
 
