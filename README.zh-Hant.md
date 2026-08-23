@@ -7,23 +7,15 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [简体中文](README.zh-CN.md) | **繁體中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
+[English](README.md) | [Español](README.es.md) | [简体中文](README.zh-CN.md) | **繁體中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 Phoenix MCP 為您的 AI 智慧體提供限定範圍、最小權限的 Home Assistant 存取方式。每個用戶端都有自己的權杖，只能存取您明確允許的實體，並各自擁有獨立的能力、速率限制和可選的有效期限。稽核預設開啟，並可按結果類型分別設定；任何權杖都可以立即撤銷；逐實體的語意安全層（MESA）還能根據裝置本身的性質，將其設為僅可在確認後操作或完全禁止操作，無論權杖被授予了什麼權限。
 
-Phoenix MCP 完全執行於 Home Assistant 內部：無需額外程序，核心伺服器不依賴任何雲端服務，除 Phoenix MCP 面板之外也無需任何設定（可選的智慧體對話、語音和 AI 任務功能會將對話傳送給您設定的模型提供者，除非您將它們指向本機的 Ollama）。它可以配合您已經在用的 MCP 用戶端（Claude Code、Cursor、ChatGPT/Codex、Gemini 等），您也可以完全不安裝用戶端，直接在 Home Assistant 內部對話。無論採用哪種方式，引導式設定都能在幾分鐘內帶您從新建權杖走到可用的智慧體，背後是一個包含 159 個工具的目錄，可用於讀取、控制和編寫您的設定。面板提供英文、簡體中文、繁體中文、韓文和日文，預設跟隨您的 Home Assistant 個人資料語言。
+Phoenix MCP 完全執行於 Home Assistant 內部：無需額外程序，核心伺服器不依賴任何雲端服務，除 Phoenix MCP 面板之外也無需任何設定（可選的智慧體對話、語音和 AI 任務功能會將對話傳送給您設定的模型提供者，除非您將它們指向本機的 Ollama）。它可以配合您已經在用的 MCP 用戶端（Claude Code、Cursor、ChatGPT/Codex、Gemini 等），您也可以完全不安裝用戶端，直接在 Home Assistant 內部對話。無論採用哪種方式，引導式設定都能在幾分鐘內帶您從新建權杖走到可用的智慧體，背後是一個包含 159 個工具的目錄，可用於讀取、控制和編寫您的設定。面板支援多種語言，預設跟隨您的 Home Assistant 個人資料語言；如果該語言不可用，則回退至英文。
 
-<!-- readme-i18n:locale-only:start -->
+## 語言
 
-Phoenix MCP 脫胎於一個被棄置的開源專案，它的名字也由此而來。我最初只是把介面翻譯成中文，後來又修復了大量 bug。目前專案的執行狀態非常良好。
-
-需要說明的是，我在開發中藉助了大語言模型（LLM）。我目前的職業是高階軟體工程師，所有由 LLM 生成的程式碼都經過我本人的人工審閱和冒煙測試。
-
-很抱歉，文件還沒有從英文翻譯過來。這項工作量很大，但如果有足夠多的人需要，我會著手去做。
-
-我打算長期維護這個專案，也有不少新功能的構想。歡迎提交新的想法或 issue，我會儘快回覆。
-
-<!-- readme-i18n:locale-only:end -->
+如要手動變更面板語言，請開啟 **Phoenix MCP > 設定 > 語言** 並選擇語言。選擇 **自動** 即可恢復跟隨 Home Assistant 個人資料語言。
 
 ## 文件
 

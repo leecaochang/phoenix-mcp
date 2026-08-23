@@ -46,6 +46,7 @@ def catalogs(tmp_path, checker, monkeypatch):
     monkeypatch.setattr(checker, "KEEP_ENGLISH_KEYS", set())
     monkeypatch.setattr(checker, "LITERALS", {})
     monkeypatch.setattr(checker, "ALLOW_IDENTICAL", frozenset())
+    monkeypatch.setattr(checker, "ALLOW_IDENTICAL_BY_LANGUAGE", {})
     monkeypatch.setattr(checker, "WHITESPACE_EXEMPT", frozenset())
 
     def write(english: dict, other: dict) -> None:
@@ -242,6 +243,20 @@ def test_allow_identical_manifest_must_remain_used(
     code, out = run(checker, capsys)
     assert code == 1
     assert "ALLOW_IDENTICAL panel.greet is no longer used" in out
+
+
+def test_language_scoped_identical_allowlist_does_not_leak_to_other_locales(
+    checker, catalogs, capsys, monkeypatch
+):
+    monkeypatch.setattr(
+        checker,
+        "ALLOW_IDENTICAL_BY_LANGUAGE",
+        {"es": frozenset({"panel.greet"})},
+    )
+    catalogs({"greet": "Hello"}, {"greet": "Hello"})
+    code, out = run(checker, capsys)
+    assert code == 1
+    assert "identical to English" in out
 
 
 def test_whitespace_manifest_must_remain_used(

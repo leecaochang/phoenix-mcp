@@ -33,6 +33,14 @@ def test_every_localized_readme_has_a_nonempty_stamp_set() -> None:
     assert all(baseline.values())
 
 
+def test_only_simplified_chinese_readme_has_locale_only_appendix() -> None:
+    stamp = _stamper()
+    for language, path in stamp.TRANSLATIONS.items():
+        text = path.read_text(encoding="utf-8")
+        has_appendix = stamp.LOCALE_ONLY_START in text or stamp.LOCALE_ONLY_END in text
+        assert has_appendix is (language == "zh-CN"), path.name
+
+
 def test_source_rewording_is_reported_even_when_translation_still_exists() -> None:
     stamp = _stamper()
     previous = {

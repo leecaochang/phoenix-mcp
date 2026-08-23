@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Pulse Enviar para instalar la integración Phoenix MCP. Tenga en cuenta que solo se puede configurar una instancia a la vez."
+      }
+    },
+    "abort": {
+      "already_configured": "La integración Phoenix MCP ya está configurada."
+    },
+    "create_entry": {
+      "default": "Utilice el panel de Phoenix MCP para gestionar los tokens."
+    }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "El tiempo de ejecución de seguridad de MESA no está disponible",
+      "description": "Phoenix MCP no pudo inicializar su tiempo de ejecución de seguridad de MESA. Las lecturas y la recuperación de administración siguen disponibles, pero las operaciones protegidas que cambian el estado se rechazan mientras el modo de MESA sea Asesoramiento o Forzado. Revise los registros de Home Assistant y, a continuación, recargue la integración Phoenix MCP. Puede seleccionar explícitamente el modo Desactivado solo si desea funcionar sin la protección de MESA."
+    }
+  }
+}

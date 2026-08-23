@@ -162,6 +162,39 @@ ALLOW_IDENTICAL = frozenset({
     "panel.settings.providerZai",
 })
 
+# Cognates that are valid in one language but must not exempt the same key in
+# every other locale. A global allowlist would let an untranslated Korean or
+# Chinese value such as "Token" pass silently.
+ALLOW_IDENTICAL_BY_LANGUAGE: dict[str, frozenset[str]] = {
+    "es": frozenset({
+        "panel.agentchat.announceError",
+        "panel.agentchat.approvalReason",
+        "panel.agentchat.resultError",
+        "panel.agentchat.token",
+        "panel.agentchat.toolResult",
+        "panel.approvalSummary.named.kind.script",
+        "panel.approvals.energyGas",
+        "panel.approvals.energySolar",
+        "panel.approvals.metaToken",
+        "panel.audit.rowToken",
+        "panel.changes.typeScript",
+        "panel.mesa.archiveNone",
+        "panel.mesa.costTrivial",
+        "panel.mesa.fieldReversible",
+        "panel.mesa.no",
+        "panel.mesa.privNormal",
+        "panel.mesaSuggestion.noun.script",
+        "panel.settings.experimentalCard",
+        "panel.settings.providerOllamaLocal",
+        "panel.settings.token",
+        "panel.shell.tabTokens",
+        "panel.tokens.cardPersona",
+        "panel.wizard.stepPersona",
+        "panel.wizard.stepToken",
+        "panel.wizard.tokenLabel",
+    }),
+}
+
 # Keys whose leading or trailing ASCII space is allowed to disappear, because
 # the punctuation it spaces gets replaced by a full-width or ideographic form
 # that carries its own spacing. Everywhere else that whitespace is load-bearing
@@ -312,7 +345,9 @@ def machine_parity_problems(source: str, value: str) -> list[str]:
 
 
 def exception_manifest_problems(
-    en_flat: dict[str, str], locale_flats: list[dict[str, str]]
+    en_flat: dict[str, str],
+    locale_flats: list[dict[str, str]],
+    locales_by_language: dict[str, dict[str, str]],
 ) -> list[str]:
     """Stale or no-longer-needed entries in every exception manifest."""
     problems: list[str] = []
@@ -334,6 +369,15 @@ def exception_manifest_problems(
             for locale in locale_flats
         ):
             problems.append(f"ALLOW_IDENTICAL {key} is no longer used by any locale")
+    for language, keys in sorted(ALLOW_IDENTICAL_BY_LANGUAGE.items()):
+        locale = locales_by_language.get(language, {})
+        for key in sorted(keys):
+            if key not in en_flat:
+                problems.append(f"ALLOW_IDENTICAL_BY_LANGUAGE[{language}] references missing key {key}")
+            elif locale.get(key, "").strip() != en_flat[key].strip():
+                problems.append(
+                    f"ALLOW_IDENTICAL_BY_LANGUAGE[{language}] {key} is no longer used"
+                )
     for key in sorted(WHITESPACE_EXEMPT):
         if key not in en_flat:
             problems.append(f"WHITESPACE_EXEMPT references missing key {key}")
@@ -393,13 +437,17 @@ def check(language: str) -> int:
         tr_flat.update(flatten(other[section], f"{section}."))
 
     locale_flats = []
+    locales_by_language: dict[str, dict[str, str]] = {}
     for shipped_language in languages():
         shipped = load(shipped_language)
         locale_flat: dict[str, str] = {}
         for section in shipped:
             locale_flat.update(flatten(shipped[section], f"{section}."))
         locale_flats.append(locale_flat)
-    problems.extend(exception_manifest_problems(en_flat, locale_flats))
+        locales_by_language[shipped_language] = locale_flat
+    problems.extend(exception_manifest_problems(en_flat, locale_flats, locales_by_language))
+
+    allow_identical = ALLOW_IDENTICAL | ALLOW_IDENTICAL_BY_LANGUAGE.get(language, frozenset())
 
     for section in KEEP_ENGLISH_SECTIONS:
         if section in other:
@@ -458,7 +506,7 @@ def check(language: str) -> int:
 
         # An untranslated copy renders English inside a translated screen and is
         # invisible to every other check, since it is a perfectly valid string.
-        if key not in ALLOW_IDENTICAL and value.strip() == source.strip() and any(
+        if key not in allow_identical and value.strip() == source.strip() and any(
             ch.isalpha() and ch.isascii() for ch in source
         ):
             problems.append(f"{key}: identical to English (untranslated, or add it to ALLOW_IDENTICAL)")

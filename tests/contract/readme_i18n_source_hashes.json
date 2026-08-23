@@ -1,60 +1,134 @@
 {
   "_comment": "Fingerprints of each English README block and its localized counterpart. Written by scripts/readme_i18n_stamp.py and checked by tests/test_readme_i18n.py. A source mismatch means English changed after translation.",
   "locales": {
+    "README.es.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "83eed35da5dd"
+      },
+      "intro.block.2": {
+        "source": "72ecfd631bae",
+        "translation": "886e0cca1f5e"
+      },
+      "section.1.block.1": {
+        "source": "9176afdcefc3",
+        "translation": "e9f7b8e95368"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "4925a1139962"
+      },
+      "section.2.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "f2e135e985eb"
+      },
+      "section.2.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "9194fb5ae4bd"
+      },
+      "section.2.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "f1f4ec3e94cd"
+      },
+      "section.3.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "73c7c0fc7904"
+      },
+      "section.3.heading": {
+        "source": "98c33b0a0714",
+        "translation": "b6ded884a55b"
+      },
+      "section.4.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "a2045b119750"
+      },
+      "section.4.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "d75761ae8ce2"
+      },
+      "section.4.heading": {
+        "source": "7f8ee2187914",
+        "translation": "4e4170dad6e5"
+      },
+      "section.4.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "74cf5d790796"
+      },
+      "section.4.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "4390cde4e93e"
+      },
+      "section.5.block.1": {
+        "source": "741c5df4b978",
+        "translation": "3d2da3de1c82"
+      },
+      "section.5.heading": {
+        "source": "9713f695ad92",
+        "translation": "43f9f7473ce8"
+      }
+    },
     "README.ja.md": {
       "intro.block.1": {
         "source": "7771475110ba",
         "translation": "db1b1d52b453"
       },
       "intro.block.2": {
-        "source": "1859f22bbde4",
-        "translation": "71e8ae18abaa"
+        "source": "72ecfd631bae",
+        "translation": "8dcfa43f6fd3"
       },
       "section.1.block.1": {
+        "source": "9176afdcefc3",
+        "translation": "de19aadc6b4c"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "3ee9c36a04bf"
+      },
+      "section.2.block.1": {
         "source": "0e378a8f6081",
         "translation": "40fa349ba9e1"
       },
-      "section.1.block.2": {
+      "section.2.block.2": {
         "source": "e992c5c95f15",
         "translation": "89a69cdddee3"
       },
-      "section.1.heading": {
+      "section.2.heading": {
         "source": "060d66a4f3c0",
         "translation": "1cf0364e58e1"
       },
-      "section.2.block.1": {
+      "section.3.block.1": {
         "source": "b18f1333cf81",
         "translation": "000f9a191a24"
       },
-      "section.2.heading": {
+      "section.3.heading": {
         "source": "98c33b0a0714",
         "translation": "be0673d51822"
       },
-      "section.3.block.1": {
+      "section.4.block.1": {
         "source": "2ece95f587a0",
         "translation": "70b2fe943e85"
       },
-      "section.3.block.2": {
+      "section.4.block.2": {
         "source": "cbbc1d220611",
         "translation": "f903982308fa"
       },
-      "section.3.heading": {
+      "section.4.heading": {
         "source": "7f8ee2187914",
         "translation": "e5f7d3724b7f"
       },
-      "section.3.subsection.1.block.1": {
+      "section.4.subsection.1.block.1": {
         "source": "6531e26b8389",
         "translation": "3a43692e7528"
       },
-      "section.3.subsection.1.heading": {
+      "section.4.subsection.1.heading": {
         "source": "489d485c7937",
         "translation": "83a87df815fc"
       },
-      "section.4.block.1": {
+      "section.5.block.1": {
         "source": "741c5df4b978",
         "translation": "265406e14050"
       },
-      "section.4.heading": {
+      "section.5.heading": {
         "source": "9713f695ad92",
         "translation": "d81b11613a25"
       }
@@ -65,54 +139,62 @@
         "translation": "3e9d3e97dd05"
       },
       "intro.block.2": {
-        "source": "1859f22bbde4",
-        "translation": "491bc39cb861"
+        "source": "72ecfd631bae",
+        "translation": "3c30620c4096"
       },
       "section.1.block.1": {
+        "source": "9176afdcefc3",
+        "translation": "6a0f5aaa3706"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "74603bd31b79"
+      },
+      "section.2.block.1": {
         "source": "0e378a8f6081",
         "translation": "62c373b38a14"
       },
-      "section.1.block.2": {
+      "section.2.block.2": {
         "source": "e992c5c95f15",
         "translation": "d01dc6079383"
       },
-      "section.1.heading": {
+      "section.2.heading": {
         "source": "060d66a4f3c0",
         "translation": "7ee39ec50ce7"
       },
-      "section.2.block.1": {
+      "section.3.block.1": {
         "source": "b18f1333cf81",
         "translation": "4b9ff5dc50d6"
       },
-      "section.2.heading": {
+      "section.3.heading": {
         "source": "98c33b0a0714",
         "translation": "b0d744c7f580"
       },
-      "section.3.block.1": {
+      "section.4.block.1": {
         "source": "2ece95f587a0",
         "translation": "09aa1b4e8bbd"
       },
-      "section.3.block.2": {
+      "section.4.block.2": {
         "source": "cbbc1d220611",
         "translation": "4faba5f0d572"
       },
-      "section.3.heading": {
+      "section.4.heading": {
         "source": "7f8ee2187914",
         "translation": "eee7547ce21a"
       },
-      "section.3.subsection.1.block.1": {
+      "section.4.subsection.1.block.1": {
         "source": "6531e26b8389",
         "translation": "cae367bc2cba"
       },
-      "section.3.subsection.1.heading": {
+      "section.4.subsection.1.heading": {
         "source": "489d485c7937",
         "translation": "6509b5374671"
       },
-      "section.4.block.1": {
+      "section.5.block.1": {
         "source": "741c5df4b978",
         "translation": "3cdc61171345"
       },
-      "section.4.heading": {
+      "section.5.heading": {
         "source": "9713f695ad92",
         "translation": "f086f1b59289"
       }
@@ -123,54 +205,62 @@
         "translation": "f23b92bd0988"
       },
       "intro.block.2": {
-        "source": "1859f22bbde4",
-        "translation": "73c81c0f20dd"
+        "source": "72ecfd631bae",
+        "translation": "4f2a35722b4a"
       },
       "section.1.block.1": {
+        "source": "9176afdcefc3",
+        "translation": "512dea3c7dea"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "196e945a77ea"
+      },
+      "section.2.block.1": {
         "source": "0e378a8f6081",
         "translation": "eadc14d0865f"
       },
-      "section.1.block.2": {
+      "section.2.block.2": {
         "source": "e992c5c95f15",
         "translation": "34e00942ad2c"
       },
-      "section.1.heading": {
+      "section.2.heading": {
         "source": "060d66a4f3c0",
         "translation": "4068dc7285be"
       },
-      "section.2.block.1": {
+      "section.3.block.1": {
         "source": "b18f1333cf81",
         "translation": "dfe44536f197"
       },
-      "section.2.heading": {
+      "section.3.heading": {
         "source": "98c33b0a0714",
         "translation": "1e5770380f7d"
       },
-      "section.3.block.1": {
+      "section.4.block.1": {
         "source": "2ece95f587a0",
         "translation": "cee447b26341"
       },
-      "section.3.block.2": {
+      "section.4.block.2": {
         "source": "cbbc1d220611",
         "translation": "8ed31b16b631"
       },
-      "section.3.heading": {
+      "section.4.heading": {
         "source": "7f8ee2187914",
         "translation": "ab365f0cf679"
       },
-      "section.3.subsection.1.block.1": {
+      "section.4.subsection.1.block.1": {
         "source": "6531e26b8389",
         "translation": "a590aae16f2e"
       },
-      "section.3.subsection.1.heading": {
+      "section.4.subsection.1.heading": {
         "source": "489d485c7937",
         "translation": "214522ab0f05"
       },
-      "section.4.block.1": {
+      "section.5.block.1": {
         "source": "741c5df4b978",
         "translation": "dbefa06dd528"
       },
-      "section.4.heading": {
+      "section.5.heading": {
         "source": "9713f695ad92",
         "translation": "d67ad5e3138a"
       }
@@ -181,54 +271,62 @@
         "translation": "a0e4463b6284"
       },
       "intro.block.2": {
-        "source": "1859f22bbde4",
-        "translation": "f86998333b1f"
+        "source": "72ecfd631bae",
+        "translation": "8ee2dceae30d"
       },
       "section.1.block.1": {
+        "source": "9176afdcefc3",
+        "translation": "dfdc6c10257b"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "f766f4c56c75"
+      },
+      "section.2.block.1": {
         "source": "0e378a8f6081",
         "translation": "b7f5c29ba255"
       },
-      "section.1.block.2": {
+      "section.2.block.2": {
         "source": "e992c5c95f15",
         "translation": "1e79c84c602a"
       },
-      "section.1.heading": {
+      "section.2.heading": {
         "source": "060d66a4f3c0",
         "translation": "b3360c8b2106"
       },
-      "section.2.block.1": {
+      "section.3.block.1": {
         "source": "b18f1333cf81",
         "translation": "df838c35770a"
       },
-      "section.2.heading": {
+      "section.3.heading": {
         "source": "98c33b0a0714",
         "translation": "af742f7dd5f9"
       },
-      "section.3.block.1": {
+      "section.4.block.1": {
         "source": "2ece95f587a0",
         "translation": "58396dee9e81"
       },
-      "section.3.block.2": {
+      "section.4.block.2": {
         "source": "cbbc1d220611",
         "translation": "58b7a163bb5e"
       },
-      "section.3.heading": {
+      "section.4.heading": {
         "source": "7f8ee2187914",
         "translation": "f94b0bf68a41"
       },
-      "section.3.subsection.1.block.1": {
+      "section.4.subsection.1.block.1": {
         "source": "6531e26b8389",
         "translation": "2b08a59246fd"
       },
-      "section.3.subsection.1.heading": {
+      "section.4.subsection.1.heading": {
         "source": "489d485c7937",
         "translation": "062e9b22e369"
       },
-      "section.4.block.1": {
+      "section.5.block.1": {
         "source": "741c5df4b978",
         "translation": "36faed5fbe74"
       },
-      "section.4.heading": {
+      "section.5.heading": {
         "source": "9713f695ad92",
         "translation": "0f9b3f41339b"
       }
