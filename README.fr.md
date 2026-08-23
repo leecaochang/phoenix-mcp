@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [Español](README.es.md) | **Français** | [Deutsch](README.de.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+[English](README.md) | [Español](README.es.md) | **Français** | [Deutsch](README.de.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
 
 Phoenix MCP offre à vos agents IA un accès à Home Assistant limité par périmètre et selon le principe du moindre privilège. Chaque client reçoit son propre jeton, limité exactement aux entités que vous autorisez, avec ses propres capacités, limite de débit et date d'expiration facultative. L'audit est activé par défaut et configurable par résultat, tout jeton peut être révoqué instantanément, et la couche de sécurité sémantique par entité (MESA) peut imposer une confirmation ou interdire l'accès à un appareil selon sa nature, quels que soient les droits accordés au jeton.
 
@@ -15,7 +15,7 @@ Phoenix MCP s'exécute entièrement dans Home Assistant, sans processus supplém
 
 ## Langues
 
-Le panneau prend actuellement en charge l'anglais, l'espagnol, le français, l'allemand, le chinois simplifié, le chinois traditionnel, le coréen et le japonais. Pour changer manuellement la langue du panneau, ouvrez **Phoenix MCP > Paramètres > Langue** et choisissez une langue. Choisissez **Auto** pour suivre à nouveau la langue de votre profil Home Assistant.
+Le panneau prend actuellement en charge l'anglais, l'espagnol, le français, l'allemand, le russe, le chinois simplifié, le chinois traditionnel, le coréen et le japonais. Pour changer manuellement la langue du panneau, ouvrez **Phoenix MCP > Paramètres > Langue** et choisissez une langue. Choisissez **Auto** pour suivre à nouveau la langue de votre profil Home Assistant.
 
 ## Documentation
 

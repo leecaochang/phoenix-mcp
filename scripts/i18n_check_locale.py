@@ -249,6 +249,12 @@ ALLOW_IDENTICAL_BY_LANGUAGE: dict[str, frozenset[str]] = {
         "panel.wizard.stepToken",
         "panel.wizard.tokenLabel",
     }),
+    "ru": frozenset({
+        # A bare separator fragment and a code-span-plus-colon template carry no
+        # translatable prose; Russian keeps the same separator and colon.
+        "panel.agentchat.approvalReason",  # " - {reason}"
+        "panel.agentchat.toolResult",      # "<code>{name}</code>: {summary}"
+    }),
 }
 
 # Keys whose leading or trailing ASCII space is allowed to disappear, because

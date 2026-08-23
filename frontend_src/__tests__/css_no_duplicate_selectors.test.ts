@@ -66,6 +66,12 @@ describe("panel stylesheet", () => {
     expect(CSS).toMatch(/\.theme-toggle-btn\s*\{[^}]*white-space:\s*nowrap;/s);
   });
 
+  it("keeps long localized change types inside their own column", () => {
+    expect(CSS).toMatch(/\.changes-row\s*>\s*\*\s*\{[^}]*min-width:\s*0;/s);
+    expect(CSS).toMatch(/\.changes-col-type\s+code\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*860px\)\s*and\s*\(min-width:\s*641px\)[\s\S]*?\.changes-col-who\s*\{[^}]*display:\s*none;/);
+  });
+
   it("never defines the same class in two separate blocks", () => {
     const seen = new Map<string, number>();
     for (const cls of definedClasses(CSS)) seen.set(cls, (seen.get(cls) ?? 0) + 1);

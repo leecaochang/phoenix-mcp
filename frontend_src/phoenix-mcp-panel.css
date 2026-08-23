@@ -1684,11 +1684,12 @@ select.input {
 
 .changes-table { border: 1px solid var(--phx-border); border-radius: var(--phx-radius-sm); overflow: hidden; }
 .changes-row {
-  display: grid; grid-template-columns: 84px 96px 1fr 130px 150px; align-items: center; gap: 12px;
+  display: grid; grid-template-columns: 84px minmax(170px, 220px) minmax(0, 1fr) 130px 150px; align-items: center; gap: 12px;
   width: 100%; padding: 9px 14px; background: none; border: none;
   border-bottom: 1px solid var(--phx-border); text-align: left;
   font-size: 13px; color: var(--phx-text); font-family: inherit;
 }
+.changes-row > * { min-width: 0; }
 .changes-row:last-child { border-bottom: none; }
 button.changes-row { cursor: pointer; }
 button.changes-row:hover { background: var(--phx-surface-2); }
@@ -1701,9 +1702,14 @@ button.changes-row:hover { background: var(--phx-surface-2); }
    inline in the detail head. */
 .changes-summary { display: block; font-size: 11px; font-weight: 400; color: var(--phx-text-2); overflow: hidden; text-overflow: ellipsis; }
 .change-detail-summary { font-size: 12px; color: var(--phx-text-2); }
-.changes-col-type code { font-size: 12px; color: var(--phx-text-2); }
+.changes-col-type { overflow-wrap: anywhere; }
+.changes-col-type code { font-size: 12px; color: var(--phx-text-2); white-space: normal; overflow-wrap: anywhere; }
 .changes-col-who { color: var(--phx-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .changes-col-when { font-size: 12px; color: var(--phx-text-2); }
+@media (max-width: 860px) and (min-width: 641px) {
+  .changes-row { grid-template-columns: 76px minmax(150px, 1fr) minmax(0, 1fr) 120px; }
+  .changes-col-who { display: none; }
+}
 @media (max-width: 640px) {
   .changes-row { grid-template-columns: 76px 1fr 120px; }
   .changes-col-type, .changes-col-who { display: none; }

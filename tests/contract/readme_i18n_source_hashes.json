@@ -11,8 +11,8 @@
         "translation": "6210eab67dc7"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "7343060c78b1"
+        "source": "0ce5f8627842",
+        "translation": "4b88966d6f9c"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -77,8 +77,8 @@
         "translation": "886e0cca1f5e"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "a2ca6455361c"
+        "source": "0ce5f8627842",
+        "translation": "825143bbdcc3"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -143,8 +143,8 @@
         "translation": "997bc7535dd9"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "9e73a0472a73"
+        "source": "0ce5f8627842",
+        "translation": "880832e58847"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -209,8 +209,8 @@
         "translation": "8dcfa43f6fd3"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "9009998c4105"
+        "source": "0ce5f8627842",
+        "translation": "581d7fe34d6a"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -275,8 +275,8 @@
         "translation": "3c30620c4096"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "a7c8a707a872"
+        "source": "0ce5f8627842",
+        "translation": "d535d23eca4c"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -331,6 +331,72 @@
         "translation": "f086f1b59289"
       }
     },
+    "README.ru.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "a2fb0d41cc07"
+      },
+      "intro.block.2": {
+        "source": "72ecfd631bae",
+        "translation": "f9fb7c570350"
+      },
+      "section.1.block.1": {
+        "source": "0ce5f8627842",
+        "translation": "addf4ce435f2"
+      },
+      "section.1.heading": {
+        "source": "779a2b2bf00d",
+        "translation": "bea553908767"
+      },
+      "section.2.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "6ff895bfb7df"
+      },
+      "section.2.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "7081fd94cb9f"
+      },
+      "section.2.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "5b1bb9c0fcee"
+      },
+      "section.3.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "ef8a8ad510c8"
+      },
+      "section.3.heading": {
+        "source": "98c33b0a0714",
+        "translation": "46eaf5c89c51"
+      },
+      "section.4.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "f179f2aa4c2b"
+      },
+      "section.4.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "a89f79015dc5"
+      },
+      "section.4.heading": {
+        "source": "7f8ee2187914",
+        "translation": "3a8d245658b2"
+      },
+      "section.4.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "bd15ddb0a95d"
+      },
+      "section.4.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "f292b100c3c9"
+      },
+      "section.5.block.1": {
+        "source": "741c5df4b978",
+        "translation": "1602d6e7904f"
+      },
+      "section.5.heading": {
+        "source": "9713f695ad92",
+        "translation": "afc99fdb7919"
+      }
+    },
     "README.zh-CN.md": {
       "intro.block.1": {
         "source": "7771475110ba",
@@ -341,8 +407,8 @@
         "translation": "4f2a35722b4a"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "008a77fda094"
+        "source": "0ce5f8627842",
+        "translation": "e2fdbc9c14eb"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",
@@ -407,8 +473,8 @@
         "translation": "8ee2dceae30d"
       },
       "section.1.block.1": {
-        "source": "7b65965a49c9",
-        "translation": "1fa908bab547"
+        "source": "0ce5f8627842",
+        "translation": "8d38cdf42a29"
       },
       "section.1.heading": {
         "source": "779a2b2bf00d",

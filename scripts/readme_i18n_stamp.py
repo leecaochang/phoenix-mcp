@@ -37,6 +37,7 @@ TRANSLATIONS = {
     "zh-Hant": REPO / "README.zh-Hant.md",
     "ja": REPO / "README.ja.md",
     "ko": REPO / "README.ko.md",
+    "ru": REPO / "README.ru.md",
 }
 BASELINE = REPO / "tests" / "contract" / "readme_i18n_source_hashes.json"
 
@@ -90,7 +91,7 @@ def _is_metadata(chunk: str) -> bool:
         chunk == "# Phoenix MCP"
         or all(line.startswith("[![") for line in lines)
         or sum(
-            name in chunk for name in ("README.md", "README.de.md", "README.es.md", "README.fr.md", "README.zh-CN.md", "README.zh-Hant.md", "README.ja.md", "README.ko.md")
+            name in chunk for name in ("README.md", "README.de.md", "README.es.md", "README.fr.md", "README.zh-CN.md", "README.zh-Hant.md", "README.ja.md", "README.ko.md", "README.ru.md")
         ) >= 2
     )
 
