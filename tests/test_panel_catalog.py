@@ -58,13 +58,14 @@ def test_english_is_flattened_to_dotted_keys() -> None:
     assert all("." in key for key in catalog), "keys must be dotted, not nested"
 
 
-def test_shipped_locale_is_backed_by_english() -> None:
+@pytest.mark.parametrize("language", ["zh-Hans", "ko"])
+def test_shipped_locale_is_backed_by_english(language: str) -> None:
     """Every English key resolves in a translated locale, translated or not."""
     english = helpers.panel_catalog("en")
-    chinese = helpers.panel_catalog("zh-Hans")
-    assert set(english) <= set(chinese)
-    translated = [k for k in english if chinese[k] != english[k]]
-    # Not vacuous: zh-Hans is a real translation, so most keys must differ.
+    translated_catalog = helpers.panel_catalog(language)
+    assert set(english) <= set(translated_catalog)
+    translated = [k for k in english if translated_catalog[k] != english[k]]
+    # Not vacuous: each selected locale is a real translation, so most keys must differ.
     assert len(translated) > len(english) // 2
 
 

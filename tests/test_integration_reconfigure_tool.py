@@ -60,8 +60,8 @@ def test_approval_summary_and_all_catalogs_state_the_review_limitations():
     ):
         assert phrase in english
     catalog_dir = Path(__file__).parents[1] / "custom_components/phoenix_mcp/catalogs"
-    for locale in ("en", "ja", "zh-Hans"):
-        catalog = json.loads((catalog_dir / f"{locale}.json").read_text())
+    for catalog_path in sorted(catalog_dir.glob("*.json")):
+        catalog = json.loads(catalog_path.read_text())
         body = catalog["panel"]["approvalSummary"]["integration.reconfigure.body"]
         assert "{label}" in body
         assert body != ""

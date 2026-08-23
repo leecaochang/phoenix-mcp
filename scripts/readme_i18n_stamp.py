@@ -33,6 +33,7 @@ TRANSLATIONS = {
     "zh-CN": REPO / "README.zh-CN.md",
     "zh-Hant": REPO / "README.zh-Hant.md",
     "ja": REPO / "README.ja.md",
+    "ko": REPO / "README.ko.md",
 }
 BASELINE = REPO / "tests" / "contract" / "readme_i18n_source_hashes.json"
 
@@ -44,7 +45,9 @@ COMMENT = (
 
 LINK_TARGET = re.compile(r"\[[^]]*\]\(([^)]+)\)")
 INLINE_CODE = re.compile(r"`[^`]+`")
-NUMBER = re.compile(r"(?<![\w.-])\d+(?:\.\d+)*(?![\w.-])")
+# Keep locale counters such as Korean "159개" attached to the number while
+# still avoiding numbers embedded in identifiers, versions, or URLs.
+NUMBER = re.compile(r"(?<![A-Za-z0-9_.-])\d+(?:\.\d+)*(?![A-Za-z0-9_.-])")
 ORDERED_ITEM = re.compile(r"^\d+\. ")
 PROTECTED = (
     "Phoenix MCP",
@@ -84,7 +87,7 @@ def _is_metadata(chunk: str) -> bool:
         chunk == "# Phoenix MCP"
         or all(line.startswith("[![") for line in lines)
         or sum(
-            name in chunk for name in ("README.md", "README.zh-CN.md", "README.zh-Hant.md", "README.ja.md")
+            name in chunk for name in ("README.md", "README.zh-CN.md", "README.zh-Hant.md", "README.ja.md", "README.ko.md")
         ) >= 2
     )
 

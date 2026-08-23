@@ -299,7 +299,8 @@ async def test_voice_turn_marks_an_answer_the_model_truncated():
 
 
 @pytest.mark.asyncio
-async def test_voice_failure_sentences_follow_the_conversation_language():
+@pytest.mark.parametrize("language", ["zh-Hans", "ko"])
+async def test_voice_failure_sentences_follow_the_conversation_language(language: str):
     """Every spoken non-answer is localized, not just the pre-loop declines."""
     token = _make_token()
     data = _make_data()
@@ -312,7 +313,7 @@ async def test_voice_failure_sentences_follow_the_conversation_language():
          patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="SYS"):
         text = await async_run_voice_turn(
             MagicMock(), data, token, provider, MagicMock(), "http://h", "hi",
-            max_iterations=3, language="zh-Hans")
+            max_iterations=3, language=language)
 
     assert text != VOICE_TEMPLATES["out_of_steps"], "still English under a zh-Hans conversation"
     assert not text.isascii(), f"expected a Chinese sentence, got {text!r}"
@@ -443,7 +444,8 @@ async def test_agent_process_includes_review_links_for_text_not_voice():
 
 
 @pytest.mark.asyncio
-async def test_decline_sentences_follow_the_conversation_language():
+@pytest.mark.parametrize("language", ["zh-Hans", "ko"])
+async def test_decline_sentences_follow_the_conversation_language(language: str):
     """A spoken decline is rendered in the CALLER's language, not the server's.
 
     These sentences were hardcoded English literals; a Chinese Assist pipeline
@@ -452,24 +454,25 @@ async def test_decline_sentences_follow_the_conversation_language():
     """
     data = _make_data(kill_switch=True, **_FULL_CFG)
     english = await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="en")
-    chinese = await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="zh-Hans")
+    localized = await voice_agent.async_voice_answer(MagicMock(), data, "hi", language=language)
     assert "unavailable" in english.lower()
-    assert chinese != english
-    assert "Phoenix MCP" in chinese  # product name stays Latin in every locale
+    assert localized != english
+    assert "Phoenix MCP" in localized  # product name stays Latin in every locale
     # An unknown locale and a regional English variant both fall back cleanly.
     assert await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="de") == english
     assert await voice_agent.async_voice_answer(MagicMock(), data, "hi", language="en-GB") == english
 
 
 @pytest.mark.asyncio
-async def test_agent_process_threads_the_conversation_language_through():
+@pytest.mark.parametrize("language", ["zh-Hans", "ko"])
+async def test_agent_process_threads_the_conversation_language_through(language: str):
     """Without this thread-through the catalog lookup would always see None."""
     agent = voice_agent.PhoenixConversationAgent(MagicMock(), _make_data())
     with patch.object(voice_agent, "async_voice_answer", AsyncMock(return_value="ok")) as va:
         await agent.async_process(
-            SimpleNamespace(text="hi", language="zh-Hans", conversation_id="c", satellite_id=None)
+            SimpleNamespace(text="hi", language=language, conversation_id="c", satellite_id=None)
         )
-    assert va.call_args.kwargs["language"] == "zh-Hans"
+    assert va.call_args.kwargs["language"] == language
 
 
 def test_every_voice_template_is_reachable_from_the_modules_that_speak():

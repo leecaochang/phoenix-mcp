@@ -19,7 +19,7 @@ def _stamper():
     return module
 
 
-@pytest.mark.parametrize("language", ["zh-CN", "ja"])
+@pytest.mark.parametrize("language", sorted(_stamper().TRANSLATIONS))
 def test_localized_readme_matches_its_english_source(language: str, capsys) -> None:
     exit_code = _stamper().check(language)
     if exit_code:

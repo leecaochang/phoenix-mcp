@@ -7,11 +7,11 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | **简体中文** | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md)
+[English](README.md) | **简体中文** | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 Phoenix MCP 为您的 AI 智能体提供限定范围、最小权限的 Home Assistant 访问方式。每个客户端都拥有自己的令牌，只能访问您明确允许的实体，并各自拥有独立的功能、速率限制和可选的有效期。审计默认开启，并可按结果类型分别配置；任何令牌都可以立即吊销；逐实体的语义安全层（MESA）还能根据设备本身的性质，将其设为仅可在确认后操作或完全禁止操作，无论令牌被授予了什么权限。
 
-Phoenix MCP 完全运行在 Home Assistant 内部：无需额外进程，核心服务器不依赖任何云服务，除 Phoenix MCP 面板之外也无需任何设置（可选的智能体对话、语音和 AI 任务功能会将对话发送给您配置的模型提供商，除非您将它们指向本地的 Ollama）。它可以配合您已经在用的 MCP 客户端（Claude Code、Cursor、ChatGPT/Codex、Gemini 等），您也可以完全不安装客户端，直接在 Home Assistant 内部对话。无论采用哪种方式，引导式设置都能在几分钟内带您从新建令牌走到可用的智能体，背后是一个包含 159 个工具的目录，可用于读取、控制和编写您的配置。面板提供英文、简体中文、繁體中文和日文，默认跟随您的 Home Assistant 个人资料语言。
+Phoenix MCP 完全运行在 Home Assistant 内部：无需额外进程，核心服务器不依赖任何云服务，除 Phoenix MCP 面板之外也无需任何设置（可选的智能体对话、语音和 AI 任务功能会将对话发送给您配置的模型提供商，除非您将它们指向本地的 Ollama）。它可以配合您已经在用的 MCP 客户端（Claude Code、Cursor、ChatGPT/Codex、Gemini 等），您也可以完全不安装客户端，直接在 Home Assistant 内部对话。无论采用哪种方式，引导式设置都能在几分钟内带您从新建令牌走到可用的智能体，背后是一个包含 159 个工具的目录，可用于读取、控制和编写您的配置。面板提供英文、简体中文、繁體中文、韩文和日文，默认跟随您的 Home Assistant 个人资料语言。
 
 <!-- readme-i18n:locale-only:start -->
 

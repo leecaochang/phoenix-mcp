@@ -12,10 +12,7 @@ BACKEND_FILES = (
     ROOT / "custom_components/phoenix_mcp/admin_view.py",
     ROOT / "custom_components/phoenix_mcp/agentcli.py",
 )
-CATALOG_FILES = (
-    ROOT / "custom_components/phoenix_mcp/catalogs/en.json",
-    ROOT / "custom_components/phoenix_mcp/catalogs/zh-Hans.json",
-)
+CATALOG_FILES = tuple(sorted((ROOT / "custom_components/phoenix_mcp/catalogs").glob("*.json")))
 
 
 def _panel_catalog(path: Path) -> dict:

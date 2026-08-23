@@ -7,8 +7,8 @@
         "translation": "db1b1d52b453"
       },
       "intro.block.2": {
-        "source": "025606dd723b",
-        "translation": "d93d3349450c"
+        "source": "1859f22bbde4",
+        "translation": "71e8ae18abaa"
       },
       "section.1.block.1": {
         "source": "0e378a8f6081",
@@ -59,14 +59,72 @@
         "translation": "d81b11613a25"
       }
     },
+    "README.ko.md": {
+      "intro.block.1": {
+        "source": "7771475110ba",
+        "translation": "3e9d3e97dd05"
+      },
+      "intro.block.2": {
+        "source": "1859f22bbde4",
+        "translation": "491bc39cb861"
+      },
+      "section.1.block.1": {
+        "source": "0e378a8f6081",
+        "translation": "62c373b38a14"
+      },
+      "section.1.block.2": {
+        "source": "e992c5c95f15",
+        "translation": "d01dc6079383"
+      },
+      "section.1.heading": {
+        "source": "060d66a4f3c0",
+        "translation": "7ee39ec50ce7"
+      },
+      "section.2.block.1": {
+        "source": "b18f1333cf81",
+        "translation": "4b9ff5dc50d6"
+      },
+      "section.2.heading": {
+        "source": "98c33b0a0714",
+        "translation": "b0d744c7f580"
+      },
+      "section.3.block.1": {
+        "source": "2ece95f587a0",
+        "translation": "09aa1b4e8bbd"
+      },
+      "section.3.block.2": {
+        "source": "cbbc1d220611",
+        "translation": "4faba5f0d572"
+      },
+      "section.3.heading": {
+        "source": "7f8ee2187914",
+        "translation": "eee7547ce21a"
+      },
+      "section.3.subsection.1.block.1": {
+        "source": "6531e26b8389",
+        "translation": "cae367bc2cba"
+      },
+      "section.3.subsection.1.heading": {
+        "source": "489d485c7937",
+        "translation": "6509b5374671"
+      },
+      "section.4.block.1": {
+        "source": "741c5df4b978",
+        "translation": "3cdc61171345"
+      },
+      "section.4.heading": {
+        "source": "9713f695ad92",
+        "translation": "f086f1b59289"
+      }
+    },
     "README.zh-CN.md": {
       "intro.block.1": {
         "source": "7771475110ba",
         "translation": "f23b92bd0988"
       },
       "intro.block.2": {
-        "source": "025606dd723b",
-        "translation": "a5269d3ae3fb"
+        "source": "1859f22bbde4",
+        "translation": "73c81c0f20dd"
       },
       "section.1.block.1": {
         "source": "0e378a8f6081",
@@ -123,8 +181,8 @@
         "translation": "a0e4463b6284"
       },
       "intro.block.2": {
-        "source": "025606dd723b",
-        "translation": "802dc6a03bcc"
+        "source": "1859f22bbde4",
+        "translation": "f86998333b1f"
       },
       "section.1.block.1": {
         "source": "0e378a8f6081",
