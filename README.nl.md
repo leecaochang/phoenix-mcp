@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | **Nederlands** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
+[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | **Nederlands** | [Polski](README.pl.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
 
 Phoenix MCP geeft je AI-agents afgebakende toegang tot Home Assistant volgens het principe van minimale rechten. Elke client krijgt een eigen token, beperkt tot precies de entiteiten die je toestaat, met eigen mogelijkheden, snelheidslimiet en optionele verloopdatum. Auditing is standaard ingeschakeld en per uitkomst configureerbaar, elk token kan direct worden ingetrokken, en de semantische veiligheidslaag per entiteit (MESA) kan een apparaat op basis van zijn aard op alleen-bevestigen of verboden zetten, ongeacht de machtigingen die een token krijgt.
 
@@ -15,7 +15,7 @@ Phoenix MCP draait volledig binnen Home Assistant, zonder extra proces, zonder c
 
 ## Talen
 
-Het paneel ondersteunt momenteel Engels, Spaans, Frans, Duits, Nederlands, Russisch, vereenvoudigd Chinees, traditioneel Chinees, Koreaans en Japans. Om de paneeltaal handmatig te wijzigen, open je **Phoenix MCP > Instellingen > Taal** en kies je een taal. Kies **Auto** om weer de taal van je Home Assistant-profiel te volgen.
+Het paneel ondersteunt momenteel Engels, Spaans, Frans, Duits, Nederlands, Pools, Russisch, vereenvoudigd Chinees, traditioneel Chinees, Koreaans en Japans. Om de paneeltaal handmatig te wijzigen, open je **Phoenix MCP > Instellingen > Taal** en kies je een taal. Kies **Auto** om weer de taal van je Home Assistant-profiel te volgen.
 
 ## Documentatie
 

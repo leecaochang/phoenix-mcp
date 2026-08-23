@@ -306,6 +306,34 @@ ALLOW_IDENTICAL_BY_LANGUAGE: dict[str, frozenset[str]] = {
         "panel.wizard.tokenLabel",             # "Token"
         "voice.provider_error",                # "Sorry, {reason}.", "Sorry" is a cognate
     }),
+    "pl": frozenset({
+        # Polish keeps these as shared loanwords, technical terms, and bare
+        # separator/template fragments. Each is a genuine cognate or machine
+        # value, not an untranslated sentence.
+        "panel.agentchat.approvalReason",      # " - {reason}", a bare separator fragment
+        "panel.agentchat.model",               # "Model"
+        "panel.agentchat.resultOk",            # "ok"
+        "panel.agentchat.token",               # "Token"
+        "panel.agentchat.toolResult",          # "<code>{name}</code>: {summary}", no prose to translate
+        "panel.approvals.detailTabDiff",       # "Diff"
+        "panel.approvals.metaStatus",          # "Status"
+        "panel.approvals.metaToken",           # "Token"
+        "panel.audit.rowToken",                # "Token"
+        "panel.common.diff",                   # "Diff"
+        "panel.settings.languageAuto",         # "Auto"
+        "panel.settings.model",                # "Model"
+        "panel.settings.themeAuto",            # "Auto"
+        "panel.settings.token",                # "Token"
+        "panel.tokens.cardPersona",            # "Persona"
+        "panel.tokens.colStatus",              # "Status"
+        "panel.tokens.diffPassThrough",        # "Pass-through: {from} -> {to}", a technical template
+        "panel.tokens.rateSummary",            # "{requests}/min · burst {burst}", a technical template
+        "panel.wizard.agentTablist",           # "Agent"
+        "panel.wizard.stepPersona",            # "Persona"
+        "panel.wizard.stepTest",               # "Test"
+        "panel.wizard.stepToken",              # "Token"
+        "panel.wizard.tokenLabel",             # "Token"
+    }),
     "ru": frozenset({
         # A bare separator fragment and a code-span-plus-colon template carry no
         # translatable prose; Russian keeps the same separator and colon.

@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | **Deutsch** | [Nederlands](README.nl.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
+[English](README.md) | [Español](README.es.md) | [Français](README.fr.md) | **Deutsch** | [Nederlands](README.nl.md) | [Polski](README.pl.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
 
 Phoenix MCP gibt Ihren KI-Agenten einen bereichsbezogenen Zugriff auf Home Assistant nach dem Prinzip der minimalen Berechtigungen. Jeder Client erhält ein eigenes Token, das genau auf die von Ihnen erlaubten Entitäten beschränkt ist und über eigene Fähigkeiten, ein Ratenlimit sowie eine optionale Ablaufzeit verfügt. Die Prüfung ist standardmäßig aktiviert und je Ergebnis konfigurierbar. Jedes Token kann sofort widerrufen werden. Die semantische Sicherheitsschicht pro Entität (MESA) kann ein Gerät abhängig von seiner Art auf bestätigungspflichtig setzen oder sperren, unabhängig von den Berechtigungen des Tokens.
 
@@ -15,7 +15,7 @@ Phoenix MCP läuft vollständig in Home Assistant, ohne zusätzlichen Prozess, o
 
 ## Sprachen
 
-Das Bedienfeld unterstützt derzeit Englisch, Spanisch, Französisch, Deutsch, Niederländisch, Russisch, vereinfachtes Chinesisch, traditionelles Chinesisch, Koreanisch und Japanisch. Um die Sprache des Bedienfelds manuell zu ändern, öffnen Sie **Phoenix MCP > Einstellungen > Sprache** und wählen Sie eine Sprache aus. Wählen Sie **Auto**, um wieder der Sprache Ihres Home Assistant-Profils zu folgen.
+Das Bedienfeld unterstützt derzeit Englisch, Spanisch, Französisch, Deutsch, Niederländisch, Polnisch, Russisch, vereinfachtes Chinesisch, traditionelles Chinesisch, Koreanisch und Japanisch. Um die Sprache des Bedienfelds manuell zu ändern, öffnen Sie **Phoenix MCP > Einstellungen > Sprache** und wählen Sie eine Sprache aus. Wählen Sie **Auto**, um wieder der Sprache Ihres Home Assistant-Profils zu folgen.
 
 ## Dokumentation
 

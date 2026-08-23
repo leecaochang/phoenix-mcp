@@ -7,7 +7,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.2%2B-41BDF5?logo=home-assistant&logoColor=white)](https://www.home-assistant.io)
 
 
-**English** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Nederlands](README.nl.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
+**English** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Nederlands](README.nl.md) | [Polski](README.pl.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-Hant.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Русский](README.ru.md)
 
 Phoenix MCP gives your AI agents scoped, least-privilege access to Home Assistant. Each client gets its own token, limited to exactly the entities you allow, with its own capabilities, rate limit, and optional expiry. Auditing is enabled by default and configurable per outcome, any token can be revoked instantly, and the per-entity semantic safety layer (MESA) can make a device confirm-only or off-limits by its nature, no matter what permissions a token is granted.
 
@@ -15,7 +15,7 @@ Phoenix MCP runs entirely inside Home Assistant, with no extra process, no cloud
 
 ## Languages
 
-The panel currently supports English, Spanish, French, German, Dutch, Russian, Simplified Chinese, Traditional Chinese, Korean, and Japanese. To change the panel language manually, open **Phoenix MCP > Settings > Language** and choose a language. Choose **Auto** to follow your Home Assistant profile language again.
+The panel currently supports English, Spanish, French, German, Dutch, Polish, Russian, Simplified Chinese, Traditional Chinese, Korean, and Japanese. To change the panel language manually, open **Phoenix MCP > Settings > Language** and choose a language. Choose **Auto** to follow your Home Assistant profile language again.
 
 ## Documentation
 

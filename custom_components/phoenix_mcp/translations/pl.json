@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Kliknij Zatwierdź, aby zainstalować integrację Phoenix MCP. Pamiętaj, że można skonfigurować tylko jedną instancję naraz"
+      }
+    },
+    "abort": {
+      "already_configured": "Phoenix MCP jest już skonfigurowany."
+    },
+    "create_entry": {
+      "default": "Użyj panelu Phoenix MCP do zarządzania tokenami"
+    }
+  },
+  "issues": {
+    "mesa_runtime_unavailable": {
+      "title": "Środowisko bezpieczeństwa MESA jest niedostępne",
+      "description": "Phoenix MCP nie mógł zainicjować środowiska bezpieczeństwa MESA. Odczyt i odzyskiwanie administracyjne pozostają dostępne, ale chronione operacje zmieniające stan są odrzucane, gdy tryb MESA to Doradczy lub Wymuszony. Przejrzyj logi Home Assistant, a następnie przeładuj integrację Phoenix MCP. Tryb Wyłączony możesz wybrać tylko wtedy, gdy zamierzasz działać bez ochrony MESA."
+    }
+  }
+}
