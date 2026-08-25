@@ -67,6 +67,11 @@ class PhoenixData:
     entity_tree_cache: dict | None = None
     entity_tree_cache_valid: bool = False
     entity_tree_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serializes a global-settings write with the live registrations it changes.
+    # The token-store lock protects persistence only; releasing it before route,
+    # Assist, MESA, or injector reconciliation lets an older PATCH finish after a
+    # newer one and put runtime state back on the obsolete generation.
+    settings_update_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Keyed by token name slug; values are the list of PhoenixTokenSensor instances.
     platform_entities: dict[str, list] = field(default_factory=dict)
     # Keyed by token ID for fast sensor lookup during counter updates.

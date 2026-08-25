@@ -921,7 +921,257 @@ async def test_settings_patch_uses_async_lock():
 
 
 @pytest.mark.asyncio
-async def test_settings_patch_rejects_unknown_fields_silently():
+async def test_settings_patch_serializes_persistence_with_live_reconciliation():
+    data = _make_data()
+    current = GlobalSettings(kill_switch=True)
+    data.store.get_settings.side_effect = lambda: current
+
+    async def patch_settings(**kwargs):
+        nonlocal current
+        current = GlobalSettings.from_dict({**current.to_dict(), **kwargs})
+        return current
+
+    data.store.async_patch_settings = AsyncMock(side_effect=patch_settings)
+    hass = _make_hass(data)
+    view = PhoenixAdminSettingsView()
+    view.hass = hass
+    first_effect_started = asyncio.Event()
+    release_first_effect = asyncio.Event()
+    effect_values: list[bool] = []
+
+    async def reconcile(_hass, _data, _patchable, updated, _old_kill_switch):
+        effect_values.append(updated.kill_switch)
+        if len(effect_values) == 1:
+            first_effect_started.set()
+            await release_first_effect.wait()
+
+    with patch(
+        "custom_components.phoenix_mcp.admin_view._apply_settings_side_effects",
+        side_effect=reconcile,
+    ):
+        first = asyncio.create_task(view.patch(_make_admin_request(
+            body=json.dumps({"kill_switch": False}).encode()
+        )))
+        await first_effect_started.wait()
+        second = asyncio.create_task(view.patch(_make_admin_request(
+            body=json.dumps({"kill_switch": True}).encode()
+        )))
+        await asyncio.sleep(0)
+
+        assert data.store.async_patch_settings.await_count == 1
+        release_first_effect.set()
+        first_response, second_response = await asyncio.gather(first, second)
+
+    assert first_response.status == 200
+    assert second_response.status == 200
+    assert effect_values == [False, True]
+    assert current.kill_switch is True
+
+
+@pytest.mark.asyncio
+async def test_token_revoke_before_settings_validation_rejects_dead_reference():
+    token = _make_active_token()
+    data = _make_data([token])
+    active = {token.id: token}
+    current = GlobalSettings()
+    data.store.get_token_by_id.side_effect = active.get
+    data.store.get_settings.side_effect = lambda: current
+    data.store.async_patch_settings = AsyncMock()
+    archive_started = asyncio.Event()
+    release_archive = asyncio.Event()
+
+    async def archive(token_id, **_kwargs):
+        archived = active.pop(token_id, None)
+        archive_started.set()
+        await release_archive.wait()
+        return archived
+
+    data.store.async_archive_token = AsyncMock(side_effect=archive)
+    hass = _make_hass(data)
+    token_view = PhoenixAdminTokenView()
+    token_view.hass = hass
+    settings_view = PhoenixAdminSettingsView()
+    settings_view.hass = hass
+
+    revoke = asyncio.create_task(token_view.delete(
+        _make_admin_request(), token_id=token.id
+    ))
+    await archive_started.wait()
+    bind = asyncio.create_task(settings_view.patch(_make_admin_request(
+        body=json.dumps({"voice_agent_token_id": token.id}).encode()
+    )))
+    await asyncio.sleep(0)
+    assert not bind.done()
+
+    release_archive.set()
+    revoke_response, bind_response = await asyncio.gather(revoke, bind)
+
+    assert revoke_response.status == 204
+    assert bind_response.status == 400
+    data.store.async_patch_settings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_settings_bind_before_token_revoke_finishes_cleared():
+    token = _make_active_token()
+    data = _make_data([token])
+    active = {token.id: token}
+    current = GlobalSettings()
+    data.store.get_token_by_id.side_effect = active.get
+    data.store.get_settings.side_effect = lambda: current
+    binding_persisted = asyncio.Event()
+    release_binding = asyncio.Event()
+
+    async def patch_settings(**kwargs):
+        nonlocal current
+        current = GlobalSettings.from_dict({**current.to_dict(), **kwargs})
+        if kwargs.get("voice_agent_token_id") == token.id:
+            binding_persisted.set()
+            await release_binding.wait()
+        return current
+
+    async def archive(token_id, **_kwargs):
+        return active.pop(token_id, None)
+
+    data.store.async_patch_settings = AsyncMock(side_effect=patch_settings)
+    data.store.async_archive_token = AsyncMock(side_effect=archive)
+    hass = _make_hass(data)
+    token_view = PhoenixAdminTokenView()
+    token_view.hass = hass
+    settings_view = PhoenixAdminSettingsView()
+    settings_view.hass = hass
+
+    bind = asyncio.create_task(settings_view.patch(_make_admin_request(
+        body=json.dumps({"voice_agent_token_id": token.id}).encode()
+    )))
+    await binding_persisted.wait()
+    revoke = asyncio.create_task(token_view.delete(
+        _make_admin_request(), token_id=token.id
+    ))
+    await asyncio.sleep(0)
+    assert not revoke.done()
+
+    release_binding.set()
+    bind_response, revoke_response = await asyncio.gather(bind, revoke)
+
+    assert bind_response.status == 200
+    assert revoke_response.status == 204
+    assert current.voice_agent_token_id is None
+
+
+@pytest.mark.asyncio
+async def test_provider_delete_before_settings_validation_rejects_dead_reference():
+    from custom_components.phoenix_mcp.agentcli import PhoenixAgentCliProviderView
+
+    data = _make_data()
+    current = GlobalSettings()
+    data.store.get_settings.side_effect = lambda: current
+    data.store.async_patch_settings = AsyncMock()
+    provider_present = True
+    delete_started = asyncio.Event()
+    release_delete = asyncio.Event()
+    secret_store = MagicMock()
+    secret_store.get.side_effect = lambda _instance_id: {"kind": "claude"} if provider_present else None
+
+    async def delete_provider(_instance_id):
+        nonlocal provider_present
+        provider_present = False
+        delete_started.set()
+        await release_delete.wait()
+
+    secret_store.delete = AsyncMock(side_effect=delete_provider)
+    hass = _make_hass(data)
+    provider_view = PhoenixAgentCliProviderView()
+    provider_view.hass = hass
+    settings_view = PhoenixAdminSettingsView()
+    settings_view.hass = hass
+
+    with patch(
+        "custom_components.phoenix_mcp.agentcli._get_secret_store",
+        AsyncMock(return_value=secret_store),
+    ):
+        delete = asyncio.create_task(provider_view.delete(
+            _make_admin_request(), instance_id="pid"
+        ))
+        await delete_started.wait()
+        bind = asyncio.create_task(settings_view.patch(_make_admin_request(
+            body=json.dumps({"voice_agent_provider_id": "pid"}).encode()
+        )))
+        await asyncio.sleep(0)
+        assert not bind.done()
+
+        release_delete.set()
+        delete_response, bind_response = await asyncio.gather(delete, bind)
+
+    assert delete_response.status == 200
+    assert bind_response.status == 400
+    data.store.async_patch_settings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_settings_bind_before_provider_delete_finishes_cleared():
+    from custom_components.phoenix_mcp.agentcli import PhoenixAgentCliProviderView
+
+    data = _make_data()
+    current = GlobalSettings()
+    data.store.get_settings.side_effect = lambda: current
+    provider_present = True
+    binding_persisted = asyncio.Event()
+    release_binding = asyncio.Event()
+    secret_store = MagicMock()
+    secret_store.get.side_effect = lambda _instance_id: {"kind": "claude"} if provider_present else None
+
+    async def patch_settings(**kwargs):
+        nonlocal current
+        current = GlobalSettings.from_dict({**current.to_dict(), **kwargs})
+        if kwargs.get("voice_agent_provider_id") == "pid":
+            binding_persisted.set()
+            await release_binding.wait()
+        return current
+
+    async def delete_provider(_instance_id):
+        nonlocal provider_present
+        provider_present = False
+
+    data.store.async_patch_settings = AsyncMock(side_effect=patch_settings)
+    secret_store.delete = AsyncMock(side_effect=delete_provider)
+    hass = _make_hass(data)
+    provider_view = PhoenixAgentCliProviderView()
+    provider_view.hass = hass
+    settings_view = PhoenixAdminSettingsView()
+    settings_view.hass = hass
+
+    with (
+        patch(
+            "custom_components.phoenix_mcp.agentcli._get_secret_store",
+            AsyncMock(return_value=secret_store),
+        ),
+        patch(
+            "custom_components.phoenix_mcp.voice_agent.async_remove_assist_pipeline",
+            new_callable=AsyncMock,
+        ),
+    ):
+        bind = asyncio.create_task(settings_view.patch(_make_admin_request(
+            body=json.dumps({"voice_agent_provider_id": "pid"}).encode()
+        )))
+        await binding_persisted.wait()
+        delete = asyncio.create_task(provider_view.delete(
+            _make_admin_request(), instance_id="pid"
+        ))
+        await asyncio.sleep(0)
+        secret_store.delete.assert_not_awaited()
+
+        release_binding.set()
+        bind_response, delete_response = await asyncio.gather(bind, delete)
+
+    assert bind_response.status == 200
+    assert delete_response.status == 200
+    assert current.voice_agent_provider_id is None
+    assert current.voice_agent_model is None
+
+
+@pytest.mark.asyncio
+async def test_settings_patch_rejects_unknown_fields_atomically():
     data = _make_data()
     settings = GlobalSettings()
     data.store.async_patch_settings = AsyncMock(return_value=settings)
@@ -934,10 +1184,27 @@ async def test_settings_patch_rejects_unknown_fields_silently():
     request = _make_admin_request(body=body)
     resp = await view.patch(request)
 
-    assert resp.status == 200
-    call_kwargs = data.store.async_patch_settings.call_args.kwargs
-    assert "unknown_field" not in call_kwargs
-    assert "notify_on_rate_limit" in call_kwargs
+    assert resp.status == 400
+    assert json.loads(resp.text)["message_params"] == {"fields": "unknown_field"}
+    data.store.async_patch_settings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_token_patch_rejects_unknown_fields_atomically():
+    token = _make_active_token()
+    data = _make_data([token])
+    data.store.get_token_by_id = MagicMock(return_value=token)
+    data.store.async_patch_token = AsyncMock(return_value=token)
+    hass = _make_hass(data)
+    view = PhoenixAdminTokenView()
+    view.hass = hass
+
+    body = json.dumps({"cap_restart": "allow", "cap_restert": "allow"}).encode()
+    resp = await view.patch(_make_admin_request(body=body), token_id=token.id)
+
+    assert resp.status == 400
+    assert json.loads(resp.text)["message_params"] == {"fields": "cap_restert"}
+    data.store.async_patch_token.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1673,6 +1940,44 @@ async def test_wipe_providers_only_skips_core_store():
     assert resp.status == 204
     data.store.async_wipe.assert_not_called()
     wipe_secrets.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wipe_providers_only_clears_dependent_settings():
+    data = _make_wipe_data()
+    data.store.get_settings.return_value = GlobalSettings(
+        voice_agent_provider_id="voice-provider",
+        voice_agent_model="voice-model",
+        ai_task_provider_id="task-provider",
+        ai_task_model="task-model",
+    )
+    data.async_sync_voice_agent = MagicMock()
+    data.async_sync_ai_task = MagicMock()
+    hass = _make_hass(data)
+    view = PhoenixAdminWipeView()
+    view.hass = hass
+
+    with patch(
+        "custom_components.phoenix_mcp.agentcli.async_wipe_agentcli_secrets",
+        new=AsyncMock(),
+    ), patch(
+        "custom_components.phoenix_mcp.voice_agent.async_remove_assist_pipeline",
+        new=AsyncMock(),
+    ) as remove_pipeline:
+        resp = await view.delete(
+            _make_admin_request(body=_wipe_body(wipe_core=False, wipe_providers=True))
+        )
+
+    assert resp.status == 204
+    data.store.async_patch_settings.assert_awaited_once_with(
+        voice_agent_provider_id=None,
+        voice_agent_model=None,
+        ai_task_provider_id=None,
+        ai_task_model=None,
+    )
+    data.async_sync_voice_agent.assert_called_once_with()
+    data.async_sync_ai_task.assert_called_once_with()
+    remove_pipeline.assert_awaited_once_with(hass, data)
 
 
 @pytest.mark.asyncio

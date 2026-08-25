@@ -35,6 +35,7 @@
       "bodyTooLarge": "請求體過大。",
       "bodyUnreadable": "讀取請求體失敗。",
       "booleanRequired": "{field} 必須為 true 或 false。",
+      "unknownFields": "未知欄位：{fields}。",
       "capabilityConfirmUnsupported": "{capability} 不支援「確認」模式。",
       "capabilityModeInvalid": "{capability} 必須為 deny、allow 或 confirm。",
       "catalogNotFound": "未找到語言目錄。",

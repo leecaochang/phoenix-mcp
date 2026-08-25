@@ -9,10 +9,8 @@ on:
     - cron: "23 5 * * *"
   workflow_dispatch:
 
-# Least privilege: these two jobs execute a MUTABLE upstream ref on purpose (see
-# the comment on the action itself), so the token they run with is the thing to
-# bound. They only read the checkout and report a result; nothing here writes to
-# the repository, so no other scope is needed.
+# Least privilege: both the pinned gate and the scheduled compatibility canary
+# only read the checkout and report a result.
 permissions:
   contents: read
 
@@ -30,8 +28,15 @@ jobs:
         # translations/: hassfest validates translations/en.json against a closed
         # set of Home Assistant categories and errors on anything else.
         #
-        # DELIBERATELY a moving ref, unlike the actions/* pins above, for the
-        # reason in the paragraph before this one: pinning a SHA would validate
-        # against yesterday's manifest rules while the submission runs today's,
-        # so the job would go green exactly when it most needs to fail.
+        uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb
+
+  compatibility-canary:
+    name: Hassfest current-rules canary
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Hassfest current rules
+        # This isolated scheduled job intentionally follows upstream so a new
+        # manifest rule is visible without making a mutable ref a merge gate.
         uses: home-assistant/actions/hassfest@master

@@ -320,10 +320,62 @@ class TestKeepaliveAndProgress:
         assert resp.content_type == "application/json"
         assert json.loads(resp.text)["id"] == 9
 
-    async def test_dispatch_completes_after_the_client_disconnects(self, monkeypatch):
-        """A side effect must never be half-applied because nobody is listening."""
+    async def test_modern_dispatch_is_cancelled_after_client_disconnect(self, monkeypatch):
+        """The 2026 transport treats its per-request stream as cancellation."""
         monkeypatch.setattr(mcp_view, "MCP_SSE_KEEPALIVE_SECONDS", 0.01)
-        _token, raw, _data, hass = _env()
+        _token, raw, data, hass = _env()
+        data.enforce_mcp_lifecycle = True
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _slow(*_a, **_kw):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        stream = _FakeStream(fail_writes=True)
+        body = self._tool_call({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "test-client", "version": "1.0"},
+            "io.modelcontextprotocol/clientCapabilities": {},
+        })
+        headers = {
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "get_config",
+        }
+        with _stream_patch(stream), patch.object(mcp_view, "_call_tool", side_effect=_slow):
+            await _view(hass).post(_make_request(body, "text/event-stream", raw, headers))
+        assert started.is_set()
+        assert cancelled.is_set()
+        assert stream.frames == []  # nothing could be written
+
+    async def test_legacy_dispatch_continues_after_client_disconnect(self, monkeypatch):
+        """The 2025 transport says a disconnect is not a cancellation signal."""
+        monkeypatch.setattr(mcp_view, "MCP_SSE_KEEPALIVE_SECONDS", 0.01)
+        _token, raw, data, hass = _env()
+        data.enforce_mcp_lifecycle = True
+        init = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "legacy-client", "version": "1.0"},
+            },
+        }
+        init_response = await _view(hass).post(_make_request(init, "application/json", raw))
+        session_headers = {"Mcp-Session-Id": init_response.headers["Mcp-Session-Id"]}
+        await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            "application/json",
+            raw,
+            session_headers,
+        ))
         finished = asyncio.Event()
 
         async def _slow(*_a, **_kw):
@@ -333,6 +385,60 @@ class TestKeepaliveAndProgress:
 
         stream = _FakeStream(fail_writes=True)
         with _stream_patch(stream), patch.object(mcp_view, "_call_tool", side_effect=_slow):
-            await _view(hass).post(_make_request(self._tool_call(), "text/event-stream", raw))
+            await _view(hass).post(_make_request(
+                self._tool_call(), "text/event-stream", raw, session_headers,
+            ))
         assert finished.is_set()
-        assert stream.frames == []  # nothing could be written
+
+    async def test_handler_cancellation_propagates_to_modern_dispatch(self):
+        """HA cancels the outer aiohttp handler directly on connection loss."""
+        _token, _raw, _data, hass = _env()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def dispatch():
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        stream = _FakeStream()
+        with _stream_patch(stream):
+            outer = asyncio.create_task(mcp_view._mcp_sse_response(
+                MagicMock(), hass, "rid", {}, mcp_view._ProgressBus(), dispatch(),
+                cancel_on_disconnect=True,
+            ))
+            await started.wait()
+            outer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await outer
+
+        assert cancelled.is_set()
+
+    async def test_handler_cancellation_leaves_legacy_dispatch_running(self):
+        """Outer cancellation is not a legacy 2025 cancellation signal."""
+        _token, _raw, _data, hass = _env()
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def dispatch():
+            started.set()
+            await asyncio.sleep(0.01)
+            finished.set()
+            return {"jsonrpc": "2.0", "id": 1, "result": {}}
+
+        stream = _FakeStream()
+        with _stream_patch(stream):
+            outer = asyncio.create_task(mcp_view._mcp_sse_response(
+                MagicMock(), hass, "rid", {}, mcp_view._ProgressBus(), dispatch(),
+                cancel_on_disconnect=False,
+            ))
+            await started.wait()
+            outer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await outer
+            await asyncio.wait_for(finished.wait(), timeout=1)
+
+        assert finished.is_set()

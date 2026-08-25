@@ -394,37 +394,52 @@ async def async_archive_expired_token(
         fire_approval_resolved_event,
     )
 
-    now = utcnow()
-    slug = token_name_slug(token.name)
     cancel_expiry_timer(data, token.id)
-    archived = await data.store.async_archive_token(token.id, revoked=False, revoked_at=now)
-    if archived is None:
-        return
-    # Same queue hygiene as revoke: an expired token's approvals cannot be
-    # legitimately approved anymore (re-validation would auto-reject them).
-    async with data.store.async_lock:
-        # Clear the Assist binding / voice-agent token if it pointed at this token
-        # (rule 11), like revoke; the voice agent re-syncs to unregistered below.
-        _s = data.store.get_settings()
-        _patch: dict[str, Any] = {}
-        if _s.assist_bound_token_id == token.id:
-            _patch["assist_bound_token_id"] = None
-        if _s.voice_agent_token_id == token.id:
-            _patch["voice_agent_token_id"] = None
-        if _s.ai_task_token_id == token.id:
-            _patch["ai_task_token_id"] = None
-        if _patch:
-            await data.store.async_patch_settings(**_patch)
-        cancelled = await async_cancel_approvals_for_token(
-            data.store, token.id, REASON_TOKEN_EXPIRED,
-            skip_ids=data.approvals_in_progress,
-        )
+    # Expiry removes the same live token references as explicit revocation, so it
+    # follows the same settings-lock then token-store-lock order.
+    async with data.settings_update_lock:
+        async with data.store.async_lock:
+            # The timer, request-path expiry check, and periodic sweep may all arrive
+            # for the same token. Re-read under the mutation lock so only the first
+            # expired transition archives it, and so PATCH/revoke cannot interleave
+            # with the stored snapshot and dependent cleanup below.
+            current = data.store.get_token_by_id(token.id)
+            now = utcnow()
+            if (
+                current is None
+                or current.expires_at is None
+                or current.expires_at > now
+            ):
+                return
+            slug = token_name_slug(current.name)
+            archived = await data.store.async_archive_token(
+                current.id, revoked=False, revoked_at=now
+            )
+            if archived is None:
+                return
+            # Same queue hygiene as revoke: an expired token's approvals cannot be
+            # legitimately approved anymore (re-validation would auto-reject them).
+            # Clear bindings in the same transaction as token archival.
+            _s = data.store.get_settings()
+            _patch: dict[str, Any] = {}
+            if _s.assist_bound_token_id == current.id:
+                _patch["assist_bound_token_id"] = None
+            if _s.voice_agent_token_id == current.id:
+                _patch["voice_agent_token_id"] = None
+            if _s.ai_task_token_id == current.id:
+                _patch["ai_task_token_id"] = None
+            if _patch:
+                await data.store.async_patch_settings(**_patch)
+            cancelled = await async_cancel_approvals_for_token(
+                data.store, current.id, REASON_TOKEN_EXPIRED,
+                skip_ids=data.approvals_in_progress,
+            )
     for approval in cancelled:
         dismiss_approval_notification(hass, approval.id)
         fire_approval_resolved_event(hass, approval)
     # Advisory leases the token still held; in-memory, so outside the store lock.
     from .mesa import release_token_leases  # noqa: PLC0415
-    release_token_leases(data, token.id)
+    release_token_leases(data, current.id)
     if data.async_sync_voice_agent is not None:
         data.async_sync_voice_agent()
     if "voice_agent_token_id" in _patch:
@@ -435,13 +450,13 @@ async def async_archive_expired_token(
     if "ai_task_token_id" in _patch and data.async_sync_ai_task is not None:
         # The AI Task lost its token; remove the AI Task entity from HA (and picker).
         data.async_sync_ai_task()
-    data.rate_limiter.destroy(token.id)
-    data.rate_limit_notified.pop(token.id, None)
-    data.token_counters.pop(token.id, None)
-    data.stale_tools_advised.pop(token.id, None)
+    data.rate_limiter.destroy(current.id)
+    data.rate_limit_notified.pop(current.id, None)
+    data.token_counters.pop(current.id, None)
+    data.stale_tools_advised.pop(current.id, None)
     hass.bus.async_fire("phoenix_mcp_token_expired", {
-        "token_id": token.id,
-        "token_name": token.name,
+        "token_id": current.id,
+        "token_name": current.name,
         "timestamp": now.isoformat(),
     })
     if data.async_on_token_archived:
@@ -449,7 +464,7 @@ async def async_archive_expired_token(
             await data.async_on_token_archived(slug)
         except Exception:
             _LOGGER.warning(
-                "Sensor cleanup failed for expired token %s", token.id, exc_info=True,
+                "Sensor cleanup failed for expired token %s", current.id, exc_info=True,
             )
 
 

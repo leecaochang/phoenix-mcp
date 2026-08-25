@@ -9,10 +9,8 @@ on:
     - cron: "23 5 * * *"
   workflow_dispatch:
 
-# Least privilege: these two jobs execute a MUTABLE upstream ref on purpose (see
-# the comment on the action itself), so the token they run with is the thing to
-# bound. They only read the checkout and report a result; nothing here writes to
-# the repository, so no other scope is needed.
+# Least privilege: both the pinned gate and the scheduled compatibility canary
+# only read the checkout and report a result.
 permissions:
   contents: read
 
@@ -23,13 +21,19 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: HACS Action
-        # DELIBERATELY a moving ref, unlike the actions/* pins above. This job
-        # exists to predict whether a HACS submission passes, and hacs/default
-        # runs the CURRENT action against the repo; pinning a SHA would keep
-        # testing rules HACS has moved on from, so the job would go green while
-        # listing failed. That is the opposite of what it is for. The daily
-        # schedule above is the other half: a rule change is caught with no
-        # commit, which is only useful while this tracks the live action.
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
+        with:
+          category: integration
+
+  compatibility-canary:
+    name: HACS current-rules canary
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: HACS Action current rules
+        # This isolated scheduled job intentionally follows upstream so a new
+        # HACS submission rule is visible without making a mutable ref a merge gate.
         uses: hacs/action@main
         with:
           category: integration

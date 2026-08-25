@@ -1,5 +1,7 @@
+import React from "react";
 import { describe, it, expect } from "vitest";
-import { collectConfigErrors, collectPreviewViews, singleCardPreviewConfig } from "../components/DashboardPreview";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { collectConfigErrors, collectPreviewViews, DashboardPreview, singleCardPreviewConfig } from "../components/DashboardPreview";
 
 describe("collectPreviewViews", () => {
   it("returns null for non-dict configs", () => {
@@ -169,5 +171,29 @@ describe("collectConfigErrors", () => {
     inner.appendChild(errorCard({ error: "second" }));
     host.appendChild(inner);
     expect(collectConfigErrors(host)).toEqual(["first", "second"]);
+  });
+});
+
+describe("DashboardPreview view controls", () => {
+  it("uses ordinary pressed buttons instead of incomplete tab semantics", async () => {
+    if (!customElements.get("hui-card")) {
+      customElements.define("hui-card", class extends HTMLElement {});
+    }
+    render(React.createElement(DashboardPreview, { config: { views: [
+      { title: "First", cards: [] },
+      { title: "Second", cards: [] },
+    ] } }));
+
+    const group = await screen.findByRole("group", { name: "Dashboard views" });
+    const first = screen.getByRole("button", { name: "First" });
+    const second = screen.getByRole("button", { name: "Second" });
+    expect(group).toContainElement(first);
+    expect(first).toHaveAttribute("aria-pressed", "true");
+    expect(second).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("tab")).toBeNull();
+
+    fireEvent.click(second);
+    expect(first).toHaveAttribute("aria-pressed", "false");
+    expect(second).toHaveAttribute("aria-pressed", "true");
   });
 });

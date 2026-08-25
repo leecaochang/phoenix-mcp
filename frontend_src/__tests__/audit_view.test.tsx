@@ -23,6 +23,12 @@ function entry(over: Partial<AuditEntry> = {}): AuditEntry {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe("AuditView", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -69,6 +75,26 @@ describe("AuditView", () => {
     await waitFor(() =>
       expect(api.getAudit).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "denied", offset: 0 })),
     );
+  });
+
+  it("discards a slow response from the previous filter", async () => {
+    const stale = deferred<{ entries: AuditEntry[]; total: number }>();
+    const current = deferred<{ entries: AuditEntry[]; total: number }>();
+    vi.mocked(api.getAudit)
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise);
+
+    const { getByLabelText, findByText, queryByText } = render(<AuditView tokens={[]} />);
+    await waitFor(() => expect(api.getAudit).toHaveBeenCalledTimes(1));
+    fireEvent.change(getByLabelText("Filter by outcome"), { target: { value: "denied" } });
+    await waitFor(() => expect(api.getAudit).toHaveBeenCalledTimes(2));
+
+    current.resolve({ entries: [entry({ resource: "current-denied", outcome: "denied" })], total: 1 });
+    await findByText("current-denied");
+    stale.resolve({ entries: [entry({ resource: "stale-allowed" })], total: 1 });
+
+    await waitFor(() => expect(queryByText("current-denied")).not.toBeNull());
+    expect(queryByText("stale-allowed")).toBeNull();
   });
 
   it("debounces the method/resource/ip text filters instead of firing per keystroke", async () => {

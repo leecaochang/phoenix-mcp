@@ -1393,6 +1393,56 @@ def test_clip_display_caps_long_tool_results():
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
+async def test_secret_store_initialization_is_shared_across_concurrent_callers(hass):
+    hass.data.pop("_phoenix_agentcli_store", None)
+    hass.data.pop("_phoenix_agentcli_store_lock", None)
+    store = agentcli.AgentCliStore(AsyncMock())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def create_once(_hass):
+        entered.set()
+        await release.wait()
+        return store
+
+    with patch.object(agentcli.AgentCliStore, "async_create", side_effect=create_once) as create:
+        first = asyncio.create_task(agentcli._get_secret_store(hass))
+        await entered.wait()
+        second = asyncio.create_task(agentcli._get_secret_store(hass))
+        release.set()
+        one, two = await asyncio.gather(first, second)
+
+    assert one is store and two is store
+    create.assert_awaited_once_with(hass)
+
+
+@pytest.mark.asyncio
+async def test_secret_store_serializes_concurrent_mutations():
+    snapshots: list[set[str]] = []
+    first_save_entered = asyncio.Event()
+    release_first_save = asyncio.Event()
+
+    class SavingStore:
+        async def async_save(self, payload):
+            snapshots.append(set(payload["instances"]))
+            if len(snapshots) == 1:
+                first_save_entered.set()
+                await release_first_save.wait()
+
+    store = agentcli.AgentCliStore(SavingStore())
+    first = asyncio.create_task(store.add("claude", {"api_key": "key-one"}))
+    await first_save_entered.wait()
+    second = asyncio.create_task(store.add("openrouter", {"api_key": "key-two"}))
+    await asyncio.sleep(0)
+
+    assert len(snapshots) == 1
+    release_first_save.set()
+    await asyncio.gather(first, second)
+
+    assert len(store.list_instances()) == 2
+    assert [len(snapshot) for snapshot in snapshots] == [1, 2]
+
+@pytest.mark.asyncio
 async def test_secret_store_instances(hass):
     store = agentcli.AgentCliStore(AsyncMock())
     c1 = await store.add("claude", {"api_key": "sk-secretw5c4", "model": "claude-opus-4-8"})
@@ -2655,6 +2705,7 @@ async def test_delete_provider_clears_voice_agent_binding(hass):
 
     data = MagicMock()
     data.store = store
+    data.settings_update_lock = _asyncio.Lock()
     data.async_sync_voice_agent = MagicMock()
 
     hass.data[DOMAIN] = data
@@ -2703,6 +2754,7 @@ async def test_delete_provider_clears_ai_task_binding(hass):
 
     data = MagicMock()
     data.store = store
+    data.settings_update_lock = _asyncio.Lock()
     data.async_sync_voice_agent = MagicMock()
 
     hass.data[DOMAIN] = data

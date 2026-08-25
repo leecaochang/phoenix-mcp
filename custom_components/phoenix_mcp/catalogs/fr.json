@@ -1547,6 +1547,7 @@
       "assistExposurePassThroughOnly": "use_assist_exposure n'est valable que pour les jetons pass_through.",
       "assistPipelineFailed": "Impossible de créer le pipeline Assist.",
       "booleanRequired": "{field} doit être true ou false.",
+      "unknownFields": "Champs inconnus : {fields}.",
       "capabilityConfirmUnsupported": "{capability} ne prend pas en charge le mode Confirmer.",
       "capabilityModeInvalid": "{capability} doit être deny, allow ou confirm.",
       "catalogNotFound": "Catalogue introuvable.",

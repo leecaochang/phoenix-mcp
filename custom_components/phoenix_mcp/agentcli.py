@@ -14,6 +14,7 @@ provider API key is loaded from a dedicated secrets Store and is never logged,
 persisted into a transcript, or echoed in an error payload.
 """
 
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -511,6 +512,7 @@ class AgentCliStore:
     def __init__(self, store: Store) -> None:
         self._store = store
         self._data: dict[str, dict] = {}
+        self._lock = asyncio.Lock()
 
     @classmethod
     async def async_create(cls, hass: HomeAssistant) -> AgentCliStore:
@@ -547,12 +549,13 @@ class AgentCliStore:
         )
 
     async def add(self, kind: str, cfg: dict) -> str:
-        if self.has_duplicate(kind, cfg):
-            raise DuplicateProviderError
-        instance_id = uuid.uuid4().hex
-        self._data[instance_id] = {"kind": kind, **cfg}
-        await self._save()
-        return instance_id
+        async with self._lock:
+            if self.has_duplicate(kind, cfg):
+                raise DuplicateProviderError
+            instance_id = uuid.uuid4().hex
+            self._data[instance_id] = {"kind": kind, **cfg}
+            await self._save()
+            return instance_id
 
     async def set_model(self, instance_id: str, model: str) -> bool:
         """Change one account's default model. False if the account is unknown.
@@ -566,12 +569,13 @@ class AgentCliStore:
         Only the model is patchable. The credential and base_url are what the
         account IS, and re-validating them is what the add flow already does.
         """
-        cfg = self._data.get(instance_id)
-        if not isinstance(cfg, dict):
-            return False
-        cfg["model"] = model
-        await self._save()
-        return True
+        async with self._lock:
+            cfg = self._data.get(instance_id)
+            if not isinstance(cfg, dict):
+                return False
+            cfg["model"] = model
+            await self._save()
+            return True
 
     async def set_capabilities(
         self, instance_id: str, capabilities: dict, checked_at: str,
@@ -586,13 +590,14 @@ class AgentCliStore:
         of their own, so "last checked" is what turns a silently ageing answer
         into one the operator can judge.
         """
-        cfg = self._data.get(instance_id)
-        if not isinstance(cfg, dict):
-            return False
-        cfg["capabilities"] = capabilities
-        cfg["capabilities_checked_at"] = checked_at
-        await self._save()
-        return True
+        async with self._lock:
+            cfg = self._data.get(instance_id)
+            if not isinstance(cfg, dict):
+                return False
+            cfg["capabilities"] = capabilities
+            cfg["capabilities_checked_at"] = checked_at
+            await self._save()
+            return True
 
     async def record_refusal(self, instance_id: str, model: str, option: str, at: str) -> bool:
         """Remember that a real turn had this option refused for this model.
@@ -603,26 +608,29 @@ class AgentCliStore:
         observation from a single moment that has to fade. Merged over the
         durable facts at read time, so nothing here can corrupt them.
         """
-        cfg = self._data.get(instance_id)
-        if not isinstance(cfg, dict) or not model:
-            return False
-        learned = dict(cfg.get("learned") or {})
-        per_model = dict(learned.get(model) or {})
-        per_model[option] = at
-        learned[model] = per_model
-        cfg["learned"] = learned
-        await self._save()
-        return True
+        async with self._lock:
+            cfg = self._data.get(instance_id)
+            if not isinstance(cfg, dict) or not model:
+                return False
+            learned = dict(cfg.get("learned") or {})
+            per_model = dict(learned.get(model) or {})
+            per_model[option] = at
+            learned[model] = per_model
+            cfg["learned"] = learned
+            await self._save()
+            return True
 
     async def delete(self, instance_id: str) -> None:
-        if instance_id in self._data:
-            del self._data[instance_id]
-            await self._save()
+        async with self._lock:
+            if instance_id in self._data:
+                del self._data[instance_id]
+                await self._save()
 
     async def async_wipe(self) -> None:
         """Delete every provider account, including the recoverable API keys."""
-        self._data = {}
-        await self._save()
+        async with self._lock:
+            self._data = {}
+            await self._save()
 
     def list_instances(self) -> list[dict]:
         """Configured accounts for the panel; never includes a key."""
@@ -675,10 +683,15 @@ async def _get_secret_store(hass: HomeAssistant) -> AgentCliStore:
     """Lazily create and cache the secrets store on hass.data (not on PhoenixData)."""
     key = "_phoenix_agentcli_store"
     inst = hass.data.get(key)
-    if inst is None:
-        inst = await AgentCliStore.async_create(hass)
-        hass.data[key] = inst
-    return inst
+    if isinstance(inst, AgentCliStore):
+        return inst
+    lock = hass.data.setdefault("_phoenix_agentcli_store_lock", asyncio.Lock())
+    async with lock:
+        inst = hass.data.get(key)
+        if not isinstance(inst, AgentCliStore):
+            inst = await AgentCliStore.async_create(hass)
+            hass.data[key] = inst
+        return inst
 
 
 async def async_wipe_agentcli_secrets(hass: HomeAssistant) -> None:
@@ -3878,25 +3891,44 @@ class PhoenixAgentCliProviderView(PhoenixView):
     async def delete(self, request: web.Request, instance_id: str) -> web.Response:
         rid = request.get("phoenix_mcp_rid", "")
         store = await _get_secret_store(self.hass)
-        await store.delete(instance_id)
-        # If the voice agent was pointed at this provider, clear it so the agent does
-        # not linger with a dangling account, and re-sync (unregisters it).
         data = self.hass.data.get(DOMAIN)
-        if data is not None and data.store.get_settings().voice_agent_provider_id == instance_id:
+        if data is None:
+            await store.delete(instance_id)
+            return _ok({"deleted": instance_id}, request_id=rid)
+
+        # Settings PATCH validates provider references under this same lock. Delete
+        # the provider and clear every dependent reference in one transaction so a
+        # validated PATCH cannot persist the ID after it disappears.
+        async with data.settings_update_lock:
+            await store.delete(instance_id)
             async with data.store.async_lock:
-                await data.store.async_patch_settings(voice_agent_provider_id=None, voice_agent_model=None)
-            if data.async_sync_voice_agent is not None:
-                data.async_sync_voice_agent()
-            # The voice agent lost its provider, so it is now unregistered; remove any
-            # Phoenix-created Assist pipeline so a broken assistant is not left behind.
-            from .voice_agent import async_remove_assist_pipeline  # noqa: PLC0415
-            await async_remove_assist_pipeline(self.hass, data)
-        # The AI Task lost its provider, so it is no longer fully configured; clear it
-        # and re-sync so the AI Task entity is removed from HA (and the picker).
-        if data is not None and data.store.get_settings().ai_task_provider_id == instance_id:
-            async with data.store.async_lock:
-                await data.store.async_patch_settings(ai_task_provider_id=None, ai_task_model=None)
-            if data.async_sync_ai_task is not None:
+                settings = data.store.get_settings()
+                voice_removed = settings.voice_agent_provider_id == instance_id
+                ai_task_removed = settings.ai_task_provider_id == instance_id
+                patchable: dict[str, Any] = {}
+                if voice_removed:
+                    patchable.update(
+                        voice_agent_provider_id=None,
+                        voice_agent_model=None,
+                    )
+                if ai_task_removed:
+                    patchable.update(
+                        ai_task_provider_id=None,
+                        ai_task_model=None,
+                    )
+                if patchable:
+                    await data.store.async_patch_settings(**patchable)
+
+            if voice_removed:
+                if data.async_sync_voice_agent is not None:
+                    data.async_sync_voice_agent()
+                # The voice agent lost its provider, so it is now unregistered;
+                # remove any Phoenix-created Assist pipeline as well.
+                from .voice_agent import async_remove_assist_pipeline  # noqa: PLC0415
+                await async_remove_assist_pipeline(self.hass, data)
+            if ai_task_removed and data.async_sync_ai_task is not None:
+                # The AI Task is no longer fully configured; remove its entity
+                # from Home Assistant and the AI Task picker.
                 data.async_sync_ai_task()
         return _ok({"deleted": instance_id}, request_id=rid)
 

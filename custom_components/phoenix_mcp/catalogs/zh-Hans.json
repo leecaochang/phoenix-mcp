@@ -528,6 +528,7 @@
       "assistExposurePassThroughOnly": "use_assist_exposure 仅适用于 pass_through 令牌。",
       "assistPipelineFailed": "无法创建 Assist 流水线。",
       "booleanRequired": "{field} 必须为 true 或 false。",
+      "unknownFields": "未知字段：{fields}。",
       "capabilityConfirmUnsupported": "{capability} 不支持“确认”模式。",
       "capabilityModeInvalid": "{capability} 必须为 deny、allow 或 confirm。",
       "catalogNotFound": "未找到语言目录。",

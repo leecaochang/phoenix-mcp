@@ -340,6 +340,32 @@ class TestLegacyProtocolEra:
         assert resp.status == 400
         assert json.loads(resp.text)["error"]["code"] == -32000
 
+    async def test_unknown_supplied_session_returns_recovery_404(self):
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            "application/json",
+            raw,
+            {"Mcp-Session-Id": "unknown-session"},
+        ))
+        assert resp.status == 404
+        assert json.loads(resp.text)["error"]["code"] == -32000
+
+    async def test_expired_supplied_session_returns_recovery_404(self):
+        _token, raw, data, hass = _strict_env()
+        init = await _view(hass).post(_make_request(
+            self._initialize_body(), "application/json", raw))
+        session_id = init.headers["Mcp-Session-Id"]
+        data.mcp_sessions[session_id]["last_seen"] -= 3601
+
+        resp = await _view(hass).post(_make_request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            "application/json",
+            raw,
+            {"Mcp-Session-Id": session_id},
+        ))
+        assert resp.status == 404
+
     async def test_initialize_must_not_be_batched(self):
         _token, raw, _data, hass = _strict_env()
         resp = await _view(hass).post(_make_request(

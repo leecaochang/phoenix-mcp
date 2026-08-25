@@ -918,6 +918,7 @@
       "assistExposurePassThroughOnly": "use_assist_exposure は pass_through トークンでのみ有効です。",
       "assistPipelineFailed": "Assist パイプラインを作成できませんでした。",
       "booleanRequired": "{field} は true または false にしてください。",
+      "unknownFields": "不明なフィールド: {fields}。",
       "capabilityConfirmUnsupported": "{capability} は確認モードに対応していません。",
       "capabilityModeInvalid": "{capability} は deny、allow、confirm のいずれかにしてください。",
       "catalogNotFound": "カタログが見つかりません。",

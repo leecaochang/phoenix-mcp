@@ -1551,6 +1551,7 @@
       "assistExposurePassThroughOnly": "use_assist_exposure is only valid for pass_through tokens.",
       "assistPipelineFailed": "Could not create the Assist pipeline.",
       "booleanRequired": "{field} must be true or false.",
+      "unknownFields": "Unknown field(s): {fields}.",
       "capabilityConfirmUnsupported": "{capability} does not support Confirm mode.",
       "capabilityModeInvalid": "{capability} must be deny, allow, or confirm.",
       "catalogNotFound": "Catalog not found.",

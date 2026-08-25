@@ -1260,6 +1260,7 @@
       "assistExposurePassThroughOnly": "use_assist_exposure ist nur für pass_through-Token gültig.",
       "assistPipelineFailed": "Die Assist-Pipeline konnte nicht erstellt werden.",
       "booleanRequired": "{field} muss true oder false sein.",
+      "unknownFields": "Unbekannte Felder: {fields}.",
       "capabilityConfirmUnsupported": "{capability} unterstützt den Bestätigungsmodus nicht.",
       "capabilityModeInvalid": "{capability} muss deny, allow oder confirm sein.",
       "catalogNotFound": "Katalog nicht gefunden.",

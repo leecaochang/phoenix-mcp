@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GlobalSettings } from "../types";
 import { api } from "../api";
 import { LoggingSettings } from "../components/LoggingSettings";
@@ -14,6 +14,7 @@ import { Loading } from "../index";
 import { JS_BUILD } from "../version";
 import { LANGUAGES, LANGUAGE_AUTO, t } from "../i18n";
 import { tRich } from "../i18n/rich";
+import { useLatestRequest } from "../utils/latest_request";
 
 type Theme = "light" | "dark" | "auto";
 
@@ -41,6 +42,10 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
   const [phoenixVersion, setPhoenixVersion] = useState<string | null>(null);
   const [minHaVersion, setMinHaVersion] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState<string | null>(null);
+  const beginRefresh = useLatestRequest();
+  const beginMutation = useLatestRequest();
+  const mutationsInFlight = useRef(0);
+  const refreshQueued = useRef(false);
 
   useEffect(() => {
     api.getInfo().then((info) => {
@@ -53,26 +58,57 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
   // Deleting a provider clears the voice agent's provider server-side, and the
   // one-click Assist setup changes voice_agent_pipeline_id server-side; re-pull
   // settings on either event so the Voice Agent card reflects it.
+  const refreshSettings = useCallback(async () => {
+    // A mutation response is authoritative for the write it just performed. Do
+    // not let a read started mid-mutation supersede it or leave `saving` owned by
+    // a request that can no longer clear the flag. Coalesce any number of events
+    // into one refresh after the final mutation settles.
+    if (mutationsInFlight.current > 0) {
+      refreshQueued.current = true;
+      return;
+    }
+    const isLatest = beginRefresh();
+    try {
+      const updated = await api.getSettings();
+      if (isLatest()) onSettingsChange(updated);
+    } catch {
+      // Event-driven refreshes are best-effort; a later event or mutation retries.
+    }
+  }, [beginRefresh, onSettingsChange]);
+
   useEffect(() => {
-    const refresh = () => api.getSettings().then(onSettingsChange).catch(() => {});
+    const refresh = () => { void refreshSettings(); };
     window.addEventListener("phx-agentcli-providers-changed", refresh);
     window.addEventListener("phx-settings-refresh", refresh);
     return () => {
       window.removeEventListener("phx-agentcli-providers-changed", refresh);
       window.removeEventListener("phx-settings-refresh", refresh);
     };
-  }, [onSettingsChange]);
+  }, [refreshSettings]);
 
   async function patchSetting(key: keyof GlobalSettings, value: boolean | number | string) {
+    const isLatest = beginMutation();
+    // Invalidate a refresh that began before this mutation. Its snapshot can no
+    // longer be authoritative once the write starts.
+    beginRefresh();
+    mutationsInFlight.current += 1;
     setSaving(true);
     setError(null);
     try {
       const updated = await api.patchSettings({ [key]: value });
-      onSettingsChange(updated);
+      if (isLatest()) onSettingsChange(updated);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t("settings.saveFailed"));
+      if (isLatest()) setError(e instanceof Error ? e.message : t("settings.saveFailed"));
+      refreshQueued.current = true;
     } finally {
-      setSaving(false);
+      mutationsInFlight.current -= 1;
+      if (mutationsInFlight.current === 0) {
+        setSaving(false);
+        if (refreshQueued.current) {
+          refreshQueued.current = false;
+          void refreshSettings();
+        }
+      }
     }
   }
 

@@ -436,13 +436,12 @@ function DashboardPreviewInner({ config, onConfigErrors }: {
   return (
     <div className="dash-preview" ref={rootRef}>
       {views.length > 1 && (
-        <div className="dash-preview-tabs" role="tablist" aria-label={t("changes.previewViewsAria")}>
+        <div className="dash-preview-tabs" role="group" aria-label={t("changes.previewViewsAria")}>
           {views.map((v, idx) => (
             <button
               key={idx}
               type="button"
-              role="tab"
-              aria-selected={idx === active}
+              aria-pressed={idx === active}
               className={`approval-detail-tab${idx === active ? " active" : ""}`}
               onClick={() => setActive(idx)}
             >

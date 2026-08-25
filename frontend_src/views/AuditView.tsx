@@ -5,6 +5,7 @@ import { AuditTable } from "../components/AuditTable";
 import { RefreshIcon } from "../index";
 import { t } from "../i18n";
 import { auditSourceFilterValue } from "../utils/audit_source";
+import { useLatestRequest } from "../utils/latest_request";
 
 interface Props {
   tokens: TokenRecord[];
@@ -64,19 +65,25 @@ export function AuditView({ tokens }: Props) {
     ip: debouncedIp ? auditSourceFilterValue(debouncedIp) : undefined,
   }), [outcomeFilter, tokenFilter, timeWindow, debouncedMethod, debouncedResource, debouncedIp]);
 
+  const beginLoad = useLatestRequest();
+
   const load = useCallback(async (offset: number) => {
+    const isLatest = beginLoad();
     if (offset === 0) setLoading(true); else setLoadingMore(true);
     try {
       const resp = await api.getAudit({ ...filterParams, limit: PAGE_SIZE, offset });
+      if (!isLatest()) return;
       setEntries((prev) => (offset === 0 ? resp.entries : [...prev, ...resp.entries]));
       setHasMore(offset + resp.entries.length < resp.total);
     } catch {
-      if (offset === 0) setEntries([]);
+      if (offset === 0 && isLatest()) setEntries([]);
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (isLatest()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [filterParams]);
+  }, [beginLoad, filterParams]);
 
   // (Re)load from the top whenever a filter changes.
   useEffect(() => { load(0); }, [load]);

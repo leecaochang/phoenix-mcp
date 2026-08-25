@@ -46,6 +46,7 @@
       "bodyTooLarge": "Тело запроса слишком велико.",
       "bodyUnreadable": "Не удалось прочитать тело запроса.",
       "booleanRequired": "{field} должен быть true или false.",
+      "unknownFields": "Неизвестные поля: {fields}.",
       "capabilityConfirmUnsupported": "{capability} не поддерживает режим подтверждения.",
       "capabilityModeInvalid": "{capability} должен быть deny, allow или confirm.",
       "catalogNotFound": "Каталог не найден.",

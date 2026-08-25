@@ -395,6 +395,30 @@ class TestExpire:
 
 class TestExpiredTokenCancelsApprovals:
     @pytest.mark.asyncio
+    async def test_archive_expired_token_rechecks_current_expiry_under_lock(self, store):
+        """A concurrent expiry extension wins over an older timer snapshot."""
+        from custom_components.phoenix_mcp.helpers import async_archive_expired_token
+
+        stale = MagicMock(id="tok-exp", name="alice")
+        stale.expires_at = utcnow() - timedelta(seconds=1)
+        current = MagicMock(id="tok-exp", name="alice")
+        current.expires_at = utcnow() + timedelta(hours=1)
+        store.get_token_by_id = MagicMock(return_value=current)
+        store.async_archive_token = AsyncMock()
+        data = MagicMock(
+            store=store,
+            approvals_in_progress=set(),
+            expiry_timers={},
+        )
+        data.settings_update_lock = asyncio.Lock()
+        hass = MagicMock()
+
+        await async_archive_expired_token(hass, data, stale)
+
+        store.async_archive_token.assert_not_awaited()
+        hass.bus.async_fire.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_archive_expired_token_cancels_and_notifies(self, store):
         """Token expiry runs the same approval-queue hygiene as revoke: pending
         approvals flip to cancelled (reason token_expired), notifications are
@@ -413,11 +437,14 @@ class TestExpiredTokenCancelsApprovals:
         data.store = store
         data.approvals_in_progress = set()
         data.expiry_timers = {}
+        data.settings_update_lock = asyncio.Lock()
         data.async_on_token_archived = None
         hass = MagicMock()
         token = MagicMock()
         token.id = "tok-exp"
         token.name = "alice"
+        token.expires_at = utcnow() - timedelta(seconds=1)
+        store.get_token_by_id = MagicMock(return_value=token)
 
         with patch(
             "custom_components.phoenix_mcp.approvals.dismiss_approval_notification"
@@ -447,12 +474,15 @@ class TestExpiredTokenCancelsApprovals:
         data.store = store
         data.approvals_in_progress = set()
         data.expiry_timers = {}
+        data.settings_update_lock = asyncio.Lock()
         data.async_on_token_archived = None
         data.async_sync_voice_agent = MagicMock()
         hass = MagicMock()
         token = MagicMock()
         token.id = "tok-exp"
         token.name = "alice"
+        token.expires_at = utcnow() - timedelta(seconds=1)
+        store.get_token_by_id = MagicMock(return_value=token)
 
         with patch("custom_components.phoenix_mcp.approvals.dismiss_approval_notification"):
             await async_archive_expired_token(hass, data, token)

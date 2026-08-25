@@ -849,6 +849,7 @@
       "assistExposurePassThroughOnly": "use_assist_exposure solo es válido para tokens pass_through.",
       "assistPipelineFailed": "No se pudo crear la canalización de Assist.",
       "booleanRequired": "{field} debe ser true o false.",
+      "unknownFields": "Campos desconocidos: {fields}.",
       "capabilityConfirmUnsupported": "{capability} no admite el modo Confirmar.",
       "capabilityModeInvalid": "{capability} debe ser deny, allow o confirm.",
       "catalogNotFound": "No se encontró el catálogo.",

@@ -839,6 +839,7 @@
       "bodyTooLarge": "Treść żądania jest zbyt duża.",
       "bodyUnreadable": "Nie udało się odczytać treści żądania.",
       "booleanRequired": "{field} musi mieć wartość true lub false.",
+      "unknownFields": "Nieznane pola: {fields}.",
       "capabilityConfirmUnsupported": "{capability} nie obsługuje trybu Potwierdź.",
       "capabilityModeInvalid": "{capability} musi mieć wartość deny, allow lub confirm.",
       "catalogNotFound": "Nie znaleziono katalogu.",

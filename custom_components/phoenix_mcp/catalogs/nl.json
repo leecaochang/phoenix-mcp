@@ -839,6 +839,7 @@
       "bodyTooLarge": "RequestBody te groot.",
       "bodyUnreadable": "RequestBody lezen is mislukt.",
       "booleanRequired": "{field} moet true of false zijn.",
+      "unknownFields": "Onbekende velden: {fields}.",
       "capabilityConfirmUnsupported": "{capability} ondersteunt de Bevestigen-modus niet.",
       "capabilityModeInvalid": "{capability} moet deny, allow of confirm zijn.",
       "catalogNotFound": "Catalogus niet gevonden.",

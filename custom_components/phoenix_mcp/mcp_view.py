@@ -8129,6 +8129,8 @@ async def _mcp_sse_response(
     extra_headers: dict[str, str],
     bus: _ProgressBus,
     dispatch: Any,
+    *,
+    cancel_on_disconnect: bool,
 ) -> web.StreamResponse:
     """Run `dispatch` and deliver its JSON-RPC result as a single SSE message.
 
@@ -8154,46 +8156,72 @@ async def _mcp_sse_response(
     await resp.prepare(request)
 
     task = hass.loop.create_task(dispatch)
-    # The dispatch may have already applied a side effect, so it is never
-    # cancelled when the client goes away; it runs to completion either way.
     task.add_done_callback(_log_dispatch_task_error)
     started = time.monotonic()
     writable = True
-    while True:
-        done, _pending = await asyncio.wait({task}, timeout=MCP_SSE_KEEPALIVE_SECONDS)
-        if done:
-            break
-        if not writable:
-            continue
-        elapsed = time.monotonic() - started
-        frame = (
-            _sse_frame(_progress_notification(bus, elapsed))
-            if bus.token is not None
-            else b": keepalive\n\n"
-        )
-        try:
-            await resp.write(frame)
-        except Exception:  # noqa: BLE001 - client is gone; keep awaiting the work
-            writable = False
-
     try:
-        response_msg = task.result()
-    except Exception:
-        # Defense in depth: _dispatch_mcp already nets tools/call exceptions, and
-        # the batch path isolates per item. Never surface the text to the client.
-        _LOGGER.exception("Unhandled exception on the MCP SSE path rid=%s", request_id)
-        response_msg = _jsonrpc_error(None, -32603, "Internal error.")
+        while True:
+            done, _pending = await asyncio.wait(
+                {task}, timeout=MCP_SSE_KEEPALIVE_SECONDS
+            )
+            if done:
+                break
+            if not writable:
+                continue
+            elapsed = time.monotonic() - started
+            frame = (
+                _sse_frame(_progress_notification(bus, elapsed))
+                if bus.token is not None
+                else b": keepalive\n\n"
+            )
+            try:
+                await resp.write(frame)
+            except Exception:  # noqa: BLE001 - any write failure closes this response
+                writable = False
+                if cancel_on_disconnect:
+                    # Stream closure is cancellation in the 2026-07-28 transport.
+                    # Cancellation is cooperative: an awaited operation that already
+                    # committed is not rolled back, but no later awaitable work should
+                    # continue after the response channel disappears. The legacy
+                    # 2025-03-26 transport explicitly requires the opposite behavior.
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    break
 
-    if writable and response_msg is not None:
         try:
-            await resp.write(_sse_frame(response_msg))
-        except Exception:  # noqa: BLE001 - client disconnected mid-flight
+            response_msg = None if task.cancelled() else task.result()
+        except Exception:
+            # Defense in depth: _dispatch_mcp already nets tools/call exceptions, and
+            # the batch path isolates per item. Never surface the text to the client.
+            _LOGGER.exception("Unhandled exception on the MCP SSE path rid=%s", request_id)
+            response_msg = _jsonrpc_error(None, -32603, "Internal error.")
+
+        if writable and response_msg is not None:
+            try:
+                await resp.write(_sse_frame(response_msg))
+            except Exception:  # noqa: BLE001 - client disconnected mid-flight
+                pass
+        try:
+            await resp.write_eof()
+        except Exception:  # noqa: BLE001
             pass
-    try:
-        await resp.write_eof()
-    except Exception:  # noqa: BLE001
-        pass
-    return resp
+        return resp
+    except asyncio.CancelledError:
+        # Home Assistant enables aiohttp handler cancellation. A connection loss
+        # can therefore cancel this request handler while it is waiting for the
+        # child dispatch task, before any keepalive write gets a chance to fail.
+        # Propagate that transport cancellation into modern dispatch, but leave
+        # legacy dispatch detached as required by the 2025-03-26 revision.
+        if cancel_on_disconnect and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        raise
 
 
 def _log_dispatch_task_error(task: asyncio.Task) -> None:
@@ -8309,6 +8337,20 @@ def _legacy_session(
         return None
     state["last_seen"] = time.monotonic()
     return state
+
+
+def _legacy_session_error_response(
+    request: web.Request, msg_id: Any, request_id: str
+) -> web.Response:
+    """Distinguish a missing required session from a supplied unknown one."""
+    supplied = bool(request.headers.get("Mcp-Session-Id"))
+    return _protocol_error_response(
+        msg_id,
+        -32000,
+        "Legacy MCP session required.",
+        request_id,
+        status=404 if supplied else 400,
+    )
 
 
 class PhoenixMcpView(PhoenixView):
@@ -8436,9 +8478,7 @@ class PhoenixMcpView(PhoenixView):
                     )
                 session = _legacy_session(data, request, token)
                 if session is None:
-                    return _protocol_error_response(
-                        None, -32000, "Legacy MCP session required.", request_id
-                    )
+                    return _legacy_session_error_response(request, None, request_id)
                 if not session.get("initialized"):
                     return _protocol_error_response(
                         None, -32000, "Legacy MCP initialization is not complete.", request_id
@@ -8479,6 +8519,7 @@ class PhoenixMcpView(PhoenixView):
                     request, hass, request_id, rl_headers, bus,
                     _dispatch_streamable_batch(
                         parsed, token, hass, data, client_ip, base_url=base_url),
+                    cancel_on_disconnect=False,
                 ))
             return await _handle_streamable_batch(parsed, token, batch_rl, hass, data, request_id, client_ip, base_url=base_url)
 
@@ -8553,9 +8594,7 @@ class PhoenixMcpView(PhoenixView):
                 else:
                     session = _legacy_session(data, request, token)
                     if session is None:
-                        return _protocol_error_response(
-                            msg_id, -32000, "Legacy MCP session required.", request_id
-                        )
+                        return _legacy_session_error_response(request, msg_id, request_id)
                     if method in ("notifications/initialized", "initialized"):
                         session["initialized"] = True
                     elif method != "ping" and not session.get("initialized"):
@@ -8622,6 +8661,7 @@ class PhoenixMcpView(PhoenixView):
             return cast(web.Response, await _mcp_sse_response(
                 request, hass, request_id, rl_headers, bus,
                 dispatch,
+                cancel_on_disconnect=modern,
             ))
 
         response_msg, _log_method, _log_resource, _outcome = await _dispatch_mcp(

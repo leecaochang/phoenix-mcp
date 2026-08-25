@@ -803,6 +803,18 @@ def _validated_token_patch(
     critical section then writes, so hoisting this out of the lock would reopen a
     race between two concurrent renames.
     """
+    unknown = sorted(set(body) - _PATCHABLE_TOKEN_FIELDS - {"confirm_pass_through"})
+    if unknown:
+        fields = ", ".join(unknown)
+        return {}, _err(
+            "invalid_request",
+            f"Unknown field(s): {fields}.",
+            400,
+            rid,
+            key="unknownFields",
+            params={"fields": fields},
+        )
+
     if "name" in body:
         new_name = body["name"]
         if not new_name or not isinstance(new_name, str):
@@ -1014,35 +1026,39 @@ class PhoenixAdminTokenView(PhoenixView):
         data: PhoenixData = hass.data[DOMAIN]
         user = request[KEY_HASS_USER]
 
-        async with data.store.async_lock:
-            token = data.store.get_token_by_id(token_id)
-            if token is None:
-                return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
+        # Settings reference validation uses this lock before the token-store
+        # lock. Revoke follows the same order and clears dependent references in
+        # the archival transaction, so a settings PATCH cannot bind a token in
+        # the gap between validation and persistence.
+        async with data.settings_update_lock:
+            async with data.store.async_lock:
+                token = data.store.get_token_by_id(token_id)
+                if token is None:
+                    return _err("not_found", "Token not found.", 404, rid, key="tokenNotFound")
 
-            token_name = token.name
-            now = utcnow()
+                token_name = token.name
+                now = utcnow()
 
-            await data.store.async_archive_token(token_id, revoked=True, revoked_at=now)
-            cancel_expiry_timer(data, token_id)
-            # If this token was the Assist binding or the voice agent's token, clear
-            # it (rule 11): the llm.API stays registered but empty; the voice agent
-            # re-syncs to unregistered (done after the lock).
-            _s = data.store.get_settings()
-            _patch: dict[str, Any] = {}
-            if _s.assist_bound_token_id == token_id:
-                _patch["assist_bound_token_id"] = None
-            if _s.voice_agent_token_id == token_id:
-                _patch["voice_agent_token_id"] = None
-            if _s.ai_task_token_id == token_id:
-                _patch["ai_task_token_id"] = None
-            if _patch:
-                await data.store.async_patch_settings(**_patch)
-            # A revoked token's queued approvals must not linger as approvable
-            # entries; an approval mid-execution is protected, like the sweep.
-            cancelled = await async_cancel_approvals_for_token(
-                data.store, token_id, REASON_REVOKED,
-                skip_ids=data.approvals_in_progress,
-            )
+                await data.store.async_archive_token(token_id, revoked=True, revoked_at=now)
+                cancel_expiry_timer(data, token_id)
+                # If this token was the Assist binding or the voice agent's token,
+                # clear it in the same transaction as archival.
+                _s = data.store.get_settings()
+                _patch: dict[str, Any] = {}
+                if _s.assist_bound_token_id == token_id:
+                    _patch["assist_bound_token_id"] = None
+                if _s.voice_agent_token_id == token_id:
+                    _patch["voice_agent_token_id"] = None
+                if _s.ai_task_token_id == token_id:
+                    _patch["ai_task_token_id"] = None
+                if _patch:
+                    await data.store.async_patch_settings(**_patch)
+                # A revoked token's queued approvals must not linger as approvable
+                # entries; an approval mid-execution is protected, like the sweep.
+                cancelled = await async_cancel_approvals_for_token(
+                    data.store, token_id, REASON_REVOKED,
+                    skip_ids=data.approvals_in_progress,
+                )
         for approval in cancelled:
             dismiss_approval_notification(hass, approval.id)
             fire_approval_resolved_event(hass, approval)
@@ -2058,6 +2074,18 @@ async def _validated_settings_patch(
     rejection. Nothing here touches the store, so a rejected patch never reaches
     it; the caller applies the result under the lock.
     """
+    unknown = sorted(set(body) - _PATCHABLE_SETTINGS)
+    if unknown:
+        fields = ", ".join(unknown)
+        return {}, _err(
+            "invalid_request",
+            f"Unknown field(s): {fields}.",
+            400,
+            rid,
+            key="unknownFields",
+            params={"fields": fields},
+        )
+
     patchable = {k: v for k, v in body.items() if k in _PATCHABLE_SETTINGS}
 
     for key in _BOOL_SETTINGS & patchable.keys():
@@ -2243,24 +2271,31 @@ class PhoenixAdminSettingsView(PhoenixView):
         if isinstance(body, web.Response):
             return body
 
-        patchable, invalid = await _validated_settings_patch(body, data, self.hass, rid)
-        if invalid is not None:
-            return invalid
+        # Keep persistence and live reconciliation in one request-order critical
+        # section. Reference validation belongs here too: token archival and
+        # provider deletion participate in this lock, so a target proved live
+        # here cannot disappear before the settings write.
+        async with data.settings_update_lock:
+            patchable, invalid = await _validated_settings_patch(
+                body, data, self.hass, rid
+            )
+            if invalid is not None:
+                return invalid
 
-        async with data.store.async_lock:
-            old_kill_switch = data.store.get_settings().kill_switch
-            old_presets_enabled = data.store.get_settings().token_presets_enabled
-            updated = await data.store.async_patch_settings(**patchable)
-            if updated.token_presets_enabled and not old_presets_enabled:
-                # Feature just enabled: every token gets a "Default preset" from
-                # its current state (workspace model). Idempotent on re-enables.
-                seeded = await data.store.async_seed_default_presets()
-                if seeded:
-                    _LOGGER.info("Token presets enabled; seeded a default preset on %d token(s)", seeded)
+            async with data.store.async_lock:
+                old_kill_switch = data.store.get_settings().kill_switch
+                old_presets_enabled = data.store.get_settings().token_presets_enabled
+                updated = await data.store.async_patch_settings(**patchable)
+                if updated.token_presets_enabled and not old_presets_enabled:
+                    # Feature just enabled: every token gets a "Default preset" from
+                    # its current state (workspace model). Idempotent on re-enables.
+                    seeded = await data.store.async_seed_default_presets()
+                    if seeded:
+                        _LOGGER.info("Token presets enabled; seeded a default preset on %d token(s)", seeded)
 
-        await _apply_settings_side_effects(
-            self.hass, data, patchable, updated, old_kill_switch,
-        )
+            await _apply_settings_side_effects(
+                self.hass, data, patchable, updated, old_kill_switch,
+            )
 
         user = request[KEY_HASS_USER]
         data.audit.record(
@@ -2453,31 +2488,35 @@ class PhoenixAdminWipeView(PhoenixView):
             if data.logger_control is not None:
                 await data.logger_control.async_restore_all()
 
-            async with data.store.async_lock:
-                data.rate_limiter.destroy_all()
-                data.rate_limit_notified.clear()
-                data.token_counters.clear()
-                data.stale_tools_advised.clear()
-                await data.audit.async_wipe()
-                await data.versions.async_wipe()
-                # The card catalog is a regenerable cache of what this instance
-                # can render, not user data, but it is Phoenix-owned storage and
-                # a wipe must not leave a file behind. The panel re-harvests on
-                # its next load, so clearing it costs nothing.
-                await data.card_catalog.async_clear()
+            # Settings PATCH validates token references under this lock and then
+            # takes the store lock. Core wipe must use the same order so it cannot
+            # remove every token between validation and settings persistence.
+            async with data.settings_update_lock:
+                async with data.store.async_lock:
+                    data.rate_limiter.destroy_all()
+                    data.rate_limit_notified.clear()
+                    data.token_counters.clear()
+                    data.stale_tools_advised.clear()
+                    await data.audit.async_wipe()
+                    await data.versions.async_wipe()
+                    # The card catalog is a regenerable cache of what this instance
+                    # can render, not user data, but it is Phoenix-owned storage and
+                    # a wipe must not leave a file behind. The panel re-harvests on
+                    # its next load, so clearing it costs nothing.
+                    await data.card_catalog.async_clear()
 
-                for _tid in list(data.expiry_timers):
-                    cancel_expiry_timer(data, _tid)
+                    for _tid in list(data.expiry_timers):
+                        cancel_expiry_timer(data, _tid)
 
-                # Capture pending approvals BEFORE the wipe clears them, so their
-                # notifications can be dismissed and phoenix_mcp_approval_resolved fired
-                # (a wipe deletes every token, so its queued approvals must be torn
-                # down exactly as revocation tears down a single token's).
-                wiped_approvals = collect_pending_approvals_for_wipe(data.store, REASON_WIPED)
-                data.approvals_in_progress.clear()
+                    # Capture pending approvals BEFORE the wipe clears them, so their
+                    # notifications can be dismissed and phoenix_mcp_approval_resolved fired
+                    # (a wipe deletes every token, so its queued approvals must be torn
+                    # down exactly as revocation tears down a single token's).
+                    wiped_approvals = collect_pending_approvals_for_wipe(data.store, REASON_WIPED)
+                    data.approvals_in_progress.clear()
 
-                active_slugs = [token_name_slug(t.name) for t in data.store.list_tokens()]
-                await data.store.async_wipe()
+                    active_slugs = [token_name_slug(t.name) for t in data.store.list_tokens()]
+                    await data.store.async_wipe()
 
             for approval in wiped_approvals:
                 dismiss_approval_notification(hass, approval.id)
@@ -2511,7 +2550,37 @@ class PhoenixAdminWipeView(PhoenixView):
 
         if wipe_providers:
             from .agentcli import async_wipe_agentcli_secrets
-            await async_wipe_agentcli_secrets(hass)
+            # Provider-only wipe is a supported scope, so it must clear the
+            # dependent settings just like deleting the referenced account.
+            # Serialize the provider removal and settings cleanup against PATCH
+            # validation to prevent a freshly validated dead reference.
+            async with data.settings_update_lock:
+                await async_wipe_agentcli_secrets(hass)
+                async with data.store.async_lock:
+                    settings = data.store.get_settings()
+                    voice_provider_removed = bool(settings.voice_agent_provider_id)
+                    ai_task_provider_removed = bool(settings.ai_task_provider_id)
+                    provider_patch: dict[str, Any] = {}
+                    if voice_provider_removed:
+                        provider_patch.update(
+                            voice_agent_provider_id=None,
+                            voice_agent_model=None,
+                        )
+                    if ai_task_provider_removed:
+                        provider_patch.update(
+                            ai_task_provider_id=None,
+                            ai_task_model=None,
+                        )
+                    if provider_patch:
+                        await data.store.async_patch_settings(**provider_patch)
+
+                if voice_provider_removed:
+                    if data.async_sync_voice_agent is not None:
+                        data.async_sync_voice_agent()
+                    from .voice_agent import async_remove_assist_pipeline  # noqa: PLC0415
+                    await async_remove_assist_pipeline(hass, data)
+                if ai_task_provider_removed and data.async_sync_ai_task is not None:
+                    data.async_sync_ai_task()
 
         if wipe_mesa:
             if data.mesa is not None:
