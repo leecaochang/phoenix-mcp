@@ -9,7 +9,7 @@
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400..700&family=Hanken+Grotesk:wght@400..700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400..700&amp;family=Hanken+Grotesk:wght@400..700&amp;family=Roboto+Mono:wght@400;500&amp;display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="assets/phoenix-mcp-docs.css" />
 </head>
 <body data-page="operations" data-toc>
@@ -68,9 +68,16 @@ X-RateLimit-Reset: 1712345678</code></pre>
               <tr><td>Log rate-limited requests</td><td>On</td><td>Record rate-limited requests</td></tr>
               <tr><td>Maximum log entries</td><td>10,000</td><td>Capacity of the buffer and on-disk snapshot; reducing it trims the oldest entries immediately</td></tr>
               <tr><td>MESA mode</td><td>Advisory</td><td>Per-entity safety enforcement: off, advisory, or enforced. See <a href="mesa.html">MESA</a></td></tr>
+              <tr><td>MESA in-context profile buttons</td><td>Off</td><td>Show experimental admin-only MESA profile controls on Home Assistant's entity, device, area, and integration pages</td></tr>
               <tr><td>Notify on approval</td><td>On</td><td>Raise an HA notification, with a deep link, when an action needs admin approval</td></tr>
               <tr><td>Notify on rate limit</td><td>Off</td><td>Raise an HA notification when a token is rate limited</td></tr>
               <tr><td>Token settings presets</td><td>Off</td><td>Lets each token save and switch named snapshots of its full configuration; enabling seeds every token with a preset of its current settings. See the <a href="panel.html#presets">panel guide</a></td></tr>
+              <tr><td>Agent Chat visibility</td><td>All Home Assistant pages</td><td>When off, the floating Agent Chat button appears only in the Phoenix MCP panel</td></tr>
+              <tr><td>Chat memory</td><td>100 lines</td><td>Number of prior chat transcript lines kept for the next model call; range 0-5,000</td></tr>
+              <tr><td>Steps before check-in</td><td>20</td><td>Agent Chat tool rounds allowed before the turn pauses for Continue; range 3-100</td></tr>
+              <tr><td>Assist Tool Provider token</td><td>None</td><td>Active token whose scoped tools the Assist integration exposes</td></tr>
+              <tr><td>Voice Agent</td><td>Off; token, provider, and model unset</td><td>Registers Phoenix MCP as a Home Assistant conversation agent when fully configured</td></tr>
+              <tr><td>AI Task</td><td>Off; token, provider, and model unset</td><td>Registers Phoenix MCP as a Home Assistant AI Task entity when fully configured</td></tr>
               <tr><td>Theme</td><td>Auto</td><td>This changes how the panel looks for you and does not sync to other admins or devices</td></tr>
             </tbody>
           </table>
@@ -157,6 +164,13 @@ X-RateLimit-Reset: 1712345678</code></pre>
         <pre class="code" data-lang="http" data-label="MCP routes"><code>POST       /api/phoenix-mcp                                MCP Streamable HTTP endpoint
 GET        /api/phoenix-mcp/context                        Token context summary
 GET        /api/phoenix-mcp/skill                          Agent skill guide</code></pre>
+
+        <dl class="kv">
+          <div class="kv-row"><dt>Authentication</dt><dd><code>Authorization: Bearer phx_...</code> is required for the MCP and context routes. Tokens in a URL or query parameter are rejected. The skill route is unauthenticated.</dd></div>
+          <div class="kv-row"><dt>Modern MCP headers</dt><dd><code>MCP-Protocol-Version: 2026-07-28</code> and <code>Mcp-Method</code> must match the request metadata and JSON-RPC method. Named methods also require <code>Mcp-Name</code> matching the requested tool name, resource URI, or prompt name.</dd></div>
+          <div class="kv-row"><dt>Legacy session header</dt><dd>A 2025-03-26 client sends the <code>Mcp-Session-Id</code> returned by <code>initialize</code> on later requests.</dd></div>
+          <div class="kv-row"><dt>Response framing</dt><dd>Include <code>Accept: text/event-stream</code> to receive the single JSON-RPC response as an SSE event with keepalives. A client asking only for JSON receives <code>application/json</code>.</dd></div>
+        </dl>
 
         <p>The MCP endpoint answers a client that advertises <code>text/event-stream</code> (which every MCP client does) with the same single JSON-RPC response delivered as one SSE event, plus a keepalive frame every 15 seconds while the request is still running. That matters behind a reverse proxy: a call held by an inline confirm wait can otherwise sit silent for up to three minutes and get dropped. Nothing is kept server-side, and a client asking only for JSON gets a plain JSON body as before.</p>
 
