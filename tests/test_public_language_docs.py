@@ -6,6 +6,8 @@ import importlib.util
 import pathlib
 import re
 
+from custom_components.phoenix_mcp.locales import SHIPPED_LOCALES
+
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -48,6 +50,10 @@ def _documented_names() -> str:
 
 def test_public_language_name_map_matches_shipped_catalogs() -> None:
     assert set(PUBLIC_LANGUAGE_NAMES) == _shipped_codes()
+
+
+def test_backend_locale_map_matches_shipped_catalogs() -> None:
+    assert set(SHIPPED_LOCALES) == _shipped_codes()
 
 
 def test_language_picker_matches_shipped_catalogs() -> None:

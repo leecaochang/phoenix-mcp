@@ -63,6 +63,24 @@ describe("language preference", () => {
     expect(resolveLanguage({ language: "de" })).toBe("de");
   });
 
+  it("maps regional and script variants to the closest shipped locale", () => {
+    expect(resolveLanguage({ language: "zh-TW" })).toBe("zh-Hant");
+    expect(resolveLanguage({ language: "zh-HK" })).toBe("zh-Hant");
+    expect(resolveLanguage({ language: "zh-MO" })).toBe("zh-Hant");
+    expect(resolveLanguage({ language: "zh-CN" })).toBe("zh-Hans");
+    expect(resolveLanguage({ language: "zh-SG" })).toBe("zh-Hans");
+    expect(resolveLanguage({ language: "de-DE" })).toBe("de");
+    expect(resolveLanguage({ language: "en-GB" })).toBe("en");
+    expect(resolveLanguage({ language: "es-419" })).toBe("es");
+    expect(resolveLanguage({ language: "pt-BR" })).toBe("en");
+    expect(resolveLanguage({ language: "xx-NOPE" })).toBe("en");
+  });
+
+  it("canonicalizes a regional stored override", () => {
+    localStorage.setItem("phx-lang", "zh-HK");
+    expect(getLanguagePreference()).toBe("zh-Hant");
+  });
+
   it("auto falls back to English when hass has no language", () => {
     expect(resolveLanguage(null)).toBe("en");
     expect(resolveLanguage({})).toBe("en");

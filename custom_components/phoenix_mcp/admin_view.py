@@ -48,6 +48,7 @@ from .const import (
 )
 from .data import PhoenixData
 from .helpers import cancel_expiry_timer, panel_catalog
+from .locales import canonical_language
 from .policy_engine import (
     Permission,
     config_entry_registry_context,
@@ -600,7 +601,7 @@ class PhoenixAdminCatalogView(PhoenixView):
                 key="catalogNotFound",
             )
         return _ok(
-            {"language": language, "resources": resources},
+            {"language": canonical_language(language), "resources": resources},
             request_id=request["phoenix_mcp_rid"],
         )
 

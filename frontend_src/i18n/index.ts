@@ -70,6 +70,46 @@ export const LANGUAGES: ReadonlyArray<{ code: string; endonym: string }> = [
 /** Follow the Home Assistant user profile rather than overriding it. */
 export const LANGUAGE_AUTO = "auto";
 
+const SIMPLIFIED_CHINESE_REGIONS = new Set(["CN", "MY", "SG"]);
+const TRADITIONAL_CHINESE_REGIONS = new Set(["HK", "MO", "TW"]);
+
+function normalizeLanguageTag(language: unknown): { base: string; subtags: string[] } | null {
+  if (typeof language !== "string") return null;
+  const raw = language.trim().replace(/_/g, "-");
+  if (!raw) return null;
+  const parts = raw.split("-");
+  if (parts.some((part) => !part)) return null;
+  return { base: parts[0].toLowerCase(), subtags: parts.slice(1) };
+}
+
+function knownLanguage(language: unknown): string | null {
+  const normalized = normalizeLanguageTag(language);
+  if (!normalized) return null;
+  const exact = [normalized.base, ...normalized.subtags].join("-").toLowerCase();
+  const exactMatch = LANGUAGES.find((item) => item.code.toLowerCase() === exact);
+  if (exactMatch) return exactMatch.code;
+
+  if (normalized.base === "zh") {
+    const script = normalized.subtags.find((part) => part.length === 4);
+    const region = normalized.subtags.find((part) =>
+      (part.length === 2 || part.length === 3) && /^[a-z0-9]+$/i.test(part));
+    if (script) {
+      const scriptCode = `zh-${script[0].toUpperCase()}${script.slice(1).toLowerCase()}`;
+      const scriptMatch = LANGUAGES.find((item) => item.code.toLowerCase() === scriptCode.toLowerCase());
+      if (scriptMatch) return scriptMatch.code;
+    }
+    if (region && TRADITIONAL_CHINESE_REGIONS.has(region.toUpperCase())) return "zh-Hant";
+    if (!region || SIMPLIFIED_CHINESE_REGIONS.has(region.toUpperCase())) return "zh-Hans";
+  }
+
+  return LANGUAGES.find((item) => item.code.toLowerCase() === normalized.base)?.code ?? null;
+}
+
+/** Map regional and script variants to the closest catalog Phoenix ships. */
+export function canonicalLanguage(language: unknown): string {
+  return knownLanguage(language) ?? "en";
+}
+
 // Per browser, same shape as the "phx-theme" preference, and for the same
 // reason: the two injected bundles load on arbitrary HA pages outside the panel
 // and read it from the same origin without needing an API call.
@@ -79,7 +119,7 @@ const LANGUAGE_KEY = "phx-lang";
 export function getLanguagePreference(): string {
   let saved: string | null = null;
   try { saved = localStorage.getItem(LANGUAGE_KEY); } catch { /* storage blocked: use auto */ }
-  return LANGUAGES.some((l) => l.code === saved) ? (saved as string) : LANGUAGE_AUTO;
+  return knownLanguage(saved) ?? LANGUAGE_AUTO;
 }
 
 /**
@@ -88,7 +128,7 @@ export function getLanguagePreference(): string {
  * element and cannot see the change any other way.
  */
 export function setLanguagePreference(pref: string): void {
-  try { localStorage.setItem(LANGUAGE_KEY, pref); } catch { /* storage blocked: skip persistence */ }
+  try { localStorage.setItem(LANGUAGE_KEY, knownLanguage(pref) ?? pref); } catch { /* storage blocked: skip persistence */ }
   window.dispatchEvent(new CustomEvent("phx-language-changed"));
 }
 
@@ -97,7 +137,21 @@ export function setLanguagePreference(pref: string): void {
 export function resolveLanguage(hass: any): string {
   const pref = getLanguagePreference();
   if (pref !== LANGUAGE_AUTO) return pref;
-  return hass?.language || "en";
+  return canonicalLanguage(hass?.language);
+}
+
+function formatLanguage(hass: any, resolved: string): string {
+  if (getLanguagePreference() !== LANGUAGE_AUTO) return resolved;
+  const profile = normalizeLanguageTag(hass?.language);
+  if (!profile) return resolved;
+  const value = [profile.base, ...profile.subtags].join("-");
+  try {
+    Intl.getCanonicalLocales(value);
+    if (!knownLanguage(value)) return resolved;
+    return value;
+  } catch {
+    return resolved;
+  }
 }
 
 let strings: Record<string, string> = {};
@@ -153,11 +207,12 @@ export async function loadTranslations(hass: any, language: string): Promise<voi
   // Before the fetch, and outside the try: the formatting locale is read off
   // hass and does not depend on the catalog arriving, so a failed fetch must
   // still leave dates in the language the panel is about to render in.
-  setFormatLocale(hass, language);
+  const resolved = canonicalLanguage(language || "en");
+  setFormatLocale(hass, formatLanguage(hass, resolved));
   try {
     // This module must not import api.ts (see the file header), but it can use
     // HA's own authenticated fetch directly. HA alone owns token refresh.
-    const url = `${CATALOG_URL}${encodeURIComponent(language || "en")}`;
+    const url = `${CATALOG_URL}${encodeURIComponent(resolved)}`;
     const requestHass = catalogHass(hass);
     // Never probe an admin endpoint anonymously while HA is replacing its root.
     if (typeof requestHass?.fetchWithAuth !== "function") return;
@@ -172,7 +227,7 @@ export async function loadTranslations(hass: any, language: string): Promise<voi
     // is worse than showing the previous language after a failed refetch.
     if (Object.keys(next).length > 0) {
       strings = next;
-      loaded = language || "en";
+      loaded = resolved;
     }
   } catch (e) {
     console.error("Phoenix MCP: could not load panel translations", e);
@@ -196,7 +251,7 @@ export async function syncTranslations(hass: any): Promise<boolean> {
   if (want === loaded) {
     // Same language, but HA's own 24-hour or number-format preference may have
     // moved; adopting it is a repaint even though no catalog is refetched.
-    return setFormatLocale(hass, want);
+    return setFormatLocale(hass, formatLanguage(hass, want));
   }
   await loadTranslations(hass, want);
   return true;

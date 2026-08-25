@@ -74,9 +74,9 @@ def test_missing_key_falls_back_to_english(tmp_path, monkeypatch) -> None:
         tmp_path,
         monkeypatch,
         en={"panel": {"a": "Alpha", "b": "Beta"}},
-        xx={"panel": {"a": "translated"}},
+        de={"panel": {"a": "translated"}},
     )
-    assert helpers.panel_catalog("xx") == {"a": "translated", "b": "Beta"}
+    assert helpers.panel_catalog("de-DE") == {"a": "translated", "b": "Beta"}
 
 
 @pytest.mark.parametrize(
@@ -92,9 +92,9 @@ def test_placeholder_mismatch_keeps_the_english(tmp_path, monkeypatch, translate
         tmp_path,
         monkeypatch,
         en={"panel": {"greet": "Hello {name}"}},
-        xx={"panel": {"greet": translated}},
+        de={"panel": {"greet": translated}},
     )
-    assert helpers.panel_catalog("xx")["greet"] == "Hello {name}"
+    assert helpers.panel_catalog("de-DE")["greet"] == "Hello {name}"
 
 
 def test_matching_placeholders_are_kept(tmp_path, monkeypatch) -> None:
@@ -103,15 +103,55 @@ def test_matching_placeholders_are_kept(tmp_path, monkeypatch) -> None:
         tmp_path,
         monkeypatch,
         en={"panel": {"greet": "Hello {name}"}},
-        xx={"panel": {"greet": "你好 {name}"}},
+        de={"panel": {"greet": "你好 {name}"}},
     )
-    assert helpers.panel_catalog("xx")["greet"] == "你好 {name}"
+    assert helpers.panel_catalog("de-DE")["greet"] == "你好 {name}"
 
 
 def test_unknown_language_is_english(tmp_path, monkeypatch) -> None:
     """A language with no file at all is not an error; it is English."""
     _fake_catalogs(tmp_path, monkeypatch, en={"panel": {"a": "Alpha"}})
     assert helpers.panel_catalog("kl") == {"a": "Alpha"}
+
+
+def test_regional_language_variants_use_the_closest_catalog(tmp_path, monkeypatch) -> None:
+    _fake_catalogs(
+        tmp_path,
+        monkeypatch,
+        en={"panel": {"label": "English"}},
+        de={"panel": {"label": "Deutsch"}},
+        **{
+            "zh-Hans": {"panel": {"label": "简体中文"}},
+            "zh-Hant": {"panel": {"label": "繁體中文"}},
+        },
+    )
+    assert helpers.panel_catalog("zh-TW")["label"] == "繁體中文"
+    assert helpers.panel_catalog("zh-HK")["label"] == "繁體中文"
+    assert helpers.panel_catalog("zh-MO")["label"] == "繁體中文"
+    assert helpers.panel_catalog("zh-CN")["label"] == "简体中文"
+    assert helpers.panel_catalog("de-DE")["label"] == "Deutsch"
+
+
+def test_backend_rendered_strings_use_the_same_locale_mapping(tmp_path, monkeypatch) -> None:
+    _fake_catalogs(
+        tmp_path,
+        monkeypatch,
+        en={
+            "notification": {"rate_limit.title": "English notification"},
+            "voice": {"unavailable": "English voice"},
+        },
+        de={"notification": {"rate_limit.title": "Nederlandse melding"}},
+        **{"zh-Hant": {"voice": {"unavailable": "繁體中文語音"}}},
+    )
+
+    class _Config:
+        language = "de-DE"
+
+    class _Hass:
+        config = _Config()
+
+    assert helpers.notification_text(_Hass(), "rate_limit.title") == "Nederlandse melding"
+    assert helpers.voice_text("zh-HK", "unavailable") == "繁體中文語音"
 
 
 def test_only_the_panel_section_is_served() -> None:

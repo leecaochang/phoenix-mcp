@@ -164,6 +164,15 @@ describe("loadTranslations", () => {
     );
   });
 
+  it("requests the canonical catalog for a regional language", async () => {
+    mockFetch({ resources: {} });
+    const hass = authenticatedHass("tok-123");
+    await loadTranslations(hass, "zh-HK");
+    expect(hass.fetchWithAuth).toHaveBeenCalledWith(
+      "/api/phoenix-mcp/admin/catalog/zh-Hant",
+    );
+  });
+
   it("installs the served resources, which are already dotted and unprefixed", async () => {
     mockFetch({ resources: { "tokens.revoke": "Revoke" } });
     await loadTranslations(authenticatedHass(), "en");

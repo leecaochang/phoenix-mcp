@@ -51,6 +51,7 @@ from .policy_engine import (
     resolve_registry_access,
     template_blocklist_vars,
 )
+from .locales import canonical_language
 from .token_store import token_name_slug
 
 if TYPE_CHECKING:
@@ -1680,8 +1681,9 @@ def _localized(
 ) -> str:
     """Resolve one backend-rendered string, falling back to its English template."""
     template = templates[key]
-    if language and not str(language).lower().startswith("en"):
-        translated = _catalog_section(str(language), section).get(key)
+    resolved = canonical_language(language)
+    if resolved != "en":
+        translated = _catalog_section(resolved, section).get(key)
         if translated:
             template = translated
     return template.format(**params)
@@ -1749,11 +1751,12 @@ def panel_catalog(language: str) -> dict[str, str]:
     tests/test_i18n_locales.py already refuses to let a mismatched locale ship,
     so this is the runtime backstop for a hand-edited install, not the guard.
     """
+    resolved = canonical_language(language)
     english = _catalog_section("en", "panel")
-    if not language or language == "en":
+    if resolved == "en":
         return english
     merged = dict(english)
-    for key, value in _catalog_section(language, "panel").items():
+    for key, value in _catalog_section(resolved, "panel").items():
         base = english.get(key)
         if base is not None and _placeholders(base) != _placeholders(value):
             continue
