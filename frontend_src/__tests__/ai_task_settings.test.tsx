@@ -73,6 +73,15 @@ describe("AiTaskSettings", () => {
     expect(onChange).toHaveBeenCalledWith("ai_task_provider_id", "i1");
   });
 
+  it("places select help above all three dropdowns without stacking the switch", () => {
+    renderCard(settings());
+    for (const label of ["AI Task token", "AI Task provider account", "AI Task model"]) {
+      expect(screen.getByLabelText(label).closest(".toggle-row")).toHaveClass("toggle-row-stacked-control");
+    }
+    expect(screen.getByLabelText("Enable Phoenix MCP AI Task").closest(".toggle-row"))
+      .not.toHaveClass("toggle-row-stacked-control");
+  });
+
   it("model select is gated on a provider", async () => {
     const { rerender } = render(<AiTaskSettings settings={settings()} onChange={vi.fn()} saving={false} />);
     expect((screen.getByLabelText("AI Task model") as HTMLSelectElement).disabled).toBe(true);

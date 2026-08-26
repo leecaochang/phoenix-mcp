@@ -28,6 +28,12 @@ describe("AssistBridgeSettings", () => {
     expect(onChange).toHaveBeenCalledWith("assist_bound_token_id", "tok-1");
   });
 
+  it("places its help above the token dropdown", () => {
+    render(<AssistBridgeSettings settings={settings()} onChange={vi.fn()} saving={false} />);
+    expect(screen.getByLabelText("Assist bound token").closest(".toggle-row"))
+      .toHaveClass("toggle-row-stacked-control");
+  });
+
   it("unbinds via the 'Not bound' option (empty string)", async () => {
     const onChange = vi.fn();
     render(<AssistBridgeSettings settings={settings({ assist_bound_token_id: "tok-1" })} onChange={onChange} saving={false} />);

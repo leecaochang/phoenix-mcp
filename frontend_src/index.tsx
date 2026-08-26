@@ -467,14 +467,15 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
   return (
     <div className="phx-shell">
       <h1 className="sr-only">{t("shell.srTitle")}</h1>
-      {narrow && (
-        <header className="phx-header">
-          <ha-menu-button ref={menuRef as React.RefObject<HTMLElement>} />
-          <span className="phx-header-title">Phoenix MCP</span>
-        </header>
-      )}
+      <div className="phx-topbar">
+        {narrow && (
+          <header className="phx-header">
+            <ha-menu-button ref={menuRef as React.RefObject<HTMLElement>} />
+            <span className="phx-header-title">Phoenix MCP</span>
+          </header>
+        )}
 
-      <nav className="phx-tabs" aria-label={t("shell.sectionsAria")}>
+        <nav className="phx-tabs" aria-label={t("shell.sectionsAria")}>
         {/* Row split is visual only (CSS order, mobile media query); DOM order
             stays the desktop reading order (tabs, doclink, header actions) so
             keyboard/AT navigation is unaffected. Same divergence pattern as
@@ -537,7 +538,8 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
             </button>
           ) : null}
         </div>
-      </nav>
+        </nav>
+      </div>
 
       <main
         className="phx-content"

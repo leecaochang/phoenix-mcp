@@ -69,6 +69,15 @@ describe("VoiceAgentSettings", () => {
     expect(onChange).toHaveBeenCalledWith("voice_agent_token_id", "tok-1");
   });
 
+  it("places select help above all three dropdowns without stacking the switch", () => {
+    renderCard(settings());
+    for (const label of ["Voice agent token", "Voice agent provider account", "Voice agent model"]) {
+      expect(screen.getByLabelText(label).closest(".toggle-row")).toHaveClass("toggle-row-stacked-control");
+    }
+    expect(screen.getByLabelText("Enable Phoenix MCP voice agent").closest(".toggle-row"))
+      .not.toHaveClass("toggle-row-stacked-control");
+  });
+
   it("model select is disabled until a provider is chosen, then loads models", async () => {
     const { rerender } = render(<VoiceAgentSettings settings={settings()} onChange={vi.fn()} saving={false} />);
     expect((screen.getByLabelText("Voice agent model") as HTMLSelectElement).disabled).toBe(true);

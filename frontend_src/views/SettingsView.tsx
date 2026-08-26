@@ -174,7 +174,7 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
               {t("settings.mesaCard")}
               <DocsHelpLink path="mesa.html#deployment-mode" label={t("settings.mesaCard")} />
             </h3>
-            <div className="toggle-row">
+            <div className="toggle-row toggle-row-stacked-control">
               <div className="toggle-label">
                 <span>{t("settings.mesaModeLabel")}</span>
                 <small>
@@ -266,7 +266,7 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
               saving={saving}
             />
             <hr className="settings-divider" />
-            <div className={`toggle-row settings-toggle-mt${settings.disable_all_logging ? " toggle-row-greyed" : ""}`}>
+            <div className={`toggle-row toggle-row-stacked-control settings-toggle-mt${settings.disable_all_logging ? " toggle-row-greyed" : ""}`}>
               <div className="toggle-label">
                 <span>{t("settings.flushIntervalLabel")}</span>
                 <small>{t("settings.flushIntervalHelp")}</small>
@@ -286,7 +286,7 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
                 <option value={60}>{t("settings.flushEveryMinutes", { n: 60 })}</option>
               </select>
             </div>
-            <div className={`toggle-row${settings.disable_all_logging ? " toggle-row-greyed" : ""}`}>
+            <div className={`toggle-row toggle-row-stacked-control${settings.disable_all_logging ? " toggle-row-greyed" : ""}`}>
               <div className="toggle-label">
                 <span>{t("settings.maxLogEntriesLabel")}</span>
                 <small>{t("settings.maxLogEntriesHelp")}</small>
@@ -321,7 +321,7 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
               <div className="settings-info-note">
                 {tRich("settings.infoStorageNote", { code: (c) => <code>{c}</code> })}
               </div>
-              <div className="toggle-row" style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--phx-border)" }}>
+              <div className="toggle-row toggle-row-stacked-control" style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--phx-border)" }}>
                 <div className="toggle-label">
                   <span>{t("settings.languageLabel")}</span>
                   <small>{t("settings.languageHelp")}</small>

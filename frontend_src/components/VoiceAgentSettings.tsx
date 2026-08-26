@@ -112,7 +112,7 @@ export function VoiceAgentSettings({
         </label>
       </div>
 
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.token")}</span>
           <small>{t("settings.voiceTokenHelp")}</small>
@@ -131,7 +131,7 @@ export function VoiceAgentSettings({
         </select>
       </div>
 
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.providerAccount")}</span>
           <small>{instances.length === 0 ? t("settings.addProviderFirst") : t("settings.voiceProviderHelp")}</small>
@@ -150,7 +150,7 @@ export function VoiceAgentSettings({
         </select>
       </div>
 
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.model")}</span>
           <small>{t("settings.voiceModelHelp")}</small>

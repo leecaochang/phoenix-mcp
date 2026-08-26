@@ -120,7 +120,7 @@ export function AiTaskSettings({
         </label>
       </div>
 
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.token")}</span>
           <small>{t("settings.aiTaskTokenHelp")}</small>
@@ -139,7 +139,7 @@ export function AiTaskSettings({
         </select>
       </div>
 
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.providerAccount")}</span>
           <small>{noProviders ? t("settings.addProviderFirst") : t("settings.aiTaskProviderHelp")}</small>
@@ -158,7 +158,7 @@ export function AiTaskSettings({
         </select>
       </div>
 
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.model")}</span>
           <small>{t("settings.aiTaskModelHelp")}</small>

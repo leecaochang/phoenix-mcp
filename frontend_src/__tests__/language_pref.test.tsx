@@ -190,6 +190,7 @@ describe("the dropdown in Settings", () => {
 
   it("offers auto plus every shipped language", async () => {
     const { select } = await renderSettings();
+    expect(select.closest(".toggle-row")).toHaveClass("toggle-row-stacked-control");
     expect([...select.options].map((o) => o.value)).toEqual([
       LANGUAGE_AUTO,
       ...LANGUAGES.map((l) => l.code),

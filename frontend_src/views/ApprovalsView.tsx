@@ -11,6 +11,7 @@ import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/appro
 import { localizedApprovalReason } from "../utils/approval_reason";
 import { friendlyApprovalSummary, rememberApprovalView, storedApprovalView, type ApprovalView } from "../utils/approval_summary";
 import { useLatestRequest } from "../utils/latest_request";
+import { notifyAgentChatReviewDecided } from "../utils/agentchat_review";
 import { hasMessage, t, tn } from "../i18n";
 
 interface Props {
@@ -831,6 +832,7 @@ function ApprovalDetailModal({ record, defaultView, claimed, onClose, onResolved
       const updated = await api.approveApproval(record.id);
       clearReasonDraft(record.id);
       onResolved(updated);
+      notifyAgentChatReviewDecided(updated.id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : t("approvals.approveFailed"));
     } finally {
@@ -845,6 +847,7 @@ function ApprovalDetailModal({ record, defaultView, claimed, onClose, onResolved
       const updated = await api.rejectApproval(record.id, reasonText ? { reason: reasonText } : {});
       clearReasonDraft(record.id);
       onResolved(updated);
+      notifyAgentChatReviewDecided(updated.id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : t("approvals.rejectFailed"));
     } finally {
@@ -1003,7 +1006,12 @@ function ApprovalDetailModal({ record, defaultView, claimed, onClose, onResolved
               </button>
             ))}
           </div>
-          <div id="approval-detail-panel" className="approval-detail-body" role="tabpanel" aria-labelledby={`approval-detail-tab-${activeTab}`}>
+          <div
+            id="approval-detail-panel"
+            className={`approval-detail-body${isPending ? " approval-detail-body-pending" : ""}`}
+            role="tabpanel"
+            aria-labelledby={`approval-detail-tab-${activeTab}`}
+          >
             {activeTab === "diff" && <DiffView record={record} onConfigErrors={onConfigErrors} />}
             {activeTab === "args" && <YamlView value={toYaml(record.args as Record<string, unknown>)} />}
             {activeTab === "result" && (record.result == null ? (

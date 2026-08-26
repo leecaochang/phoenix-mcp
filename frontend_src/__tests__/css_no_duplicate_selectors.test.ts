@@ -61,6 +61,30 @@ describe("panel stylesheet", () => {
     expect(CSS).toMatch(/\.phx-shell\s*\{[^}]*min-height:\s*100vh;[^}]*min-height:\s*100dvh;/s);
   });
 
+  it("stops the complete mobile top bar below HA's safe area without padding", () => {
+    expect(CSS).toMatch(/\.phx-topbar\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;[^}]*z-index:\s*var\(--phx-z-tabbar\);/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*?\.phx-topbar\s*\{[^}]*--phx-topbar-safe-top:\s*var\(--safe-area-inset-top,\s*env\(safe-area-inset-top,\s*0px\)\);[^}]*top:\s*var\(--phx-topbar-safe-top\);/s);
+    expect(CSS).toMatch(/\.phx-topbar::before\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*100%;[^}]*height:\s*var\(--phx-topbar-safe-top\);[^}]*background:\s*var\(--phx-surface\);/s);
+    expect(CSS).not.toMatch(/\.phx-topbar\s*\{[^}]*padding-top:/s);
+    expect(CSS).not.toMatch(/\.phx-tabs\s*\{[^}]*position:\s*sticky;/s);
+  });
+
+  it("contains chat transcript overscroll inside the floating window", () => {
+    expect(CSS).toMatch(/\.agentcli-body\s*\{[^}]*overscroll-behavior-y:\s*contain;[^}]*touch-action:\s*pan-y;/s);
+    expect(CSS).toMatch(/\.agentcli-thinking-body\s*\{[^}]*overscroll-behavior:\s*contain;/s);
+    expect(CSS).toMatch(/\.agentcli-md pre\s*\{[^}]*overscroll-behavior:\s*contain;/s);
+  });
+
+  it("stacks select-backed setting help above its control", () => {
+    expect(CSS).toMatch(/\.toggle-row-stacked-control\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*stretch;/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*?\.toggle-row-stacked-control\s*>\s*\.input\s*\{[^}]*width:\s*100%;/s);
+  });
+
+  it("contains modal boundary overscroll", () => {
+    expect(CSS).toMatch(/\.modal-backdrop\s*\{[^}]*overscroll-behavior:\s*none;/s);
+    expect(CSS).toMatch(/\.modal\s*\{[^}]*overscroll-behavior:\s*contain;/s);
+  });
+
   it("keeps localized theme choices on one line", () => {
     expect(CSS).toMatch(/\.theme-toggle\s*\{[^}]*flex-shrink:\s*0;/s);
     expect(CSS).toMatch(/\.theme-toggle-btn\s*\{[^}]*white-space:\s*nowrap;/s);
@@ -78,6 +102,12 @@ describe("panel stylesheet", () => {
     expect(CSS).toMatch(/\.approval-history-row\s*>\s*\.badge\s*\{[^}]*justify-self:\s*start;/s);
     expect(CSS).toMatch(/\.approval-history-tool\s*\{[^}]*min-width:\s*0;[^}]*text-overflow:\s*ellipsis;/s);
     expect(CSS).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*?\.approval-history-row\s*\{[^}]*grid-template-columns:\s*max-content\s+minmax\(0,\s*1fr\)\s+max-content;/);
+  });
+
+  it("uses only the review modal scroller for pending approval diffs on mobile", () => {
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*800px\)[\s\S]*?\.approval-detail-body-pending\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*800px\)[\s\S]*?\.approval-detail-body-pending\s+\.yaml-pre\s*\{[^}]*max-height:\s*none;/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*800px\)[\s\S]*?\.approval-detail-body-pending\s+\.yaml-editor\s*\{[^}]*--code-mirror-max-height:\s*none;/s);
   });
 
   it("keeps localized MESA mode badges visible", () => {

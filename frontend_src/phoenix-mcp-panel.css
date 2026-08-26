@@ -187,6 +187,17 @@
   background: var(--phx-bg);
 }
 
+/* The narrow shell header and both wrapped tab rows are one sticky unit. If
+   each row participates separately, the earlier rows can scroll under mobile
+   browser chrome while only the final tab row remains visible. */
+.phx-topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--phx-z-tabbar);
+  flex-shrink: 0;
+  background: var(--phx-surface);
+}
+
 .phx-header {
   display: flex;
   align-items: center;
@@ -214,9 +225,6 @@
   border-bottom: 2px solid var(--phx-border);
   padding: 0;
   flex-shrink: 0;
-  position: sticky;
-  top: 0;
-  z-index: var(--phx-z-tabbar);
 }
 .phx-tab {
   padding: 0 20px;
@@ -625,6 +633,14 @@ select.input {
 .toggle-label-master { font-weight: 700; }
 .toggle-row-plain { border: none; padding: 0; }
 .toggle-row-greyed { opacity: 0.45; pointer-events: none; }
+/* Select-backed settings need the full line length for explanatory copy. The
+   label and help therefore form one block above the control, while switch rows
+   keep their compact side-by-side relationship. */
+.toggle-row-stacked-control { flex-direction: column; align-items: stretch; gap: 8px; }
+.toggle-row-stacked-control > .input { align-self: flex-start; max-width: 100%; }
+@media (max-width: 600px) {
+  .toggle-row-stacked-control > .input { width: 100%; }
+}
 
 /* Theme toggle segmented control */
 .theme-toggle {
@@ -666,6 +682,7 @@ select.input {
   z-index: var(--phx-z-modal);
   padding: 16px;
   backdrop-filter: blur(2px);
+  overscroll-behavior: none;
 }
 .modal {
   background: var(--phx-surface);
@@ -677,6 +694,8 @@ select.input {
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 /* Wider dialog for side-by-side diffs (approval review). */
 .modal-wide { max-width: 920px; }
@@ -776,6 +795,28 @@ select.input {
    happens to overflow. DOM order is untouched (desktop reading order); see
    the comment in index.tsx. */
 @media (max-width: 700px) {
+  /* The companion app exposes its measured status-bar inset through HA's
+     inherited custom property. Use it as the sticky stopping edge, not as
+     padding: padding becomes scrollable blank content, while top simply keeps
+     the complete header below phone chrome. */
+  .phx-topbar {
+    --phx-topbar-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+    top: var(--phx-topbar-safe-top);
+  }
+  /* Sticky top leaves a transparent strip between the viewport edge and the
+     header. Paint that strip as part of the topbar so scrolled panel content
+     cannot show through behind the phone status area. This is visual only and
+     contributes no scrollable layout height. */
+  .phx-topbar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    height: var(--phx-topbar-safe-top);
+    background: var(--phx-surface);
+    pointer-events: none;
+  }
   .phx-tabs { flex-wrap: wrap; }
   .phx-tab-row1 { order: 1; }
   .phx-header-actions { order: 2; margin-left: auto; padding: 0; flex-shrink: 0; }
@@ -1849,6 +1890,12 @@ button.changes-row:hover { background: var(--phx-surface-2); }
   .change-detail-body { grid-template-columns: 1fr; }
   .change-timeline { flex-direction: row; flex-wrap: wrap; }
   .yaml-diff-cols { grid-template-columns: 1fr; }
+  /* Pending approvals stack Before and After on mobile. Let both panes and the
+     detail tab grow to their full content height so the review modal is the
+     only vertical scroller, matching the already-expanded History review. */
+  .approval-detail-body-pending { max-height: none; overflow: visible; }
+  .approval-detail-body-pending .yaml-pre { max-height: none; }
+  .approval-detail-body-pending .yaml-editor { --code-mirror-max-height: none; }
   /* Below this width .yaml-diff-cols is always forced to one column above,
      so the side-by-side/stacked toggle has nothing left to switch. */
   .diff-layout-toggle { display: none; }
@@ -2357,6 +2404,8 @@ hui-card { display: block; min-width: 0; }
 .agentcli-body {
   flex: 1 1 auto;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
   padding: 10px;
   display: flex;
   flex-direction: column;
@@ -2382,6 +2431,7 @@ hui-card { display: block; min-width: 0; }
 .agentcli-thinking-body {
   margin: 4px 0 0;
   max-height: 220px; overflow-y: auto;
+  overscroll-behavior: contain;
   overflow-wrap: anywhere;
 }
 /* Rendered Markdown in an assistant reply. */
@@ -2399,6 +2449,7 @@ hui-card { display: block; min-width: 0; }
 .agentcli-md pre {
   background: var(--phx-grey-tint); padding: 8px 10px; border-radius: var(--phx-radius-sm);
   overflow-x: auto; margin: 0 0 8px; max-height: 320px; overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .agentcli-md pre code { background: none; padding: 0; }
 .agentcli-md a { color: var(--phx-accent); }

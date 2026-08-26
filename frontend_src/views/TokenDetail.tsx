@@ -187,7 +187,7 @@ export function ToolAnnouncementToggle({ token, onUpdate }: { token: TokenRecord
           <span className="toggle-switch-track" />
         </label>
       </div>
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("tokens.inlineWaitLabel")}</span>
           <small>

@@ -38,7 +38,34 @@ function ownsVerticalArrows(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(VERTICAL_ARROW_OWNER));
 }
 
+/** Find a scroll region inside this modal that can consume the current finger
+ * movement. composedPath includes editors' shadow-DOM scrollers, which a plain
+ * closest() walk cannot see. Never search past the modal into the page below. */
+function touchScrollOwner(
+  event: TouchEvent,
+  modal: HTMLElement,
+  backdrop: HTMLElement,
+  deltaY: number,
+): HTMLElement | null {
+  for (const node of event.composedPath()) {
+    if (node instanceof HTMLElement) {
+      const maxScroll = node.scrollHeight - node.clientHeight;
+      const scrollableOverflow = node === modal
+        || /^(auto|scroll|overlay)$/.test(window.getComputedStyle(node).overflowY);
+      if (scrollableOverflow && maxScroll > 0) {
+        const canScroll = deltaY > 0
+          ? node.scrollTop < maxScroll
+          : deltaY < 0 && node.scrollTop > 0;
+        if (canScroll) return node;
+      }
+    }
+    if (node === modal || node === backdrop) break;
+  }
+  return null;
+}
+
 export function Modal({ titleId, onClose, onNavigatePrevious, onNavigateNext, recordNavigation, wide, children }: Props) {
+  const backdropRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -59,6 +86,45 @@ export function Modal({ titleId, onClose, onNavigatePrevious, onNavigateNext, re
     // behind the backdrop when a modal has no focusable child (e.g. loading).
     (first ?? modalRef.current)?.focus();
     return () => { previousFocus.current?.focus(); };
+  }, []);
+
+  // A fixed backdrop does not automatically own a touch scroll gesture. On
+  // mobile, swipes from an empty dialog area—or outward at a scroll boundary—
+  // can otherwise chain into the Phoenix panel underneath. Let a modal or
+  // nested editor scroll natively while it has room; consume only the gesture
+  // the moment nothing inside the dialog can move in that direction.
+  useEffect(() => {
+    const backdrop = backdropRef.current;
+    const modal = modalRef.current;
+    if (!backdrop || !modal) return;
+    let lastY: number | null = null;
+    const start = (event: TouchEvent) => {
+      event.stopPropagation();
+      lastY = event.touches.length === 1 ? event.touches[0].clientY : null;
+    };
+    const move = (event: TouchEvent) => {
+      event.stopPropagation();
+      if (lastY === null || event.touches.length !== 1) return;
+      const nextY = event.touches[0].clientY;
+      const deltaY = lastY - nextY;
+      lastY = nextY;
+      if (touchScrollOwner(event, modal, backdrop, deltaY)) return;
+      if (event.cancelable) event.preventDefault();
+    };
+    const end = (event: TouchEvent) => {
+      event.stopPropagation();
+      lastY = null;
+    };
+    backdrop.addEventListener("touchstart", start, { passive: true });
+    backdrop.addEventListener("touchmove", move, { passive: false });
+    backdrop.addEventListener("touchend", end, { passive: true });
+    backdrop.addEventListener("touchcancel", end, { passive: true });
+    return () => {
+      backdrop.removeEventListener("touchstart", start);
+      backdrop.removeEventListener("touchmove", move);
+      backdrop.removeEventListener("touchend", end);
+      backdrop.removeEventListener("touchcancel", end);
+    };
   }, []);
 
   // Escape is bound on the document, not the modal div, so it fires even when
@@ -125,7 +191,7 @@ export function Modal({ titleId, onClose, onNavigatePrevious, onNavigateNext, re
   }, []);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div ref={backdropRef} className="modal-backdrop" onClick={onClose}>
       <div
         ref={modalRef}
         className={`modal${wide ? " modal-wide" : ""}`}

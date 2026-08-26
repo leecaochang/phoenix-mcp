@@ -3,6 +3,10 @@ import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { ApprovalsView } from "../views/ApprovalsView";
 import { api } from "../api";
 import type { ApprovalRecord } from "../types";
+import {
+  AGENTCHAT_REVIEW_DECIDED_EVENT,
+  reviewDecisionApprovalId,
+} from "../utils/agentchat_review";
 
 vi.mock("../api", () => ({
   api: { listApprovals: vi.fn(), approveApproval: vi.fn(), rejectApproval: vi.fn(), getApproval: vi.fn() },
@@ -60,6 +64,22 @@ describe("approval Summary modal", () => {
     expect(view.container.querySelector("#approval-detail-tab-diff")).toBeNull();
   });
 
+  it.each([
+    ["pending", "approval-detail-body approval-detail-body-pending"],
+    ["history", "approval-detail-body"],
+  ] as const)("marks only %s review details for mobile single-scroll layout", async (tab, expectedClass) => {
+    const approval = record(tab === "history"
+      ? { status: "approved", resolved_at: "2026-08-13T04:05:00Z" }
+      : {});
+    const view = await open(approval, tab);
+    const dialog = within(view.getByRole("dialog"));
+    fireEvent.click(dialog.getByRole("button", { name: "Details" }));
+    expect(dialog.getByRole("tabpanel")).toHaveClass(...expectedClass.split(" "));
+    if (tab === "history") {
+      expect(dialog.getByRole("tabpanel")).not.toHaveClass("approval-detail-body-pending");
+    }
+  });
+
   it("expands and focuses rejection, while allowing an empty reason", async () => {
     vi.mocked(api.rejectApproval).mockResolvedValue(record({ status: "rejected" }));
     const view = await open();
@@ -70,6 +90,27 @@ describe("approval Summary modal", () => {
     expect(view.getByRole("button", { name: "Cancel" })).toBeTruthy();
     fireEvent.click(view.getByRole("button", { name: "Reject" }));
     await waitFor(() => expect(api.rejectApproval).toHaveBeenCalledWith("appr_summary", {}));
+  });
+
+  it.each(["approve", "reject"] as const)("signals Agent Chat after a successful %s", async (action) => {
+    const updated = record({ status: action === "approve" ? "approved" : "rejected" });
+    vi.mocked(api.approveApproval).mockResolvedValue(updated);
+    vi.mocked(api.rejectApproval).mockResolvedValue(updated);
+    const decided = vi.fn((event: Event) => reviewDecisionApprovalId(event));
+    window.addEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, decided);
+    try {
+      const view = await open();
+      if (action === "approve") {
+        fireEvent.click(view.getByRole("button", { name: "Approve and execute" }));
+      } else {
+        fireEvent.click(view.getByRole("button", { name: "Reject" }));
+        fireEvent.click(await view.findByRole("button", { name: "Reject" }));
+      }
+      await waitFor(() => expect(decided).toHaveBeenCalledOnce());
+      expect(decided.mock.results[0].value).toBe("appr_summary");
+    } finally {
+      window.removeEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, decided);
+    }
   });
 
   it("persists only the toolbar default", async () => {

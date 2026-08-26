@@ -187,7 +187,11 @@ export function ChangesView({ hass }: { hass: unknown }) {
       if (!background && isLatest()) setError(e instanceof Error ? e.message : t("changes.loadFailed"));
     } finally {
       if (isLatest()) {
-        if (!background) setLoading(false);
+        // A background top-page refresh can supersede a foreground one (most
+        // visibly when the config-changed event lands as a rollback returns to
+        // this list). Its response satisfies the same full-feed request, so it
+        // must also release the foreground loading state it inherited.
+        if (offset === 0) setLoading(false);
         setLoadingMore(false);
       }
     }
@@ -220,7 +224,13 @@ export function ChangesView({ hass }: { hass: unknown }) {
         tokenNames={tokenNames}
         onSelectVersion={setSelected}
         onBack={() => { setSelected(null); loadFeed(0); }}
-        onRestored={() => loadFeed(0, true)}
+        onRestored={async () => {
+          // Keep the detail mounted (and its Restoring state visible) until one
+          // authoritative reload has the rollback row. Previously onRestored
+          // and onBack launched competing background/foreground requests.
+          await loadFeed(0);
+          setSelected(null);
+        }}
       />
     );
   }
@@ -283,7 +293,7 @@ function ChangeDetail(
     tokenNames: Map<string, string>;
     onSelectVersion: (id: string) => void;
     onBack: () => void;
-    onRestored: () => void;
+    onRestored: () => Promise<void>;
   },
 ) {
   const [record, setRecord] = useState<VersionRecord | null>(null);
@@ -348,8 +358,7 @@ function ChangeDetail(
     setError(null);
     try {
       await api.restoreVersion(versionId, side);
-      onRestored();
-      onBack();
+      await onRestored();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : t("changes.restoreFailed"));
       setBusy(false);

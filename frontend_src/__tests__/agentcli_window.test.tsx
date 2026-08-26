@@ -32,6 +32,7 @@ import {
 } from "../components/AgentCliWindow";
 import { getDurable, patchDurable, setSessionTurns, __resetAgentCliState } from "../utils/agentcli_state";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
+import { notifyAgentChatReviewDecided } from "../utils/agentchat_review";
 import type { AgentCliInstance, TokenRecord } from "../types";
 import { setFormatLocale } from "../i18n";
 
@@ -1192,6 +1193,121 @@ describe("AgentCliWindow streaming", () => {
     expect(screen.getByText("Review…")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Approve"));
     expect(approveApproval).toHaveBeenCalledWith("ap9");
+  });
+
+  it("minimizes the in-app chat before opening an approval review", async () => {
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("approval_required", {
+        approval_id: "ap9",
+        tool_name: "restart_ha",
+        review_url: "/phoenix-mcp#approvals/ap9",
+      });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "tool_use" });
+    });
+    const locationChanged = vi.fn();
+    window.addEventListener("location-changed", locationChanged);
+    try {
+      render(
+        <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                        initialTokenId="t1" onClose={() => {}} />,
+      );
+      const textarea = await screen.findByPlaceholderText(/Message Agent Chat/i);
+      fireEvent.change(textarea, { target: { value: "restart" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+
+      fireEvent.click(await screen.findByText("Review…"));
+
+      await waitFor(() => expect(screen.getByRole("dialog", { name: "Agent Chat" }))
+        .toHaveClass("agentcli-minimized"));
+      expect(window.location.pathname + window.location.hash)
+        .toBe("/phoenix-mcp#approvals/ap9");
+      expect(locationChanged).toHaveBeenCalledOnce();
+
+      // Desktop keeps the existing behavior: completing the review does not
+      // automatically reopen a window the operator may want left minimized.
+      notifyAgentChatReviewDecided("ap9");
+      expect(screen.getByRole("dialog", { name: "Agent Chat" }))
+        .toHaveClass("agentcli-minimized");
+    } finally {
+      window.removeEventListener("location-changed", locationChanged);
+    }
+  });
+
+  it("returns a mobile chat to its pre-review mode after the review succeeds", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("approval_required", {
+        approval_id: "ap-mobile",
+        tool_name: "restart_ha",
+        review_url: "/phoenix-mcp#approvals/ap-mobile",
+      });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "tool_use" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
+    expect(dialog).toHaveClass("agentcli-maximized");
+    const textarea = await screen.findByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "restart" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    fireEvent.click(await screen.findByText("Review…"));
+    await waitFor(() => expect(dialog).toHaveClass("agentcli-minimized"));
+
+    notifyAgentChatReviewDecided("ap-mobile");
+    await waitFor(() => expect(dialog).toHaveClass("agentcli-maximized"));
+    expect(dialog).not.toHaveClass("agentcli-minimized");
+  });
+
+  it("redirects swipes from fixed controls into the transcript", async () => {
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
+    const controls = dialog.querySelector<HTMLElement>(".agentcli-controls");
+    const transcript = dialog.querySelector<HTMLElement>(".agentcli-body");
+    if (!controls || !transcript) throw new Error("Agent Chat gesture surfaces not found");
+    transcript.scrollTop = 100;
+    const leaked = vi.fn();
+    document.body.addEventListener("touchmove", leaked);
+    try {
+      fireEvent.touchStart(controls, { touches: [{ clientY: 220 }] });
+      const dispatched = fireEvent.touchMove(controls, {
+        touches: [{ clientY: 170 }],
+        cancelable: true,
+      });
+      expect(transcript.scrollTop).toBe(150);
+      expect(dispatched).toBe(false);
+      expect(leaked).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeEventListener("touchmove", leaked);
+    }
+  });
+
+  it("consumes swipes that begin in an empty transcript", async () => {
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
+    const transcript = dialog.querySelector<HTMLElement>(".agentcli-body");
+    if (!transcript) throw new Error("Agent Chat transcript not found");
+    expect(transcript).toBeEmptyDOMElement();
+
+    fireEvent.touchStart(transcript, { touches: [{ clientY: 220 }] });
+    const dispatched = fireEvent.touchMove(transcript, {
+      touches: [{ clientY: 170 }],
+      cancelable: true,
+    });
+
+    expect(dispatched).toBe(false);
   });
 
   it("hides the buttons when the approval is acted on somewhere else", async () => {

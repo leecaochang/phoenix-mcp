@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { waitFor } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 
 // Companion to panel_shell.test.tsx. That test stubs react-dom/client to isolate
 // the custom-element shell; this one lets the REAL PhoenixApp tree render (with a
@@ -58,8 +58,8 @@ vi.mock("../api", () => ({
 
 await import("../index");
 
-function mountPanel(): HTMLElement & { hass: unknown } {
-  const el = document.createElement("phoenix-mcp-panel") as HTMLElement & { hass: unknown };
+function mountPanel(): HTMLElement & { hass: unknown; narrow: boolean } {
+  const el = document.createElement("phoenix-mcp-panel") as HTMLElement & { hass: unknown; narrow: boolean };
   document.body.appendChild(el);
   el.hass = { user: { id: "u1" } };  // render is a no-op until hass is set
   return el;
@@ -87,6 +87,16 @@ describe("phoenix-mcp-panel full app shell", () => {
     await waitFor(() => {
       const badge = el.shadowRoot!.querySelector(".phx-tab-badge");
       expect(badge?.textContent).toBe("3");
+    });
+  });
+
+  it("keeps the narrow header and wrapped tabs in one top bar", async () => {
+    const el = mountPanel();
+    act(() => { el.narrow = true; });
+    await waitFor(() => {
+      const topbar = el.shadowRoot!.querySelector(".phx-topbar");
+      expect(topbar?.children[0]).toHaveClass("phx-header");
+      expect(topbar?.children[1]).toHaveClass("phx-tabs");
     });
   });
 

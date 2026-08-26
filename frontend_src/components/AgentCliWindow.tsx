@@ -11,6 +11,10 @@ import { approvalStatusLabel, effortLevelLabel } from "../utils";
 import { clearReasonDraft, getReasonDraft } from "../utils/approval_reason_draft";
 import { localizedApprovalReason } from "../utils/approval_reason";
 import { subscribeApprovalEvents } from "../utils/approval_events";
+import {
+  AGENTCHAT_REVIEW_DECIDED_EVENT,
+  reviewDecisionApprovalId,
+} from "../utils/agentchat_review";
 import PHOENIX_ICON from "../../custom_components/phoenix_mcp/brand/icon.png";
 import type {
   AgentCliProviderKind,
@@ -625,6 +629,74 @@ export function AgentCliWindow({
   // transcript is not wiped when the window reopens.
   const firstRun = useRef(true);
   const lastSummonVersion = useRef(summonVersion);
+  // Set only when Review itself minimized a narrow in-app window. This keeps a
+  // later successful panel decision distinct from an ordinary/manual minimize.
+  const reviewRestoreRef = useRef<{ approvalId: string; mode: Exclude<WinMode, "min"> } | null>(null);
+
+  useEffect(() => {
+    const restoreReviewedChat = (event: Event) => {
+      const approvalId = reviewDecisionApprovalId(event);
+      const pending = reviewRestoreRef.current;
+      if (!approvalId || !pending || approvalId !== pending.approvalId) return;
+      reviewRestoreRef.current = null;
+      // Do not override the operator if they already expanded the window while
+      // reviewing; otherwise return to the exact mode Review minimized.
+      setMode((current) => current === "min" ? pending.mode : current);
+    };
+    window.addEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, restoreReviewedChat);
+    return () => window.removeEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, restoreReviewedChat);
+  }, []);
+
+  // A swipe that starts on the selectors, composer, or a transcript with no
+  // scroll range has no scroll container of its own, so a mobile browser
+  // otherwise hands it to the HA page beneath the transparent global overlay.
+  // Redirect that gesture to the transcript. A populated, scrollable
+  // transcript stays native-scrolling, with CSS containing its boundary
+  // overscroll so it cannot chain into the page below.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let lastY: number | null = null;
+    const ownsGesture = (target: EventTarget | null): boolean => {
+      const element = target as { closest?: (selector: string) => Element | null } | null;
+      if (typeof element?.closest !== "function") return false;
+      if (element.closest(".agentcli-controls, .agentcli-input, .agentcli-continue, .agentcli-gear")) {
+        return true;
+      }
+      const transcript = bodyRef.current;
+      return transcript !== null
+        && element.closest(".agentcli-body") === transcript
+        && transcript.scrollHeight <= transcript.clientHeight;
+    };
+    const start = (event: TouchEvent) => {
+      event.stopPropagation();
+      lastY = ownsGesture(event.target) && event.touches.length === 1
+        ? event.touches[0].clientY
+        : null;
+    };
+    const move = (event: TouchEvent) => {
+      event.stopPropagation();
+      if (lastY === null || event.touches.length !== 1) return;
+      const nextY = event.touches[0].clientY;
+      if (bodyRef.current) bodyRef.current.scrollTop += lastY - nextY;
+      lastY = nextY;
+      if (event.cancelable) event.preventDefault();
+    };
+    const end = (event: TouchEvent) => {
+      event.stopPropagation();
+      lastY = null;
+    };
+    root.addEventListener("touchstart", start, { passive: true });
+    root.addEventListener("touchmove", move, { passive: false });
+    root.addEventListener("touchend", end, { passive: true });
+    root.addEventListener("touchcancel", end, { passive: true });
+    return () => {
+      root.removeEventListener("touchstart", start);
+      root.removeEventListener("touchmove", move);
+      root.removeEventListener("touchend", end);
+      root.removeEventListener("touchcancel", end);
+    };
+  }, [popupMount]);
 
   const instance = useMemo(() => instances.find((i) => i.id === instanceId), [instances, instanceId]);
   const kind: AgentCliProviderKind = instance?.kind ?? "claude";
@@ -1212,20 +1284,6 @@ export function AgentCliWindow({
     },
   }), [updateApprovalEntry]);
 
-  // Open the full approval in the Phoenix MCP panel's Approvals tab. Uses HA's soft SPA
-  // navigation (pushState + location-changed) so it works whether the chat is the
-  // panel window or the global overlay on another page, and the overlay survives
-  // (no full reload). The panel's own hash listener opens the specific approval.
-  const openReview = useCallback((reviewUrl: string | undefined, approvalId: string) => {
-    const url = reviewUrl || `/phoenix-mcp#approvals/${approvalId}`;
-    try {
-      window.history.pushState(null, "", url);
-      window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
-    } catch {
-      window.location.href = url;
-    }
-  }, []);
-
   // --- drag ---
   const startDrag = useCallback((e: React.PointerEvent) => {
     if (maximized || poppedOut) return;  // full screen or popup: nothing to drag
@@ -1330,6 +1388,26 @@ export function AgentCliWindow({
     patchDurable({ pillPos: np });
     setMode("min");
   }, [pillPos, pos]);
+
+  // Open the full approval in the Phoenix MCP panel's Approvals tab. Minimize
+  // the in-app chat first so its higher stacking layer cannot cover the review.
+  // A popped-out chat is already in a separate browser window and cannot cover
+  // the panel. Navigation stays on HA's soft SPA path so the turn survives.
+  const openReview = useCallback((reviewUrl: string | undefined, approvalId: string) => {
+    if (!poppedOut) {
+      reviewRestoreRef.current = isNarrowViewport() && mode !== "min"
+        ? { approvalId, mode }
+        : null;
+      minimize();
+    }
+    const url = reviewUrl || `/phoenix-mcp#approvals/${approvalId}`;
+    try {
+      window.history.pushState(null, "", url);
+      window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+    } catch {
+      window.location.href = url;
+    }
+  }, [minimize, mode, poppedOut]);
 
   const maximize = useCallback(() => setMode("max"), []);
 

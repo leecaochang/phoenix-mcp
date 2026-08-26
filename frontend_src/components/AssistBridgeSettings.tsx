@@ -36,7 +36,7 @@ export function AssistBridgeSettings({
       <p className="agentcli-settings-hint">
         {tRich("settings.assistIntro", { strong: (c) => <strong>{c}</strong> })}
       </p>
-      <div className="toggle-row">
+      <div className="toggle-row toggle-row-stacked-control">
         <div className="toggle-label">
           <span>{t("settings.assistBoundToken")}</span>
           <small>

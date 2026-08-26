@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { render, fireEvent, screen } from "@testing-library/react";
 import { Modal } from "../components/Modal";
 
 describe("Modal Escape handling", () => {
@@ -71,6 +71,73 @@ describe("Modal focus handling", () => {
       </Modal>
     );
     expect((document.activeElement as HTMLElement).textContent).toBe("real first");
+  });
+});
+
+describe("Modal touch containment", () => {
+  it("consumes a swipe when no region inside the dialog can scroll", () => {
+    render(
+      <Modal titleId="t" onClose={() => {}}>
+        <p>short modal</p>
+      </Modal>,
+    );
+    const dialog = screen.getByRole("dialog");
+    const leaked = vi.fn();
+    document.body.addEventListener("touchmove", leaked);
+    try {
+      fireEvent.touchStart(dialog, { touches: [{ clientY: 220 }] });
+      const dispatched = fireEvent.touchMove(dialog, {
+        touches: [{ clientY: 170 }],
+        cancelable: true,
+      });
+      expect(dispatched).toBe(false);
+      expect(leaked).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeEventListener("touchmove", leaked);
+    }
+  });
+
+  it("consumes a swipe on the backdrop without inspecting the page scroller", () => {
+    render(
+      <Modal titleId="t" onClose={() => {}}>
+        <p>short modal</p>
+      </Modal>,
+    );
+    const backdrop = document.querySelector<HTMLElement>(".modal-backdrop")!;
+    Object.defineProperty(document.body, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(document.body, "clientHeight", { configurable: true, value: 500 });
+    document.body.scrollTop = 100;
+
+    fireEvent.touchStart(backdrop, { touches: [{ clientY: 220 }] });
+    expect(fireEvent.touchMove(backdrop, {
+      touches: [{ clientY: 170 }],
+      cancelable: true,
+    })).toBe(false);
+  });
+
+  it("keeps native modal scrolling until the gesture reaches its boundary", () => {
+    render(
+      <Modal titleId="t" onClose={() => {}}>
+        <p>long modal</p>
+      </Modal>,
+    );
+    const dialog = screen.getByRole("dialog");
+    Object.defineProperty(dialog, "scrollHeight", { configurable: true, value: 400 });
+    Object.defineProperty(dialog, "clientHeight", { configurable: true, value: 100 });
+    dialog.scrollTop = 100;
+
+    fireEvent.touchStart(dialog, { touches: [{ clientY: 220 }] });
+    expect(fireEvent.touchMove(dialog, {
+      touches: [{ clientY: 170 }],
+      cancelable: true,
+    })).toBe(true);
+
+    dialog.scrollTop = 300;
+    fireEvent.touchStart(dialog, { touches: [{ clientY: 220 }] });
+    expect(fireEvent.touchMove(dialog, {
+      touches: [{ clientY: 170 }],
+      cancelable: true,
+    })).toBe(false);
   });
 });
 

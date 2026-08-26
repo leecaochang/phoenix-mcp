@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/react";
 import { ChangesView } from "../views/ChangesView";
 import { api } from "../api";
-import type { VersionSummary } from "../types";
+import type { VersionListResponse, VersionSummary } from "../types";
 
 vi.mock("../api", () => ({
   api: {
@@ -29,6 +29,21 @@ function version(over: Partial<VersionSummary> = {}): VersionSummary {
     has_after: true,
     ...over,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+function stubMatchMedia() {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: false, media: query, onchange: null,
+    addListener: () => {}, removeListener: () => {},
+    addEventListener: () => {}, removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }));
 }
 
 describe("ChangesView", () => {
@@ -83,6 +98,79 @@ describe("ChangesView", () => {
       expect(api.listVersions).toHaveBeenLastCalledWith({ limit: 100, offset: 0 }),
     );
   });
+
+  it("returns from a completed rollback only after one authoritative feed reload", async () => {
+    stubMatchMedia();
+    const original = version({ action: "edit", has_before: true });
+    const rollback = version({ id: "v2", action: "rollback", has_before: true });
+    const refreshed = deferred<VersionListResponse>();
+    vi.mocked(api.listVersions)
+      .mockResolvedValueOnce({ resource_type: null, resource_id: null, versions: [original], total: 1 })
+      .mockResolvedValueOnce({ resource_type: "automation", resource_id: "aid1", versions: [original], total: 1 })
+      .mockReturnValueOnce(refreshed.promise);
+    vi.mocked(api.getVersion).mockResolvedValue({
+      ...original,
+      request_id: "r1",
+      before: { alias: "Before" },
+      after: { alias: "After" },
+    });
+    vi.mocked(api.restoreVersion).mockResolvedValue({
+      restored: true,
+      version_id: "v1",
+      resource_type: "automation",
+      resource_id: "aid1",
+    });
+
+    const view = render(<ChangesView hass={null} />);
+    fireEvent.click((await view.findByText("My automation")).closest("button")!);
+    await waitFor(() => expect(api.getVersion).toHaveBeenCalledWith("v1"));
+    fireEvent.click((await view.findAllByText("Restore this configuration"))[0]);
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>(".change-restore-actions .btn-primary")!);
+
+    await waitFor(() => expect(api.restoreVersion).toHaveBeenCalledWith("v1", "before"));
+    await waitFor(() => expect(api.listVersions).toHaveBeenCalledTimes(3));
+    expect(view.getByText("Back to changes")).toBeTruthy();
+
+    refreshed.resolve({ resource_type: null, resource_id: null, versions: [rollback, original], total: 2 });
+    await waitFor(() => expect(view.queryByText("Back to changes")).toBeNull());
+    expect(await view.findByText("Rollback")).toBeTruthy();
+    expect(api.listVersions).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets a newer config-change refresh release an older foreground loading state", async () => {
+    const foreground = deferred<VersionListResponse>();
+    const background = deferred<VersionListResponse>();
+    let configChanged: (() => void) | undefined;
+    const hass = {
+      connection: {
+        subscribeEvents: vi.fn(async (cb: () => void) => {
+          configChanged = cb;
+          return () => {};
+        }),
+      },
+    };
+    vi.mocked(api.listVersions)
+      .mockResolvedValueOnce({ resource_type: null, resource_id: null, versions: [version()], total: 1 })
+      .mockReturnValueOnce(foreground.promise)
+      .mockReturnValueOnce(background.promise);
+
+    const view = render(<ChangesView hass={hass} />);
+    await view.findByText("My automation");
+    await waitFor(() => expect(configChanged).toBeTypeOf("function"));
+    fireEvent.click(view.getByLabelText("Refresh changes"));
+    await waitFor(() => expect(view.getByRole("status")).toBeTruthy());
+    configChanged!();
+    await waitFor(() => expect(api.listVersions).toHaveBeenCalledTimes(3));
+
+    background.resolve({
+      resource_type: null,
+      resource_id: null,
+      versions: [version({ id: "v2", alias: "Fresh after event" })],
+      total: 1,
+    });
+    expect(await view.findByText("Fresh after event")).toBeTruthy();
+    expect(view.queryByRole("status")).toBeNull();
+  });
 });
 
 // A device YAML version is a raw text snapshot ({content}), the same shape as
@@ -98,12 +186,7 @@ describe("ChangesView device YAML detail", () => {
     // jsdom does not implement matchMedia, and the detail view reads it to pick
     // its default layout. Stubbed locally rather than globally: nothing else in
     // the suite renders this component.
-    vi.stubGlobal("matchMedia", (query: string) => ({
-      matches: false, media: query, onchange: null,
-      addListener: () => {}, removeListener: () => {},
-      addEventListener: () => {}, removeEventListener: () => {},
-      dispatchEvent: () => false,
-    }));
+    stubMatchMedia();
   });
 
   async function openDetail(after = DEVICE) {
