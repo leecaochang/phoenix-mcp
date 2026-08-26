@@ -149,6 +149,43 @@ class TestGetRelationships:
         # The automation references both lights; both are accessible.
         assert set(body["references"]) == {"light.bedroom", "light.kitchen"}
 
+    async def test_forward_references_follow_include_layout(self, hass, rel_env):
+        """Forward references must use the same include-aware walk as consumers."""
+        os.remove(os.path.join(hass.config.config_dir, "automations.yaml"))
+        with open(hass.config.path("configuration.yaml"), "w", encoding="utf-8") as f:
+            f.write("automation: !include_dir_list automations/\n")
+        os.makedirs(os.path.join(hass.config.config_dir, "automations"), exist_ok=True)
+        _write(os.path.join(hass.config.config_dir, "automations", "one.yaml"), {
+            "id": "auto1", "alias": "Split Out",
+            "trigger": [],
+            "action": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+        })
+
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": rel_env["automation"]}, _token(), hass)
+        body = _json(content)
+        assert body["references"] == ["light.kitchen"]
+        assert "references_not_searched" not in body
+
+    async def test_forward_script_references_follow_include_layout(self, hass, rel_env):
+        """Scripts use the named-entry form of the same include-aware loader."""
+        from custom_components.phoenix_mcp.tools.discovery import _forward_references_details
+
+        os.remove(hass.config.path("scripts.yaml"))
+        with open(hass.config.path("configuration.yaml"), "w", encoding="utf-8") as f:
+            f.write("script: !include_dir_named scripts/\n")
+        os.makedirs(hass.config.path("scripts"), exist_ok=True)
+        _write(hass.config.path("scripts/greet.yaml"), {
+            "alias": "Greet",
+            "sequence": [{"service": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+        })
+
+        references, not_searched = await hass.async_add_executor_job(
+            _forward_references_details, hass, _token(), "script.greet",
+        )
+        assert references == ["light.kitchen"]
+        assert not not_searched
+
     async def test_forward_references_only_for_a_single_entity(self, hass, rel_env):
         """"What does it reference" has no meaning for a set of entities."""
         content, _, _ = await _call(
@@ -180,9 +217,9 @@ class TestGetRelationships:
         assert "sensor.secret" not in named
 
     async def test_uses_executor_for_file_io(self, hass, rel_env, monkeypatch):
-        """_scan_relationships/_forward_references read YAML files synchronously;
+        """_scan_relationships/_forward_references_details read YAML files synchronously;
         they must run via async_add_executor_job rather than blocking the loop."""
-        from custom_components.phoenix_mcp.tools.discovery import _forward_references, _scan_relationships
+        from custom_components.phoenix_mcp.tools.discovery import _forward_references_details, _scan_relationships
 
         seen_fns = []
         orig = hass.async_add_executor_job
@@ -194,7 +231,7 @@ class TestGetRelationships:
         monkeypatch.setattr(hass, "async_add_executor_job", spy)
         await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         assert _scan_relationships in seen_fns
-        assert _forward_references in seen_fns
+        assert _forward_references_details in seen_fns
 
     async def test_reverse_references_follow_device_triggers(self, hass, rel_env):
         """An automation referencing this entity only through a device trigger
@@ -782,6 +819,20 @@ class TestDescribeEntity:
         kinds = {r["kind"] for r in body["referenced_by"]}
         assert kinds == {"automation", "script", "scene"}
         assert "mesa_control_mode" not in body  # MagicMock data => skipped via mode check below
+
+    async def test_describe_reports_unreadable_reference_branches(self, hass, rel_env):
+        """A short reverse-reference list must not hide package coverage gaps."""
+        with open(hass.config.path("configuration.yaml"), "w", encoding="utf-8") as f:
+            f.write("homeassistant:\n  packages: !include_dir_named packages/\n"
+                    "automation: !include automations.yaml\n"
+                    "script: !include scripts.yaml\n"
+                    "scene: !include scenes.yaml\n")
+
+        content, _, _ = await _call(
+            "describe_entity", {"entity_id": "light.kitchen"}, _token(), hass)
+        body = _json(content)
+        assert {r["kind"] for r in body["referenced_by"]} == {"automation", "script", "scene"}
+        assert any("packages" in item["reason"] for item in body["referenced_by_not_searched"])
 
     async def test_inaccessible_not_found(self, hass, rel_env):
         _, outcome, _ = await _call("describe_entity", {"entity_id": "sensor.secret"}, _token(), hass)

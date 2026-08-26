@@ -2066,7 +2066,8 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
             "checked and 'not_searched' names any skipped for lack of a capability, so a partial "
             "answer is never mistaken for a clean one. 'dangling_references' reports entity IDs "
             "referenced by something but no longer existing anywhere. With an entity scope it also "
-            "returns 'references': what that automation or script itself uses."
+            "returns 'references': what that automation or script itself uses; when configuration "
+            "branches could not be read, 'references_not_searched' explains that this list is incomplete."
         ),
         "cap": "cap_search",
         "inputSchema": {
@@ -2082,7 +2083,9 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "description": (
             "A comprehensive summary of one accessible entity, including disabled and registry-only "
             "entries when access is inherited from their device or domain: its state when available, "
-            "an allowlisted registry projection, area, domain services, references, and MESA control_mode. For full "
+            "an allowlisted registry projection, area, domain services, references, and MESA control_mode. "
+            "If configuration branches could not be read, 'referenced_by_not_searched' explains why the "
+            "reverse-reference list is incomplete. For full "
             "semantic profile data use mesa_get_profile (requires cap_config_read). 'not found' if not accessible."
         ),
         "cap": "cap_search",

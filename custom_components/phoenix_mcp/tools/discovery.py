@@ -60,7 +60,7 @@ from ..mesa import async_semantic_moments, build_expand_target, entity_control_m
 from ..mesa_core.trigger_validator import entities_by_role
 from ..mesa_tools import MESA_TOOLS_CAP, authored_restrictions
 from ..helpers import effective_cap, parse_time_param as _parse_time_param, redact_diagnostics as _redact_diagnostics, redact_inaccessible_entity_ids_in_text, sanitize_service_data as _sanitize_service_data, str_arg, str_list_arg
-from .authoring import _AUTOMATION_YAML, _SCRIPT_CONFIG_PATH, _read_automations_yaml, _read_scripts_yaml
+from .authoring import _AUTOMATION_YAML, _read_automations_yaml
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
 from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
@@ -107,7 +107,9 @@ def _domain_entries(hass: HomeAssistant, domain: str) -> tuple[Any, list[dict]]:
     return found.entries, [{"kind": domain, "reason": r} for r in found.unreadable]
 
 
-def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
+def _references_for_entity_details(
+    hass: HomeAssistant, entity_id: str,
+) -> tuple[list[dict], list[dict]]:
     """Scope-agnostic reverse index: automations/scripts/scenes referencing entity_id.
 
     Automations use mesa-core's canonical entities_by_role (by trigger/condition/
@@ -120,9 +122,12 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
     scoping.
     """
     refs: list[dict] = []
+    not_searched: list[dict] = []
     expand = build_expand_target(hass)
 
-    for cfg in _domain_entries(hass, "automation")[0]:
+    automations, gaps = _domain_entries(hass, "automation")
+    not_searched.extend(gaps)
+    for cfg in automations:
         if not isinstance(cfg, dict):
             continue
         by_role = entities_by_role(cfg, expand)
@@ -130,7 +135,9 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
         if roles:
             refs.append({"kind": "automation", "id": str(cfg.get("id", "")), "name": cfg.get("alias"), "roles": roles})
 
-    for script_id, cfg in _domain_entries(hass, "script")[0].items():
+    scripts, gaps = _domain_entries(hass, "script")
+    not_searched.extend(gaps)
+    for script_id, cfg in scripts.items():
         if not isinstance(cfg, dict):
             continue
         found: set[str] = set()
@@ -138,14 +145,21 @@ def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
         if entity_id in found:
             refs.append({"kind": "script", "id": script_id, "name": cfg.get("alias"), "roles": ["sequence"]})
 
-    for scene in _domain_entries(hass, "scene")[0]:
+    scenes, gaps = _domain_entries(hass, "scene")
+    not_searched.extend(gaps)
+    for scene in scenes:
         if not isinstance(scene, dict):
             continue
         members = scene.get("entities")
         if isinstance(members, dict) and entity_id in members:
             refs.append({"kind": "scene", "id": str(scene.get("id", "")), "name": scene.get("name"), "roles": ["member"]})
 
-    return refs
+    return refs, not_searched
+
+
+def _references_for_entity(hass: HomeAssistant, entity_id: str) -> list[dict]:
+    """Return reverse references, retaining the legacy list-only helper API."""
+    return _references_for_entity_details(hass, entity_id)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -479,20 +493,26 @@ def _scan_relationships(
     return [_finish(c) for c in consumers], refs, unreadable
 
 
-def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str) -> list[str]:
+def _forward_references_details(
+    hass: HomeAssistant, token: TokenRecord, entity_id: str,
+) -> tuple[list[str], list[dict]]:
     """Entities referenced by entity_id when it is an automation or script.
 
     Scoped to entities the token can access, so an automation never reveals
-    targets outside the token's permission tree. Returns [] for other domains.
+    targets outside the token's permission tree. The second return value names
+    unreadable configuration branches rather than making an incomplete [] look
+    like proof that the automation or script has no dependencies.
     """
     domain = entity_id.split(".")[0]
     found: set[str] = set()
+    not_searched: list[dict] = []
     if domain == "automation":
         entry = er.async_get(hass).async_get(entity_id)
         unique_id = entry.unique_id if entry is not None else None
         if unique_id is not None:
-            auto_path = os.path.join(hass.config.config_dir, _AUTOMATION_YAML)
-            for cfg in _read_automations_yaml(auto_path):
+            automations, gaps = _domain_entries(hass, "automation")
+            not_searched.extend(gaps)
+            for cfg in automations:
                 if isinstance(cfg, dict) and str(cfg.get("id", "")) == unique_id:
                     # expand_target resolves device/area/floor/label references
                     # too; the scope filter below still gates what is revealed.
@@ -501,10 +521,20 @@ def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str)
                     break
     elif domain == "script":
         script_id = entity_id.split(".", 1)[1] if "." in entity_id else ""
-        cfg = _read_scripts_yaml(hass.config.path(_SCRIPT_CONFIG_PATH)).get(script_id)
+        scripts, gaps = _domain_entries(hass, "script")
+        not_searched.extend(gaps)
+        cfg = scripts.get(script_id)
         if isinstance(cfg, dict):
             _collect_entity_id_values(cfg, found)
-    return sorted(e for e in found if resolve(e, token, hass) in (Permission.READ, Permission.WRITE))
+    return (
+        sorted(e for e in found if resolve(e, token, hass) in (Permission.READ, Permission.WRITE)),
+        not_searched,
+    )
+
+
+def _forward_references(hass: HomeAssistant, token: TokenRecord, entity_id: str) -> list[str]:
+    """Return forward references, retaining the legacy list-only helper API."""
+    return _forward_references_details(hass, token, entity_id)[0]
 
 
 def _accessible_entity_ids(token: TokenRecord, hass: HomeAssistant) -> set[str]:
@@ -1726,9 +1756,12 @@ async def _tool_get_relationships(
         body["not_searched"] = not_searched
     if selector == "entity_id":
         # Only meaningful for a single automation or script: what IT references.
-        body["references"] = await hass.async_add_executor_job(
-            _forward_references, hass, token, value,
+        references, references_not_searched = await hass.async_add_executor_job(
+            _forward_references_details, hass, token, value,
         )
+        body["references"] = references
+        if references_not_searched:
+            body["references_not_searched"] = references_not_searched
     return _tool_success(json.dumps(body, default=str)), "allowed", f"{selector}:{value}"
 
 
@@ -1758,6 +1791,9 @@ async def _tool_describe_entity(
         "state": None,
         "attributes": {},
     }
+    referenced_by, referenced_by_not_searched = await hass.async_add_executor_job(
+        _references_for_entity_details, hass, entity_id,
+    )
     body: dict = {
         "entity_id": entity_id,
         "domain": domain,
@@ -1766,7 +1802,7 @@ async def _tool_describe_entity(
         "area": _area_name_for_entity(entity_id, registry, dr.async_get(hass), ar.async_get(hass)),
         "writable": token.pass_through or perm == Permission.WRITE,
         "domain_services": sorted(hass.services.async_services().get(domain, {}).keys()),
-        "referenced_by": await hass.async_add_executor_job(_references_for_entity, hass, entity_id),
+        "referenced_by": referenced_by,
         # This field covers automations, scripts and scenes; get_relationships
         # additionally reaches dashboards and config entries. The difference is
         # deliberate (this is a cheap one-entity summary, and scanning dashboards
@@ -1780,6 +1816,8 @@ async def _tool_describe_entity(
             "built on this entity, and for entity IDs that no longer resolve."
         ),
     }
+    if referenced_by_not_searched:
+        body["referenced_by_not_searched"] = referenced_by_not_searched
 
     # entity_category (config/diagnostic) when set: tells the agent this is a
     # setup/health entity, not a primary control. Bulk device/area service calls
