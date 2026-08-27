@@ -1603,11 +1603,156 @@ def _loop_data():
     kill switch off, and a live valid token, so dispatches proceed."""
     data = MagicMock()
     data.shutting_down = False
-    data.store.get_settings.return_value = MagicMock(kill_switch=False)
+    data.store.get_settings.return_value = GlobalSettings()
     live = MagicMock()
     live.is_valid.return_value = True
     data.store.get_token_by_id.return_value = live
     return data
+
+
+@pytest.mark.parametrize(("style", "phrase"), [
+    ("direct", "matter-of-fact"),
+    ("warm", "without praise, flattery"),
+    ("calm_guide", "never sounding patronizing"),
+    ("lively", "occasional light humor"),
+    ("technical", "precise terminology"),
+])
+@pytest.mark.parametrize(("detail", "detail_phrase"), [
+    ("concise", "at most three short sentences"),
+    ("balanced", "short paragraph"),
+    ("detailed", "tradeoffs, and caveats"),
+])
+def test_conversation_behavior_prompt_presets_preserve_invariants(
+    style, phrase, detail, detail_phrase,
+):
+    prompt = agentcli._conversation_behavior_prompt(style, detail)
+    assert phrase in prompt
+    assert detail_phrase in prompt
+    assert "never change tools, tool arguments" in prompt
+    assert "Explicit operator tone or detail instructions override" in prompt
+    assert "Suspend humor for failures" in prompt
+    assert "even when earlier assistant messages used different" in prompt
+    assert agentcli._HOME_FOCUS_INSTRUCTION not in prompt
+
+
+def test_direct_concise_prompt_has_concrete_prose_guardrails():
+    prompt = agentcli._conversation_behavior_prompt("direct", "concise")
+    assert "Do not add praise, encouragement, conversational preambles" in prompt
+    assert "three short steps or bullets" in prompt
+    assert "Do not add background, a full general workflow" in prompt
+
+
+def test_agentcli_addendum_stops_on_a_contradicted_home_premise():
+    prompt = agentcli._AGENTCLI_ADDENDUM
+    assert "narrowly filtered name-and-domain search" in prompt
+    assert "stop the broad investigation" in prompt
+    assert "ask one focused clarifying question" in prompt
+    assert "Do not substitute a merely related entity" in prompt
+    assert "Treat correlation as a lead, never as a cause" in prompt
+
+
+def test_agentcli_inventory_result_repeats_resource_mismatch_guard_for_model_only():
+    original = '{"count": 80, "automations": []}'
+    guided = agentcli._agentcli_add_resource_match_guidance(
+        "list_automations", {}, original,
+    )
+    assert guided.startswith(original)
+    assert "stop now" in guided
+    assert "Do not substitute a related entry" in guided
+
+
+def test_agentcli_zero_match_search_repeats_guard_but_positive_result_does_not():
+    empty = '{"count": 0, "truncated": false, "entities": []}'
+    guided = agentcli._agentcli_add_resource_match_guidance(
+        "search_entities", {"query": "heating", "domain": "automation"}, empty,
+    )
+    assert "filtered discovery found no matching entity" in guided
+    positive = '{"count": 1, "entities": [{"entity_id": "automation.heating"}]}'
+    assert agentcli._agentcli_add_resource_match_guidance(
+        "search_entities", {"query": "heating"}, positive,
+    ) == positive
+
+
+def test_agentcli_resource_match_guard_is_not_added_to_unrelated_tool_results():
+    original = '{"entries": []}'
+    assert agentcli._agentcli_add_resource_match_guidance(
+        "get_logbook", {}, original,
+    ) == original
+
+
+def test_conversation_behavior_prompt_includes_exact_home_focus_contract():
+    prompt = agentcli._conversation_behavior_prompt(
+        "direct", "concise", home_focused=True,
+    )
+    assert agentcli._HOME_FOCUS_INSTRUCTION in prompt
+    assert "must not answer, solve, summarize" in prompt
+    assert "short, easy, harmless, or already known" in prompt
+
+
+def test_home_focus_marker_protocol_is_a_final_output_contract():
+    contract = agentcli._home_focus_output_contract(True)
+    assert agentcli._HOME_FOCUS_REFUSAL_MARKER in contract
+    assert "first characters" in contract
+    assert "do not omit" in contract.lower()
+    assert agentcli._home_focus_output_contract(False) == ""
+
+
+@pytest.mark.parametrize("assistant_msg", [
+    {"role": "assistant", "content": "PHXFOCUS: No."},
+    {"role": "assistant", "content": [
+        {"type": "text", "text": "PHXFOCUS: No."},
+    ]},
+    {"role": "assistant", "content": [
+        {"type": "text", "text": "PHXFOCUS: No.", "extra": "mistral"},
+    ]},
+])
+def test_focus_marker_strips_from_provider_message_shapes(assistant_msg):
+    cleaned, declined = agentcli._strip_focus_marker_message(assistant_msg)
+    assert declined is True
+    assert agentcli._HOME_FOCUS_REFUSAL_MARKER not in json.dumps(cleaned)
+    assert "No." in json.dumps(cleaned)
+
+
+def test_focus_prefix_buffer_never_exposes_a_marker_only_stream():
+    focus = agentcli._FocusPrefixBuffer(enabled=True)
+    assert focus.feed(agentcli._HOME_FOCUS_REFUSAL_MARKER) == ""
+    assert focus.finish() == ""
+    assert focus.declined is True
+
+
+@pytest.mark.asyncio
+async def test_focus_marker_split_chunks_is_hidden_signaled_and_not_persisted(hass):
+    marker = agentcli._HOME_FOCUS_REFUSAL_MARKER
+    assistant = {"role": "assistant", "content": marker + " This is Home-focused."}
+    provider = _ScriptedProvider([[
+        {"type": agentcli.EV_TEXT, "text": "  " + marker[:12]},
+        {"type": agentcli.EV_TEXT, "text": marker[12:] + " This is "},
+        {"type": agentcli.EV_TEXT, "text": "Home-focused."},
+        {"type": agentcli.EV_DONE, "stop_reason": "end_turn", "assistant_msg": assistant},
+    ]])
+    events: list[tuple[str, dict]] = []
+
+    async def emit(name, payload):
+        events.append((name, payload))
+
+    token = MagicMock(id="tid")
+    with patch("custom_components.phoenix_mcp.agentcli.build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="sys"):
+        messages = await async_run_agent_turn(
+            hass=hass, data=_loop_data(), token=token, provider=provider,
+            session=MagicMock(), messages=[{"role": "user", "content": "sort this"}],
+            options={}, client_ip="agentcli", base_url="http://h", emit=emit,
+            cancel=asyncio.Event(), home_focused=True,
+        )
+
+    assert [name for name, _ in events].count("focus_declined") == 1
+    visible = "".join(payload["text"] for name, payload in events
+                      if name == "assistant_delta")
+    assert visible == "This is Home-focused."
+    assert marker not in json.dumps(messages)
+    assert messages[-1]["content"] == "This is Home-focused."
+    prompt = provider.system_prompts[0]
+    assert prompt.rfind(marker) > prompt.rfind("interactive chat")
 
 
 @pytest.mark.parametrize(("zone", "offset_hours", "offset_label"), [
@@ -2166,7 +2311,11 @@ async def test_chat_view_streams_ready_and_cleans_up(hass):
 
     data = MagicMock()
     data.shutting_down = False
-    data.store.get_settings.return_value = MagicMock(kill_switch=False)
+    data.store.get_settings.return_value = GlobalSettings(
+        agentcli_conversation_style="warm",
+        agentcli_detail_level="detailed",
+        agentcli_home_focused=True,
+    )
     tok = MagicMock()
     tok.is_valid.return_value = True
     tok.id = "t1"
@@ -2179,7 +2328,14 @@ async def test_chat_view_streams_ready_and_cleans_up(hass):
     view.hass = hass
     hass.data[ac.DOMAIN] = data
 
-    body = json.dumps({"token_id": "t1", "instance_id": "i1", "user": "hi", "messages": []}).encode()
+    body = json.dumps({
+        "token_id": "t1", "instance_id": "i1", "user": "hi",
+        "messages": [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "retained"},
+        ],
+        "home_focus_bypass": True,
+    }).encode()
     with patch.object(ac.web, "StreamResponse", _FakeStream), \
          patch("custom_components.phoenix_mcp.agentcli._get_secret_store", AsyncMock(return_value=store)), \
          patch("custom_components.phoenix_mcp.agentcli.build_provider", return_value=MagicMock()), \
@@ -2191,6 +2347,43 @@ async def test_chat_view_streams_ready_and_cleans_up(hass):
     assert b"event: ready" in joined       # the stream opened and emitted
     assert b"__EOF__" in writes            # write_eof ran in the finally (cleanup)
     rat.assert_awaited_once()              # the agent turn was driven
+    kwargs = rat.call_args.kwargs
+    assert kwargs["conversation_style"] == "warm"
+    assert kwargs["detail_level"] == "detailed"
+    assert kwargs["home_focused"] is False
+    assert kwargs["messages"] == [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "retained"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_view_rejects_focus_bypass_without_new_message(hass):
+    from custom_components.phoenix_mcp.agentcli import PhoenixAgentCliChatView
+
+    data = MagicMock(ready=True, shutting_down=False)
+    data.store.get_settings.return_value = GlobalSettings()
+    token = MagicMock(id="t1")
+    token.is_valid.return_value = True
+    data.store.get_token_by_id.return_value = token
+    store = MagicMock()
+    store.resolve.return_value = ProviderConfig(
+        kind="claude", model="m", base_url="https://x", api_key="k",
+    )
+    view = PhoenixAgentCliChatView()
+    view.hass = hass
+    hass.data[agentcli.DOMAIN] = data
+    body = json.dumps({
+        "token_id": "t1", "instance_id": "i1", "continue": True,
+        "messages": [{"role": "user", "content": "hi"}],
+        "home_focus_bypass": True,
+    }).encode()
+    with patch("custom_components.phoenix_mcp.agentcli._get_secret_store",
+               AsyncMock(return_value=store)):
+        response = await view.post(_make_chat_request(body))
+    assert response.status == 400
+    assert json.loads(response.text)["message_key"] == "adminError.homeFocusBypassNewMessage"
 
 
 @pytest.mark.asyncio

@@ -199,7 +199,10 @@ def async_sync_voice_agent(hass: HomeAssistant, entry: Any, data: Any) -> None:
         s.voice_agent_enabled and s.voice_agent_token_id
         and s.voice_agent_provider_id and s.voice_agent_model
     )
-    if fully_configured and data.ready and not data.shutting_down:
+    # Phoenix wires this agent before publishing its final ready flag. The
+    # per-turn async_voice_answer gate keeps it unavailable until startup ends;
+    # requiring ready here skipped registration on every HA restart.
+    if fully_configured and not data.shutting_down:
         async_register_voice_agent(hass, entry, data)
     else:
         async_unregister_voice_agent(hass, entry)

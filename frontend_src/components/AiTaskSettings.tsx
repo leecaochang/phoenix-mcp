@@ -5,6 +5,7 @@ import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
 import { t } from "../i18n";
 import { tRich } from "../i18n/rich";
+import { ConversationBehaviorControls } from "./ConversationBehaviorControls";
 
 // AI Task settings card. Registers Phoenix MCP as a Home Assistant AI Task entity ("Phoenix MCP AI
 // Task") so ai_task.generate_data can target Phoenix MCP and run its own model on the chosen
@@ -176,6 +177,16 @@ export function AiTaskSettings({
           ))}
         </select>
       </div>
+
+      <ConversationBehaviorControls
+        surface={t("settings.aiTaskCard")}
+        style={settings.ai_task_conversation_style ?? "direct"}
+        detail={settings.ai_task_detail_level ?? "balanced"}
+        saving={saving || !supported}
+        onStyleChange={(value) => onChange("ai_task_conversation_style", value)}
+        onDetailChange={(value) => onChange("ai_task_detail_level", value)}
+        aiTaskFreeTextOnly
+      />
 
       {supported && (pref?.supported ?? false) && (
         <div className="toggle-row toggle-row-plain settings-toggle-mt">

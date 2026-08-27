@@ -78,6 +78,20 @@ describe("VoiceAgentSettings", () => {
       .not.toHaveClass("toggle-row-stacked-control");
   });
 
+  it("renders and saves voice conversation behavior controls", () => {
+    const { onChange } = renderCard(settings());
+    fireEvent.change(screen.getByLabelText("Voice Agent conversation style"), {
+      target: { value: "lively" },
+    });
+    fireEvent.change(screen.getByLabelText("Voice Agent detail level"), {
+      target: { value: "balanced" },
+    });
+    fireEvent.click(screen.getByLabelText("Voice Agent Home-focused mode"));
+    expect(onChange).toHaveBeenCalledWith("voice_agent_conversation_style", "lively");
+    expect(onChange).toHaveBeenCalledWith("voice_agent_detail_level", "balanced");
+    expect(onChange).toHaveBeenCalledWith("voice_agent_home_focused", true);
+  });
+
   it("model select is disabled until a provider is chosen, then loads models", async () => {
     const { rerender } = render(<VoiceAgentSettings settings={settings()} onChange={vi.fn()} saving={false} />);
     expect((screen.getByLabelText("Voice agent model") as HTMLSelectElement).disabled).toBe(true);

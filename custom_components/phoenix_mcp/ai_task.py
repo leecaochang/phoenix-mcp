@@ -31,6 +31,8 @@ import json
 import logging
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -136,11 +138,175 @@ def _is_fully_configured(settings: Any) -> bool:
     )
 
 
+def _selector_json_schema(value: Any) -> dict[str, Any]:
+    """Convert a Home Assistant selector validator to a JSON Schema fragment."""
+    selector_type = getattr(value, "selector_type", None)
+    config = getattr(value, "config", None)
+    if not isinstance(selector_type, str) or not isinstance(config, dict):
+        return {}
+
+    def maybe_multiple(item: dict[str, Any]) -> dict[str, Any]:
+        if config.get("multiple"):
+            return {"type": "array", "items": item}
+        return item
+
+    if selector_type == "boolean":
+        return {"type": "boolean"}
+    if selector_type == "number":
+        schema: dict[str, Any] = {"type": "number"}
+        if "min" in config:
+            schema["minimum"] = config["min"]
+        if "max" in config:
+            schema["maximum"] = config["max"]
+        if config.get("step") not in (None, "any"):
+            schema["multipleOf"] = config["step"]
+        return schema
+    if selector_type == "color_temp":
+        schema = {"type": "integer"}
+        minimum = config.get("min", config.get("min_mireds"))
+        maximum = config.get("max", config.get("max_mireds"))
+        if minimum is not None:
+            schema["minimum"] = minimum
+        if maximum is not None:
+            schema["maximum"] = maximum
+        return schema
+    if selector_type == "select":
+        item: dict[str, Any] = {"type": "string"}
+        if not config.get("custom_value"):
+            options = config.get("options", [])
+            enum = [
+                option if isinstance(option, str) else option.get("value")
+                for option in options
+            ]
+            if enum and all(option is not None for option in enum):
+                item["enum"] = enum
+        return maybe_multiple(item)
+    if selector_type == "color_rgb":
+        return {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0, "maximum": 255},
+            "minItems": 3,
+            "maxItems": 3,
+        }
+    if selector_type == "location":
+        return {
+            "type": "object",
+            "properties": {
+                "latitude": {"type": "number"},
+                "longitude": {"type": "number"},
+                "radius": {"type": "number"},
+            },
+            "required": ["latitude", "longitude"],
+            "additionalProperties": False,
+        }
+    if selector_type == "duration":
+        return {
+            "type": "object",
+            "properties": {
+                unit: {"type": "number"}
+                for unit in ("days", "hours", "minutes", "seconds", "milliseconds")
+            },
+            "additionalProperties": False,
+        }
+    if selector_type == "object" and isinstance(config.get("fields"), dict):
+        properties: dict[str, Any] = {}
+        required: list[str] = []
+        for name, field in config["fields"].items():
+            if not isinstance(field, dict):
+                continue
+            properties[name] = _selector_json_schema(field.get("selector"))
+            if isinstance(field.get("label"), str):
+                properties[name]["description"] = field["label"]
+            if field.get("required"):
+                required.append(name)
+        object_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        if required:
+            object_schema["required"] = required
+        return maybe_multiple(object_schema)
+    if selector_type in {"action", "condition", "trigger"}:
+        return {"type": "array", "items": {"type": "object"}}
+    if selector_type in {"media", "numeric_threshold", "target"}:
+        return maybe_multiple({"type": "object"})
+
+    string_selectors = {
+        "addon",
+        "app",
+        "area",
+        "assist_pipeline",
+        "attribute",
+        "automation_behavior",
+        "backup_location",
+        "config_entry",
+        "conversation_agent",
+        "country",
+        "date",
+        "datetime",
+        "device",
+        "entity",
+        "file",
+        "floor",
+        "icon",
+        "label",
+        "language",
+        "qr_code",
+        "serial_port",
+        "state",
+        "statistic",
+        "template",
+        "text",
+        "theme",
+        "time",
+    }
+    if selector_type in string_selectors:
+        return maybe_multiple({"type": "string"})
+
+    # Future selectors should not make an otherwise usable structure fail.
+    return {}
+
+
+def _selector_structure_to_json(structure: Any) -> dict[str, Any] | None:
+    """Convert HA's selector-backed top-level AI Task structure, if present."""
+    raw = structure.schema if isinstance(structure, vol.Schema) else structure
+    if not isinstance(raw, dict) or not any(
+        isinstance(getattr(value, "selector_type", None), str) for value in raw.values()
+    ):
+        return None
+
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for key, value in raw.items():
+        name = key.schema if isinstance(key, vol.Marker) else key
+        if not isinstance(name, str):
+            raise TypeError("AI Task structure field names must be strings")
+        field_schema = _selector_json_schema(value)
+        description = getattr(key, "description", None)
+        if isinstance(description, str) and description:
+            field_schema["description"] = description
+        properties[name] = field_schema
+        if isinstance(key, vol.Required):
+            required.append(name)
+
+    result: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        result["required"] = required
+    return result
+
+
 def _structure_to_json(structure: Any) -> dict | None:
     """Convert a task's voluptuous structure schema to a JSON schema, or None."""
     if structure is None:
         return None
     try:
+        if selector_schema := _selector_structure_to_json(structure):
+            return selector_schema
         from voluptuous_openapi import convert  # noqa: PLC0415
 
         return convert(structure)
@@ -304,7 +470,12 @@ def async_sync_ai_task(hass: HomeAssistant, entry, data, async_add_entities) -> 
     """
     if not _AI_TASK_AVAILABLE:
         return
-    should_exist = data.ready and _is_fully_configured(data.store.get_settings())
+    # Platform forwarding happens before Phoenix publishes its final ready flag.
+    # Registration depends on persisted configuration, while ``available`` above
+    # independently keeps the entity unusable until startup is complete. Gating
+    # existence on data.ready skipped registration on every HA restart and left
+    # the restored registry entity unavailable until a settings toggle re-synced it.
+    should_exist = _is_fully_configured(data.store.get_settings())
 
     if should_exist and data.ai_task_entity is None:
         entity = PhoenixAITaskEntity(hass, entry)

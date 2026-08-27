@@ -23,6 +23,11 @@ from .const import (
     AGENTCLI_SCROLLBACK_DEFAULT,
     AGENTCLI_SCROLLBACK_MAX,
     AGENTCLI_SCROLLBACK_MIN,
+    CONVERSATION_STYLES,
+    CONVERSATION_STYLE_DIRECT,
+    DETAIL_LEVELS,
+    DETAIL_LEVEL_BALANCED,
+    DETAIL_LEVEL_CONCISE,
     CAP_ALLOW,
     CAP_DENY,
     CAP_MODES,
@@ -549,6 +554,11 @@ def _coerce_opt_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _closed_choice(value: object, valid: frozenset[str], default: str) -> str:
+    """Load one server-owned enum, preserving a safe default on old/corrupt storage."""
+    return value if isinstance(value, str) and value in valid else default
+
+
 @dataclass
 class GlobalSettings:
     """Integration-wide settings persisted to storage."""
@@ -582,6 +592,9 @@ class GlobalSettings:
     # via the global inject module (still opened only from the Phoenix MCP panel button,
     # falling back to panel-only if injection is unsupported); False = Phoenix MCP panel only.
     agentcli_global: bool = True
+    agentcli_conversation_style: str = CONVERSATION_STYLE_DIRECT
+    agentcli_detail_level: str = DETAIL_LEVEL_CONCISE
+    agentcli_home_focused: bool = False
     # Assist bridge: the id of the token whose scoped tool surface HA's native
     # Assist/voice pipeline resolves against (assist_api.py). None = unbound (the
     # registered llm.API offers zero tools). Cleared on revoke/expiry of that token.
@@ -593,6 +606,9 @@ class GlobalSettings:
     voice_agent_token_id: str | None = None
     voice_agent_provider_id: str | None = None
     voice_agent_model: str | None = None
+    voice_agent_conversation_style: str = CONVERSATION_STYLE_DIRECT
+    voice_agent_detail_level: str = DETAIL_LEVEL_CONCISE
+    voice_agent_home_focused: bool = False
     # Id of the Assist pipeline Phoenix MCP created for the voice agent via the one-click
     # setup (voice_agent.async_create_assist_pipeline). None when the operator set
     # up Assist manually or has not run the helper. Tracked so Phoenix MCP can remove that
@@ -606,6 +622,8 @@ class GlobalSettings:
     ai_task_token_id: str | None = None
     ai_task_provider_id: str | None = None
     ai_task_model: str | None = None
+    ai_task_conversation_style: str = CONVERSATION_STYLE_DIRECT
+    ai_task_detail_level: str = DETAIL_LEVEL_BALANCED
 
     def to_dict(self) -> dict:
         return {
@@ -626,16 +644,24 @@ class GlobalSettings:
             "agentcli_scrollback_lines": self.agentcli_scrollback_lines,
             "agentcli_max_iterations": self.agentcli_max_iterations,
             "agentcli_global": self.agentcli_global,
+            "agentcli_conversation_style": self.agentcli_conversation_style,
+            "agentcli_detail_level": self.agentcli_detail_level,
+            "agentcli_home_focused": self.agentcli_home_focused,
             "assist_bound_token_id": self.assist_bound_token_id,
             "voice_agent_enabled": self.voice_agent_enabled,
             "voice_agent_token_id": self.voice_agent_token_id,
             "voice_agent_provider_id": self.voice_agent_provider_id,
             "voice_agent_model": self.voice_agent_model,
+            "voice_agent_conversation_style": self.voice_agent_conversation_style,
+            "voice_agent_detail_level": self.voice_agent_detail_level,
+            "voice_agent_home_focused": self.voice_agent_home_focused,
             "voice_agent_pipeline_id": self.voice_agent_pipeline_id,
             "ai_task_enabled": self.ai_task_enabled,
             "ai_task_token_id": self.ai_task_token_id,
             "ai_task_provider_id": self.ai_task_provider_id,
             "ai_task_model": self.ai_task_model,
+            "ai_task_conversation_style": self.ai_task_conversation_style,
+            "ai_task_detail_level": self.ai_task_detail_level,
         }
 
     @classmethod
@@ -665,16 +691,39 @@ class GlobalSettings:
                 AGENTCLI_MAX_ITERATIONS_MIN, AGENTCLI_MAX_ITERATIONS_MAX, AGENTCLI_MAX_ITERATIONS,
             ),
             agentcli_global=bool(data.get("agentcli_global", True)),
+            agentcli_conversation_style=_closed_choice(
+                data.get("agentcli_conversation_style"), CONVERSATION_STYLES,
+                CONVERSATION_STYLE_DIRECT,
+            ),
+            agentcli_detail_level=_closed_choice(
+                data.get("agentcli_detail_level"), DETAIL_LEVELS, DETAIL_LEVEL_CONCISE,
+            ),
+            agentcli_home_focused=bool(data.get("agentcli_home_focused", False)),
             assist_bound_token_id=_coerce_opt_str(data.get("assist_bound_token_id")),
             voice_agent_enabled=bool(data.get("voice_agent_enabled", False)),
             voice_agent_token_id=_coerce_opt_str(data.get("voice_agent_token_id")),
             voice_agent_provider_id=_coerce_opt_str(data.get("voice_agent_provider_id")),
             voice_agent_model=_coerce_opt_str(data.get("voice_agent_model")),
+            voice_agent_conversation_style=_closed_choice(
+                data.get("voice_agent_conversation_style"), CONVERSATION_STYLES,
+                CONVERSATION_STYLE_DIRECT,
+            ),
+            voice_agent_detail_level=_closed_choice(
+                data.get("voice_agent_detail_level"), DETAIL_LEVELS, DETAIL_LEVEL_CONCISE,
+            ),
+            voice_agent_home_focused=bool(data.get("voice_agent_home_focused", False)),
             voice_agent_pipeline_id=_coerce_opt_str(data.get("voice_agent_pipeline_id")),
             ai_task_enabled=bool(data.get("ai_task_enabled", False)),
             ai_task_token_id=_coerce_opt_str(data.get("ai_task_token_id")),
             ai_task_provider_id=_coerce_opt_str(data.get("ai_task_provider_id")),
             ai_task_model=_coerce_opt_str(data.get("ai_task_model")),
+            ai_task_conversation_style=_closed_choice(
+                data.get("ai_task_conversation_style"), CONVERSATION_STYLES,
+                CONVERSATION_STYLE_DIRECT,
+            ),
+            ai_task_detail_level=_closed_choice(
+                data.get("ai_task_detail_level"), DETAIL_LEVELS, DETAIL_LEVEL_BALANCED,
+            ),
         )
 
 

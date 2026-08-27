@@ -812,6 +812,72 @@ describe("AgentCliWindow streaming", () => {
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
   });
 
+  it("offers Answer anyway only for the latest marked refusal and excludes it from memory", async () => {
+    setSessionTurns([{
+      entries: [
+        { kind: "user", text: "what lights are on" },
+        { kind: "assistant", text: "One light is on.", thinking: "" },
+      ],
+      messages: [
+        { role: "user", content: "what lights are on" },
+        { role: "assistant", content: "One light is on." },
+      ],
+      lines: 2,
+    } as Turn]);
+    agentCliChat
+      .mockImplementationOnce(async (_body, onEvent: (n: string, p: unknown) => void) => {
+        onEvent("assistant_delta", { text: "This conversation is in Home-focused mode." });
+        onEvent("focus_declined", {});
+        onEvent("messages", { messages: [
+          { role: "user", content: "what lights are on" },
+          { role: "assistant", content: "One light is on." },
+          { role: "user", content: "write a sort algorithm" },
+          { role: "assistant", content: "This conversation is in Home-focused mode." },
+        ] });
+        onEvent("done", { stop_reason: "end_turn" });
+      })
+      .mockImplementationOnce(async (_body, onEvent: (n: string, p: unknown) => void) => {
+        onEvent("assistant_delta", { text: "Here is the algorithm." });
+        onEvent("messages", { messages: [
+          { role: "user", content: "what lights are on" },
+          { role: "assistant", content: "One light is on." },
+          { role: "user", content: "write a sort algorithm" },
+          { role: "assistant", content: "Here is the algorithm." },
+        ] });
+        onEvent("done", { stop_reason: "end_turn" });
+      });
+
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    expect(screen.queryByLabelText("Conversation style")).toBeNull();
+
+    const textarea = screen.getByRole("textbox", { name: "Message Agent Chat" });
+    fireEvent.change(textarea, { target: { value: "write a sort algorithm" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    const answer = await screen.findByRole("button", { name: "Answer anyway" });
+    expect(screen.getAllByText("This conversation is in Home-focused mode.").length)
+      .toBeGreaterThan(0);
+    fireEvent.click(answer);
+
+    await waitFor(() => expect(agentCliChat).toHaveBeenCalledTimes(2));
+    const retry = agentCliChat.mock.calls[1][0] as Record<string, unknown>;
+    expect(retry.user).toBe("write a sort algorithm");
+    expect(retry.home_focus_bypass).toBe(true);
+    expect(retry.messages).toEqual([
+      { role: "user", content: "what lights are on" },
+      { role: "assistant", content: "One light is on." },
+    ]);
+    await waitFor(() => expect(screen.getAllByText("Here is the algorithm.").length)
+      .toBeGreaterThan(0));
+    expect(screen.queryByRole("button", { name: "Answer anyway" })).toBeNull();
+    expect(screen.getAllByText("This conversation is in Home-focused mode.").length)
+      .toBeGreaterThan(0);
+  });
+
   it("shows the rejection reason and the approved-but-failed detail on resolved approvals", async () => {
     // A bare "rejected" hid WHY (live-found: an admin's Approve whose executor
     // failed read as a refusal); the resolved card must carry the reason.

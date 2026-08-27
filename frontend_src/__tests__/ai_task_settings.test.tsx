@@ -82,6 +82,20 @@ describe("AiTaskSettings", () => {
       .not.toHaveClass("toggle-row-stacked-control");
   });
 
+  it("renders style and detail without a Home-focused control", () => {
+    const { onChange } = renderCard(settings());
+    fireEvent.change(screen.getByLabelText("AI Task conversation style"), {
+      target: { value: "technical" },
+    });
+    fireEvent.change(screen.getByLabelText("AI Task detail level"), {
+      target: { value: "detailed" },
+    });
+    expect(onChange).toHaveBeenCalledWith("ai_task_conversation_style", "technical");
+    expect(onChange).toHaveBeenCalledWith("ai_task_detail_level", "detailed");
+    expect(screen.queryByLabelText("AI Task Home-focused mode")).toBeNull();
+    expect(screen.getByText(/only to free-text output/)).toBeInTheDocument();
+  });
+
   it("model select is gated on a provider", async () => {
     const { rerender } = render(<AiTaskSettings settings={settings()} onChange={vi.fn()} saving={false} />);
     expect((screen.getByLabelText("AI Task model") as HTMLSelectElement).disabled).toBe(true);

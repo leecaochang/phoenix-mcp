@@ -116,6 +116,20 @@ def test_sync_adds_entity_when_fully_configured():
     add.assert_called_once_with([dummy])
 
 
+def test_sync_adds_configured_entity_before_runtime_ready_on_restart():
+    """Platform setup precedes Phoenix's final ready publication on every restart."""
+    data = _make_data(**_FULL)
+    data.ready = False
+    data.ai_task_entity = None
+    add = MagicMock()
+    dummy = SimpleNamespace(entity_id="ai_task.phoenix_mcp_ai_task")
+    with patch.object(ai_task, "_AI_TASK_AVAILABLE", True), \
+         patch.object(ai_task, "PhoenixAITaskEntity", MagicMock(return_value=dummy)):
+        ai_task.async_sync_ai_task(MagicMock(), SimpleNamespace(entry_id="e"), data, add)
+    assert data.ai_task_entity is dummy
+    add.assert_called_once_with([dummy])
+
+
 @pytest.mark.asyncio
 async def test_sync_removes_registry_entry_when_not_configured(hass):
     from homeassistant.helpers import entity_registry as er
@@ -212,6 +226,45 @@ def test_structure_to_json_roundtrips_and_none():
     out = ai_task._structure_to_json(schema)
     assert out["type"] == "object"
     assert "summary" in out["properties"] and out["required"] == ["summary"]
+
+
+def test_structure_to_json_supports_home_assistant_selector_schema():
+    from homeassistant.helpers import selector
+
+    schema = vol.Schema(
+        {
+            vol.Required("scene_name", description="Name of the example scene"): (
+                selector.TextSelector({})
+            ),
+            vol.Required("purpose", description="One-sentence purpose of the scene"): (
+                selector.TextSelector({})
+            ),
+            vol.Optional("priority"): selector.NumberSelector({"min": 1, "max": 5}),
+        },
+        extra=vol.PREVENT_EXTRA,
+    )
+
+    assert ai_task._structure_to_json(schema) == {
+        "type": "object",
+        "properties": {
+            "scene_name": {
+                "type": "string",
+                "description": "Name of the example scene",
+            },
+            "purpose": {
+                "type": "string",
+                "description": "One-sentence purpose of the scene",
+            },
+            "priority": {
+                "type": "number",
+                "minimum": 1.0,
+                "maximum": 5.0,
+                "multipleOf": 1,
+            },
+        },
+        "additionalProperties": False,
+        "required": ["scene_name", "purpose"],
+    }
 
 
 def test_parse_structured_plain_and_fenced_and_bad():
@@ -440,6 +493,33 @@ async def test_run_ai_task_includes_structure_directive_in_system_prompt():
     assert text == '{"a": 1}'
     assert "JSON schema" in capture["system_prompt"]
     assert '"type": "object"' in capture["system_prompt"]
+    assert "Conversation presentation policy" not in capture["system_prompt"]
+    assert "matter-of-fact" not in capture["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_run_ai_task_free_text_uses_selected_style_and_detail():
+    token = _make_token()
+    data = _make_data(
+        ai_task_conversation_style="technical", ai_task_detail_level="detailed",
+    )
+    capture: dict = {}
+    stream = _staged_stream(
+        [{"type": agentcli.EV_TEXT, "text": "result"}, _done("end_turn")],
+        capture=capture,
+    )
+    with patch.object(agentcli, "_stream_turn_resilient", stream), \
+         patch.object(agentcli, "build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="SYS"):
+        text = await async_run_ai_task(
+            MagicMock(), data, token, _MockProvider(), MagicMock(), "http://h", "instr",
+        )
+    assert text == "result"
+    assert "precise terminology" in capture["system_prompt"]
+    assert "thorough reasoning" in capture["system_prompt"]
+    assert "AI Task free-text output contract" in capture["system_prompt"]
+    assert "Do not mention tools, available entities" in capture["system_prompt"]
+    assert agentcli._HOME_FOCUS_INSTRUCTION not in capture["system_prompt"]
 
 
 @pytest.mark.asyncio

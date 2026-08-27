@@ -103,12 +103,14 @@ from .const import (
     AGENTCLI_SECRETS_STORAGE_VERSION,
     AGENTCLI_TOOL_RESULT_MAX_CHARS,
     AI_TASK_CLIENT_IP,
+    CONVERSATION_STYLE_DIRECT,
+    DETAIL_LEVEL_CONCISE,
     DOMAIN,
     MAX_TOOL_NAME_LENGTH,
     VOICE_AGENT_CLIENT_IP,
 )
 from .data import PhoenixData
-from .helpers import get_client_ip, token_has_write_scope, voice_text
+from .helpers import canonical_language, get_client_ip, token_has_write_scope, voice_text
 from .token_store import TokenRecord
 
 _LOGGER = logging.getLogger(__name__)
@@ -2317,6 +2319,46 @@ def _agentcli_add_local_time_fields(
     return json.dumps(add_companions(payload), separators=(",", ":"), ensure_ascii=False)
 
 
+_AGENTCLI_RESOURCE_INVENTORY_TOOLS = frozenset({
+    "list_automations", "list_scripts", "list_scenes", "list_helpers", "list_devices",
+})
+
+
+def _agentcli_add_resource_match_guidance(
+    tool_name: str, args: dict[str, Any], text: str,
+) -> str:
+    """Repeat Agent Chat's premise guard beside discovery evidence for weaker models.
+
+    This provider-only suffix is not emitted in the visible tool summary and never changes the
+    external MCP result. Inventory lists always carry the conditional reminder. A filtered entity
+    search carries it only on a structurally proven zero match.
+    """
+    guidance: str | None = None
+    if tool_name in _AGENTCLI_RESOURCE_INVENTORY_TOOLS:
+        guidance = (
+            "If you called this inventory to identify a resource named by the operator and no "
+            "plausible match appears, stop now. State the mismatch and ask one focused clarifying "
+            "question. Do not substitute a related entry or inspect logs, history, or traces for "
+            "a guessed target."
+        )
+    elif tool_name == "search_entities" and str(args.get("query") or "").strip():
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("count") == 0 \
+                and payload.get("entities") == []:
+            guidance = (
+                "This filtered discovery found no matching entity. If the current request depends "
+                "on that named resource, stop now, state the mismatch, and ask one focused "
+                "clarifying question. Do not substitute a related entity or search logs, history, "
+                "or traces for a guessed target."
+            )
+    if guidance is None:
+        return text
+    return f"{text}\n\nPhoenix Agent Chat factual guard: {guidance}"
+
+
 _AGENTCLI_LOCAL_QUERY_FIELDS: dict[str, frozenset[str]] = {
     "get_history": frozenset({"start_time", "end_time"}),
     "get_statistics": frozenset({"start_time", "end_time"}),
@@ -2555,10 +2597,113 @@ async def _await_agent_approval(
     return _resolved_result(latest.status, applied, latest)
 
 
+_STYLE_INSTRUCTIONS = {
+    "direct": (
+        "Use plain, efficient, matter-of-fact language and lead with the outcome. Do not add "
+        "praise, encouragement, conversational preambles, or an announcement of what you are "
+        "about to do."
+    ),
+    "warm": (
+        "Be friendly and encouraging without praise, flattery, padding, or unnecessary "
+        "social language."
+    ),
+    "calm_guide": (
+        "Be patient, reassuring, and accessible, while never sounding patronizing."
+    ),
+    "lively": (
+        "Use energetic language and occasional light humor only when the stakes are low."
+    ),
+    "technical": "Use precise terminology and compact implementation detail.",
+}
+
+_DETAIL_INSTRUCTIONS = {
+    "concise": (
+        "Use at most three short sentences or three short steps or bullets unless additional "
+        "prose is required for safety, accuracy, an approval, or truthful completion reporting. "
+        "Include only essential caveats. Do not add background, a full general workflow, a "
+        "restatement of the request, or an offer to do more work."
+    ),
+    "balanced": (
+        "Give enough context to understand and act, normally as a short paragraph or "
+        "compact list."
+    ),
+    "detailed": (
+        "Give thorough reasoning, steps, tradeoffs, and caveats without repetition."
+    ),
+}
+
+_HOME_FOCUS_INSTRUCTION = (
+    "Prioritize requests about operating, configuring, maintaining, or understanding the "
+    "user's home and Home Assistant environment. If a request is clearly unrelated, briefly "
+    "explain that this conversation is in Home-focused mode. When relevance is plausible or "
+    "ambiguous, help normally. Never use Home Assistant tools merely to determine whether a "
+    "request is relevant."
+)
+
+# Private protocol token. It is recognized only while Home-focused mode is active,
+# stripped before display and retention, and never interpreted as user-facing text.
+_HOME_FOCUS_REFUSAL_MARKER = "PHXFOCUS:"
+
+
+def _conversation_behavior_prompt(
+    style: str,
+    detail: str,
+    *,
+    home_focused: bool = False,
+) -> str:
+    """Build the shared presentation contract for Phoenix-owned model surfaces."""
+    style_instruction = _STYLE_INSTRUCTIONS.get(style, _STYLE_INSTRUCTIONS["direct"])
+    detail_instruction = _DETAIL_INSTRUCTIONS.get(detail, _DETAIL_INSTRUCTIONS["concise"])
+    prompt = (
+        "\n\nConversation presentation policy: "
+        f"{style_instruction} {detail_instruction} "
+        "Style and detail affect user-facing prose only. They never change tools, tool "
+        "arguments, verification, factual standards, permissions, approvals, safety decisions, "
+        "or completion claims. Explicit operator tone or detail instructions override these "
+        "defaults for that response. Suspend humor for failures, urgent situations, "
+        "security-sensitive matters, approvals, and destructive actions. Apply the current "
+        "style and detail to this response even when earlier assistant messages used different "
+        "presentation defaults."
+    )
+    if home_focused:
+        prompt += (
+            f"\n\n{_HOME_FOCUS_INSTRUCTION} "
+            "A decline must not answer, solve, summarize, or otherwise provide any part of the "
+            "unrelated request before or after the brief explanation. Do not make an exception "
+            "because the answer is short, easy, harmless, or already known. "
+            "If the complete current request explicitly says to answer anyway, answer normally "
+            "despite Home-focused mode."
+        )
+    return prompt
+
+
+def _home_focus_output_contract(enabled: bool) -> str:
+    """Return the private refusal-marker protocol at the final prompt boundary."""
+    if not enabled:
+        return ""
+    return (
+        "\n\nMandatory final-output protocol for Home-focused mode: If and only if the "
+        "final reply declines the request solely because Home-focused mode is active, output "
+        "exactly one brief refusal paragraph. Its first characters must be the literal sentinel "
+        f"{_HOME_FOCUS_REFUSAL_MARKER} with the refusal immediately after it. Write nothing "
+        "before the sentinel, and do not repeat the refusal or add a second paragraph. Do not "
+        "omit, translate, paraphrase, escape, quote, or format the sentinel as markdown. Never "
+        "output the sentinel for a normal answer, including a request that explicitly says to "
+        "answer anyway."
+    )
+
+
 _AGENTCLI_ADDENDUM = (
     "\n\nYou are the assistant in an interactive chat inside the Home Assistant admin panel. "
-    "The operator is present and reading your replies live. Keep replies concise and take the "
-    "actions the operator asks for directly using the tools above. If an action needs approval "
+    "The operator is present and reading your replies live. Take the actions the operator asks "
+    "for directly using the tools above. The operator may name a home resource imprecisely or "
+    "state a premise that the observed home does not support. For a named resource, initial "
+    "discovery means a narrowly filtered name-and-domain search or the relevant inventory, not "
+    "logs, history, traces, or a sweep of related devices. If initial read-only discovery "
+    "cannot identify a resource the request depends on, or directly contradicts such a premise, "
+    "stop the broad investigation, state the mismatch, and ask one focused clarifying question. "
+    "Do not substitute a merely related entity, integration error, or temporal coincidence. "
+    "Treat correlation as a lead, never as a cause. If an action needs approval "
     "it will surface an inline Approve/Reject control to the operator; you do not need to poll. "
     "An approved action's result stands as accepted exactly as applied: do not second-guess or "
     "adjust it unprompted. A rejection's reason is the operator steering your next proposal: "
@@ -2664,6 +2809,83 @@ class _ModelCallResult:
     usage_input: int
     usage_output: int
     context_tokens: int
+    focus_declined: bool
+
+
+def _strip_focus_marker_text(text: str) -> tuple[str, bool]:
+    """Strip a leading private focus marker while preserving ordinary model text."""
+    stripped = text.lstrip()
+    if not stripped.startswith(_HOME_FOCUS_REFUSAL_MARKER):
+        return text, False
+    return stripped[len(_HOME_FOCUS_REFUSAL_MARKER):].lstrip(), True
+
+
+def _strip_focus_marker_message(message: dict) -> tuple[dict, bool]:
+    """Strip the marker from Anthropic, OpenAI, or Mistral assistant content."""
+    content = message.get("content")
+    if isinstance(content, str):
+        cleaned, found = _strip_focus_marker_text(content)
+        return ({**message, "content": cleaned} if found else message), found
+    if not isinstance(content, list):
+        return message, False
+    for index, block in enumerate(content):
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            continue
+        if not block["text"].strip():
+            continue
+        cleaned, found = _strip_focus_marker_text(block["text"])
+        if not found:
+            return message, False
+        blocks = list(content)
+        blocks[index] = {**block, "text": cleaned}
+        return {**message, "content": blocks}, True
+    return message, False
+
+
+@dataclasses.dataclass
+class _FocusPrefixBuffer:
+    """Hold only enough leading streamed text to recognize the private marker."""
+
+    enabled: bool
+    pending: str = ""
+    decided: bool = False
+    declined: bool = False
+
+    def feed(self, text: str) -> str:
+        if not self.enabled or self.decided:
+            return text
+        self.pending += text
+        candidate = self.pending.lstrip()
+        if len(self.pending) > len(_HOME_FOCUS_REFUSAL_MARKER) + 64:
+            self.decided = True
+            visible = self.pending
+            self.pending = ""
+            return visible
+        if _HOME_FOCUS_REFUSAL_MARKER.startswith(candidate):
+            return ""
+        if candidate.startswith(_HOME_FOCUS_REFUSAL_MARKER):
+            self.decided = True
+            self.declined = True
+            visible, _ = _strip_focus_marker_text(self.pending)
+            self.pending = ""
+            return visible
+        self.decided = True
+        visible = self.pending
+        self.pending = ""
+        return visible
+
+    def finish(self) -> str:
+        if not self.pending:
+            return ""
+        if self.pending.lstrip() == _HOME_FOCUS_REFUSAL_MARKER:
+            self.pending = ""
+            self.decided = True
+            self.declined = True
+            return ""
+        visible = self.pending
+        self.pending = ""
+        self.decided = True
+        return visible
 
 
 async def _consume_model_stream(
@@ -2679,6 +2901,7 @@ async def _consume_model_stream(
     usage_done_input: int,
     usage_done_output: int,
     context_tokens: int,
+    detect_focus_refusal: bool = False,
 ) -> _ModelCallResult:
     """Drain one model call's normalized event stream into a result.
 
@@ -2694,6 +2917,8 @@ async def _consume_model_stream(
     errored = False
     saw_text = False
     usage_cur_input = usage_cur_output = 0
+    focus = _FocusPrefixBuffer(enabled=detect_focus_refusal)
+    focus_event_emitted = False
 
     async for ev in _stream_turn_resilient(
         provider, session, system_prompt=system, messages=messages,
@@ -2701,8 +2926,13 @@ async def _consume_model_stream(
     ):
         etype = ev["type"]
         if etype == EV_TEXT:
-            saw_text = True
-            await emit("assistant_delta", {"text": ev["text"]})
+            visible = focus.feed(ev["text"])
+            if focus.declined and not focus_event_emitted:
+                await emit("focus_declined", {})
+                focus_event_emitted = True
+            if visible:
+                saw_text = True
+                await emit("assistant_delta", {"text": visible})
         elif etype == EV_THINKING:
             await emit("thinking_delta", {"text": ev["text"]})
         elif etype == EV_TOOL:
@@ -2720,6 +2950,15 @@ async def _consume_model_stream(
         elif etype == EV_DONE:
             stop_reason = ev["stop_reason"]
             assistant_msg = ev["assistant_msg"]
+            if detect_focus_refusal and assistant_msg is not None:
+                assistant_msg, message_declined = _strip_focus_marker_message(assistant_msg)
+                focus.declined = focus.declined or message_declined
+                if message_declined and not focus.decided:
+                    focus.pending = ""
+                    focus.decided = True
+                if focus.declined and not focus_event_emitted:
+                    await emit("focus_declined", {})
+                    focus_event_emitted = True
         elif etype == EV_ERROR:
             await emit("error", {"code": ev.get("code"), "message": ev.get("message"),
                                  "retryable": ev.get("retryable", False),
@@ -2737,11 +2976,20 @@ async def _consume_model_stream(
                                  **({"refused": ev["refused"]} if ev.get("refused") else {})})
             errored = True
 
+    trailing = focus.finish()
+    if focus.declined and not focus_event_emitted:
+        await emit("focus_declined", {})
+        focus_event_emitted = True
+    if trailing:
+        saw_text = True
+        await emit("assistant_delta", {"text": trailing})
+
     return _ModelCallResult(
         tool_calls=tool_calls, assistant_msg=assistant_msg, stop_reason=stop_reason,
         errored=errored, saw_text=saw_text,
         usage_input=usage_cur_input, usage_output=usage_cur_output,
         context_tokens=context_tokens,
+        focus_declined=focus.declined,
     )
 
 
@@ -2880,8 +3128,9 @@ async def _run_tool_batch(
             })
         await emit("tool_result", {"id": tc.get("id"), "name": name,
                                    "is_error": is_error, "summary": _clip_display(text)})
+        model_text = _agentcli_add_resource_match_guidance(name, args, text)
         results.append({"tool_use_id": tc.get("id"), "tool_name": name,
-                        "result_text": text, "images": images, "is_error": is_error})
+                        "result_text": model_text, "images": images, "is_error": is_error})
 
     return _ToolBatchResult(
         results=results, human_resolved=human_resolved,
@@ -2897,6 +3146,9 @@ async def async_run_agent_turn(
     emit: Callable[[str, dict], Awaitable[None]],
     cancel: asyncio.Event,
     max_iterations: int = AGENTCLI_MAX_ITERATIONS,
+    conversation_style: str = CONVERSATION_STYLE_DIRECT,
+    detail_level: str = DETAIL_LEVEL_CONCISE,
+    home_focused: bool = False,
 ) -> list[dict]:
     """Run one user turn to completion, streaming SSE events. Returns updated messages.
 
@@ -2911,7 +3163,11 @@ async def async_run_agent_turn(
     system = (
         _build_instructions(token, data, base_url)
         + _agentcli_time_context(hass)
+        + _conversation_behavior_prompt(
+            conversation_style, detail_level, home_focused=home_focused,
+        )
         + _AGENTCLI_ADDENDUM
+        + _home_focus_output_contract(home_focused)
     )
     # Current local time is supplied above on every user turn. Keeping GetDateTime
     # out of this one catalog prevents a model from redundantly calling it at the
@@ -2974,6 +3230,7 @@ async def async_run_agent_turn(
             options=options, cancel=cancel, emit=emit,
             usage_done_input=usage_done_input, usage_done_output=usage_done_output,
             context_tokens=context_tokens,
+            detect_focus_refusal=home_focused,
         )
         tool_calls = call.tool_calls
         assistant_msg = call.assistant_msg
@@ -3103,6 +3360,7 @@ class _HeadlessTurnResult:
     review_urls: list[str]
     outcome: str = TURN_OK
     detail: str = ""
+    focus_declined: bool = False
 
 
 async def _run_headless_turn(
@@ -3117,6 +3375,7 @@ async def _run_headless_turn(
     seed: str,
     client_ip: str,
     max_iterations: int,
+    detect_focus_refusal: bool = False,
 ) -> _HeadlessTurnResult:
     """Run one headless model/tool turn to completion.
 
@@ -3161,18 +3420,20 @@ async def _run_headless_turn(
     # round that exhausts the budget is by definition a tool round, which has
     # already reset final_text, so the caller would otherwise receive "".
     exhausted = True
+    focus_declined = False
 
     for _ in range(max_iterations):
         tool_calls: list[dict] = []
         assistant_msg: dict | None = None
         stop_reason = "end_turn"
+        call_text = ""
         async for ev in _stream_turn_resilient(
             provider, session, system_prompt=system, messages=messages,
             tools=tools, options={}, cancel=cancel,
         ):
             etype = ev["type"]
             if etype == EV_TEXT:
-                final_text += ev["text"]
+                call_text += ev["text"]
             elif etype == EV_TOOL:
                 tool_calls.append(ev)
             elif etype == EV_DONE:
@@ -3182,12 +3443,21 @@ async def _run_headless_turn(
                 return _HeadlessTurnResult(
                     final_text, review_urls, outcome=TURN_PROVIDER_ERROR,
                     detail=str(ev.get("message") or _HEADLESS_PROVIDER_ERROR),
+                    focus_declined=focus_declined,
                 )
+        if detect_focus_refusal:
+            call_text, text_declined = _strip_focus_marker_text(call_text)
+            focus_declined = focus_declined or text_declined
+            if assistant_msg is not None:
+                assistant_msg, message_declined = _strip_focus_marker_message(assistant_msg)
+                focus_declined = focus_declined or message_declined
+        final_text += call_text
         if assistant_msg is not None:
             prospective = turn_output_bytes + len(json.dumps(assistant_msg, default=str))
             if prospective > AGENTCLI_MAX_TURN_OUTPUT_BYTES:
                 return _HeadlessTurnResult(
                     final_text, review_urls, outcome=TURN_OUTPUT_LIMIT,
+                    focus_declined=focus_declined,
                 )
             provider.append_assistant(messages, assistant_msg)
             turn_output_bytes = prospective
@@ -3253,25 +3523,61 @@ async def _run_headless_turn(
         # also cannot be inferred from the outside - the closing round often ends
         # normally, so without this the turn looked like an ordinary success that
         # happened to produce nothing.
-        return _HeadlessTurnResult(final_text, review_urls, outcome=TURN_AUTHORITY_LOST)
+        return _HeadlessTurnResult(
+            final_text, review_urls, outcome=TURN_AUTHORITY_LOST,
+            focus_declined=focus_declined,
+        )
     if exhausted:
-        return _HeadlessTurnResult(final_text, review_urls, outcome=TURN_EXHAUSTED)
+        return _HeadlessTurnResult(
+            final_text, review_urls, outcome=TURN_EXHAUSTED,
+            focus_declined=focus_declined,
+        )
     if stop_reason == "max_tokens":
         # The model stopped at its OWN output limit, so `text` is a sentence that
         # was cut off mid-thought. Reported rather than returned bare: a spoken
         # half-answer gets acted on, and a half-written JSON document fails to
         # parse and is then blamed on the model's formatting.
-        return _HeadlessTurnResult(final_text, review_urls, outcome=TURN_TRUNCATED)
-    return _HeadlessTurnResult(final_text, review_urls)
+        return _HeadlessTurnResult(
+            final_text, review_urls, outcome=TURN_TRUNCATED,
+            focus_declined=focus_declined,
+        )
+    return _HeadlessTurnResult(
+        final_text, review_urls, focus_declined=focus_declined,
+    )
 
 
 _VOICE_ADDENDUM = (
     "\n\nYou are answering the user through Home Assistant's voice/chat assistant. "
-    "Keep replies brief and spoken-friendly. Use the tools above to answer or act. "
+    "Keep replies spoken-friendly, even when the selected detail level is Detailed. "
+    "Use the tools above to answer or act. "
     "If a tool result says \"queued_for_approval\", the action has NOT happened yet: it is "
     "waiting for an administrator to approve it in the Phoenix MCP panel. Tell the user it is queued "
     "for approval; do not retry it and do not claim it is done."
 )
+
+
+_VOICE_HOME_FOCUS_BYPASS_PHRASES: dict[str, tuple[str, ...]] = {
+    "en": ("answer anyway",),
+    "de": ("trotzdem antworten", "trotzdem geantwortet"),
+    "es": ("responde de todos modos", "responder de todos modos"),
+    "fr": ("réponds quand même", "répondre quand même"),
+    "ja": ("そのまま回答",),
+    "ko": ("그래도 답변",),
+    "nl": ("toch antwoorden", "toch moet worden geantwoord"),
+    "pl": ("mimo to odpowiedz", "mimo to odpowiedzieć"),
+    "ru": ("ответь в любом случае", "ответить в любом случае"),
+    "zh-Hans": ("仍然回答",),
+    "zh-Hant": ("仍然回答",),
+}
+
+
+def _voice_home_focus_bypass(user_text: str, language: object = None) -> bool:
+    """Recognize the localized explicit Voice override phrase deterministically."""
+    normalized = " ".join(user_text.casefold().split())
+    phrases = _VOICE_HOME_FOCUS_BYPASS_PHRASES.get(canonical_language(language), ())
+    # English remains accepted in every pipeline as the documented protocol
+    # literal, while the conversation language accepts its spoken equivalent.
+    return any(phrase.casefold() in normalized for phrase in (*phrases, "answer anyway"))
 
 
 async def async_run_voice_turn(
@@ -3311,10 +3617,26 @@ async def async_run_voice_turn(
     """
     from .mcp_view import _build_instructions  # noqa: PLC0415
 
+    settings = data.store.get_settings()
+    home_focused = settings.voice_agent_home_focused and not _voice_home_focus_bypass(
+        user_text, language
+    )
+    behavior = _conversation_behavior_prompt(
+        settings.voice_agent_conversation_style,
+        settings.voice_agent_detail_level,
+        home_focused=home_focused,
+    )
+
     turn = await _run_headless_turn(
         hass, data, token, provider, session, base_url,
-        system=_build_instructions(token, data, base_url) + _VOICE_ADDENDUM,
+        system=(
+            _build_instructions(token, data, base_url)
+            + behavior
+            + _VOICE_ADDENDUM
+            + _home_focus_output_contract(home_focused)
+        ),
         seed=user_text, client_ip=VOICE_AGENT_CLIENT_IP, max_iterations=max_iterations,
+        detect_focus_refusal=home_focused,
     )
     # Never raise at a microphone: every ending becomes something sayable, in the
     # CONVERSATION's language (voice_text), not the server's. A partial answer the
@@ -3332,7 +3654,16 @@ async def async_run_voice_turn(
         # of steps is a tool round, which has already reset the text.
         return voice_text(language, "out_of_steps")
 
-    answer = turn.text.strip() or voice_text(language, "could_not_complete")
+    if turn.focus_declined:
+        # A weak model can emit a marked refusal and then answer the unrelated
+        # request anyway. Voice has no visible transcript to preserve, so render
+        # the refusal deterministically and never speak the model's mixed content.
+        answer = (
+            f"{voice_text(language, 'focus_declined')} "
+            f"{voice_text(language, 'focus_answer_anyway')}"
+        )
+    else:
+        answer = turn.text.strip() or voice_text(language, "could_not_complete")
     if turn.outcome == TURN_TRUNCATED and turn.text.strip():
         # Said out loud, because a cut-off answer is acted on as a whole one.
         answer = f"{answer} {voice_text(language, 'answer_truncated')}"
@@ -3358,6 +3689,18 @@ _AI_TASK_STRUCTURE_DIRECTIVE = (
     "\n\nYour final message MUST be a single valid JSON value conforming to this JSON "
     "schema, with no prose, explanation, or markdown code fences:\n{schema}"
 )
+
+
+def _ai_task_free_text_output_contract(style: str, detail: str) -> str:
+    """Repeat free-text presentation defaults at AI Task's final-output boundary."""
+    style_instruction = _STYLE_INSTRUCTIONS.get(style, _STYLE_INSTRUCTIONS["direct"])
+    detail_instruction = _DETAIL_INSTRUCTIONS.get(detail, _DETAIL_INSTRUCTIONS["balanced"])
+    return (
+        "\n\nAI Task free-text output contract: "
+        f"{style_instruction} {detail_instruction} "
+        "Return only the requested data. Do not mention tools, available entities, the task "
+        "process, or additional work Phoenix could do unless the task instructions request it."
+    )
 
 
 class AiTaskError(Exception):
@@ -3390,8 +3733,20 @@ async def async_run_ai_task(
     """
     from .mcp_view import _build_instructions  # noqa: PLC0415
 
-    system = _build_instructions(token, data, base_url) + _AI_TASK_ADDENDUM
-    if structure_json is not None:
+    settings = data.store.get_settings()
+    system = _build_instructions(token, data, base_url)
+    if structure_json is None:
+        system += _conversation_behavior_prompt(
+            settings.ai_task_conversation_style,
+            settings.ai_task_detail_level,
+        )
+    system += _AI_TASK_ADDENDUM
+    if structure_json is None:
+        system += _ai_task_free_text_output_contract(
+            settings.ai_task_conversation_style,
+            settings.ai_task_detail_level,
+        )
+    else:
         system += _AI_TASK_STRUCTURE_DIRECTIVE.format(schema=json.dumps(structure_json))
 
     turn = await _run_headless_turn(
@@ -3497,7 +3852,8 @@ class PhoenixAgentCliChatView(PhoenixView):
         # Agent Chat bypasses async_get_authenticated_token (it is admin-authed, not
         # bearer-authed), so it must enforce the same invariants that gate every
         # MCP request: shutdown, the runtime kill switch, and token validity.
-        if not data.ready or data.shutting_down or data.store.get_settings().kill_switch:
+        settings = data.store.get_settings()
+        if not data.ready or data.shutting_down or settings.kill_switch:
             return _err(
                 "service_unavailable", "Phoenix MCP is disabled (kill switch).", 503, rid,
                 key="serviceDisabled",
@@ -3533,7 +3889,20 @@ class PhoenixAgentCliChatView(PhoenixView):
         messages = body.get("messages")
         if not isinstance(messages, list):
             messages = []
+        bypass_supplied = "home_focus_bypass" in body
+        home_focus_bypass = body.get("home_focus_bypass", False)
+        if bypass_supplied and not isinstance(home_focus_bypass, bool):
+            return _err(
+                "invalid_request", "home_focus_bypass must be a boolean (true or false).",
+                400, rid, key="booleanRequired", params={"field": "home_focus_bypass"},
+            )
         if body.get("continue") is True:
+            if bypass_supplied:
+                return _err(
+                    "invalid_request",
+                    "home_focus_bypass is valid only with a new user message.",
+                    400, rid, key="homeFocusBypassNewMessage",
+                )
             # Resume a turn that paused at the round-cap checkpoint: no new user
             # message is appended; the model continues from the tool results the
             # prior turn left behind. Requires an existing conversation.
@@ -3608,7 +3977,10 @@ class PhoenixAgentCliChatView(PhoenixView):
                 hass=self.hass, data=data, token=token, provider=provider,
                 session=session, messages=messages, options=options or {},
                 client_ip=client_ip, base_url=base_url, emit=emit, cancel=cancel,
-                max_iterations=data.store.get_settings().agentcli_max_iterations,
+                max_iterations=settings.agentcli_max_iterations,
+                conversation_style=settings.agentcli_conversation_style,
+                detail_level=settings.agentcli_detail_level,
+                home_focused=settings.agentcli_home_focused and not home_focus_bypass,
             )
         except Exception:  # noqa: BLE001 - never leak internals to the client
             _LOGGER.exception("agentCLI turn failed")

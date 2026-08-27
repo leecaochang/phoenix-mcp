@@ -1256,6 +1256,40 @@ async def test_settings_patch_agentcli_max_iterations_persists_and_clamps():
 
 
 @pytest.mark.asyncio
+async def test_settings_patch_conversation_behavior_validates_closed_enums():
+    data = _make_data()
+    data.store.async_patch_settings = AsyncMock(return_value=GlobalSettings())
+    hass = _make_hass(data)
+    view = PhoenixAdminSettingsView()
+    view.hass = hass
+
+    valid = {
+        "agentcli_conversation_style": "warm",
+        "agentcli_detail_level": "detailed",
+        "agentcli_home_focused": True,
+        "voice_agent_conversation_style": "calm_guide",
+        "voice_agent_detail_level": "balanced",
+        "voice_agent_home_focused": True,
+        "ai_task_conversation_style": "technical",
+        "ai_task_detail_level": "concise",
+    }
+    resp = await view.patch(_make_admin_request(body=json.dumps(valid).encode()))
+    assert resp.status == 200
+    assert data.store.async_patch_settings.call_args.kwargs == valid
+
+    for body in (
+        {"agentcli_conversation_style": "chatty"},
+        {"ai_task_conversation_style": ["warm"]},
+        {"voice_agent_detail_level": "maximum"},
+        {"agentcli_home_focused": "yes"},
+    ):
+        data.store.async_patch_settings.reset_mock()
+        resp = await view.patch(_make_admin_request(body=json.dumps(body).encode()))
+        assert resp.status == 400
+        data.store.async_patch_settings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_settings_patch_mesa_mode_valid_updates_enforcer():
     data = _make_data()
     data.store.async_patch_settings = AsyncMock(return_value=GlobalSettings(mesa_mode="enforced"))

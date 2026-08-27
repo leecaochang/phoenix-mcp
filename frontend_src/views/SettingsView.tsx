@@ -133,6 +133,12 @@ export function SettingsView({ settings, onSettingsChange, theme, onThemeChange,
             onMaxIterationsChange={(n) => patchSetting("agentcli_max_iterations", n)}
             globalVisible={settings.agentcli_global}
             onGlobalChange={(v) => patchSetting("agentcli_global", v)}
+            conversationStyle={settings.agentcli_conversation_style}
+            onConversationStyleChange={(v) => patchSetting("agentcli_conversation_style", v)}
+            detailLevel={settings.agentcli_detail_level}
+            onDetailLevelChange={(v) => patchSetting("agentcli_detail_level", v)}
+            homeFocused={settings.agentcli_home_focused}
+            onHomeFocusedChange={(v) => patchSetting("agentcli_home_focused", v)}
             saving={saving}
           />
 

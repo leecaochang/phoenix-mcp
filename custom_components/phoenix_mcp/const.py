@@ -274,6 +274,30 @@ AGENTCLI_CLIENT_IP = "agentcli"
 AGENTCLI_SCROLLBACK_DEFAULT = 100
 AGENTCLI_SCROLLBACK_MIN = 0
 AGENTCLI_SCROLLBACK_MAX = 5000
+
+# Server-owned conversation behavior values. These are persisted settings rather
+# than provider options: every provider receives the same prompt contract, and
+# invalid or retired values fall back safely when older storage is loaded.
+CONVERSATION_STYLE_DIRECT = "direct"
+CONVERSATION_STYLE_WARM = "warm"
+CONVERSATION_STYLE_CALM_GUIDE = "calm_guide"
+CONVERSATION_STYLE_LIVELY = "lively"
+CONVERSATION_STYLE_TECHNICAL = "technical"
+CONVERSATION_STYLES = frozenset({
+    CONVERSATION_STYLE_DIRECT,
+    CONVERSATION_STYLE_WARM,
+    CONVERSATION_STYLE_CALM_GUIDE,
+    CONVERSATION_STYLE_LIVELY,
+    CONVERSATION_STYLE_TECHNICAL,
+})
+DETAIL_LEVEL_CONCISE = "concise"
+DETAIL_LEVEL_BALANCED = "balanced"
+DETAIL_LEVEL_DETAILED = "detailed"
+DETAIL_LEVELS = frozenset({
+    DETAIL_LEVEL_CONCISE,
+    DETAIL_LEVEL_BALANCED,
+    DETAIL_LEVEL_DETAILED,
+})
 # Display-only cap on the tool-result text streamed to the verbose panel view
 # (the model always receives the full result via the message history). Large
 # enough that ordinary results are shown whole; only pathological dumps clip.
@@ -1579,6 +1603,13 @@ VOICE_TEMPLATES: dict[str, str] = {
     "provider_error": "Sorry, {reason}.",
     "output_limit": "Sorry, the model produced too much output, so I stopped.",
     "out_of_steps": "Sorry, I ran out of steps before finishing that.",
+    "focus_declined": (
+        "This conversation is in Home-focused mode, so I can only help with requests "
+        "about your home and Home Assistant."
+    ),
     # Appended after a real answer, so it is a follow-on sentence, not a reply.
     "answer_truncated": "I had to stop before finishing.",
+    "focus_answer_anyway": (
+        "To continue, repeat your complete request and explicitly say to answer anyway."
+    ),
 }

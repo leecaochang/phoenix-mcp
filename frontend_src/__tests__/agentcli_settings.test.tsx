@@ -78,6 +78,12 @@ function renderCard() {
       onMaxIterationsChange={() => {}}
       globalVisible={false}
       onGlobalChange={() => {}}
+      conversationStyle="direct"
+      onConversationStyleChange={() => {}}
+      detailLevel="concise"
+      onDetailLevelChange={() => {}}
+      homeFocused={false}
+      onHomeFocusedChange={() => {}}
       saving={false}
     />,
   );
@@ -246,12 +252,46 @@ describe("AgentCliSettings", () => {
         onMaxIterationsChange={() => {}}
         globalVisible={false}
         onGlobalChange={onGlobal}
+        conversationStyle="direct"
+        onConversationStyleChange={() => {}}
+        detailLevel="concise"
+        onDetailLevelChange={() => {}}
+        homeFocused={false}
+        onHomeFocusedChange={() => {}}
         saving={false}
       />,
     );
     await waitFor(() => expect(getAgentCliProviders).toHaveBeenCalled());
     fireEvent.click(screen.getByLabelText("Show Agent Chat throughout Home Assistant"));
     expect(onGlobal).toHaveBeenCalledWith(true);
+  });
+
+  it("renders and saves Agent Chat conversation behavior controls", async () => {
+    const onStyle = vi.fn();
+    const onDetail = vi.fn();
+    const onFocus = vi.fn();
+    render(
+      <AgentCliSettings
+        scrollback={100} onScrollbackChange={() => {}}
+        maxIterations={20} onMaxIterationsChange={() => {}}
+        globalVisible={false} onGlobalChange={() => {}}
+        conversationStyle="direct" onConversationStyleChange={onStyle}
+        detailLevel="concise" onDetailLevelChange={onDetail}
+        homeFocused={false} onHomeFocusedChange={onFocus}
+        saving={false}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Agent Chat conversation style"), {
+      target: { value: "warm" },
+    });
+    fireEvent.change(screen.getByLabelText("Agent Chat detail level"), {
+      target: { value: "detailed" },
+    });
+    fireEvent.click(screen.getByLabelText("Agent Chat Home-focused mode"));
+    expect(onStyle).toHaveBeenCalledWith("warm");
+    expect(onDetail).toHaveBeenCalledWith("detailed");
+    expect(onFocus).toHaveBeenCalledWith(true);
+    expect(screen.getByText(/Focus preference, not a security control/)).toBeInTheDocument();
   });
 
   it("chat memory auto-saves after a change without an explicit blur (spinner fix)", () => {
@@ -266,6 +306,12 @@ describe("AgentCliSettings", () => {
           onMaxIterationsChange={() => {}}
           globalVisible={false}
           onGlobalChange={() => {}}
+          conversationStyle="direct"
+          onConversationStyleChange={() => {}}
+          detailLevel="concise"
+          onDetailLevelChange={() => {}}
+          homeFocused={false}
+          onHomeFocusedChange={() => {}}
           saving={false}
         />,
       );

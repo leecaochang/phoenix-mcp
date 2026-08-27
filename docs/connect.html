@@ -136,9 +136,11 @@
         <p>If you would rather not install a separate LLM app, Phoenix MCP can register itself as a conversation agent and run its own model, using an existing <a href="agentcli.html">Agent Chat</a> provider account.</p>
         <ol>
           <li>In <strong>Settings > Voice Agent</strong> (the Phoenix MCP panel), enable it and pick a token, a provider account, and a model.</li>
+          <li>Choose its <strong>Conversation style</strong> and <strong>Detail</strong>. Optionally enable <strong>Home-focused</strong>, a focus preference rather than a security control. The next request uses any changed setting immediately.</li>
           <li>Let Phoenix MCP set it up for you: on the first enable it offers to create an Assist assistant pointed at Phoenix MCP (and, if you leave the option on, make it your preferred assistant). Or use <strong>Set up Phoenix MCP assistant</strong> in that card any time.</li>
           <li>Prefer to do it by hand? In <strong>Settings > Voice assistants</strong>, set your assistant's conversation agent to <strong>Phoenix MCP</strong>.</li>
         </ol>
+        <p>When the model marks a Home-focused voice refusal using Phoenix's private protocol, Phoenix replaces the model prose with a localized refusal and asks you to repeat the complete request and explicitly say to answer anyway. Phoenix recognizes that explicit phrase deterministically in the conversation language (and always accepts the English words <q>answer anyway</q>), bypasses Home focus for that request only, and restores it on the next request. The rejected utterance is not retained. A model that omits the private marker is handled normally without Phoenix guessing from its prose, so weaker models may refuse without giving the recovery instruction. Even at Detailed, Voice keeps replies suitable for speaking aloud.</p>
 
         <div class="callout warn">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
@@ -153,6 +155,7 @@
         <p>Home Assistant's <strong>AI Task</strong> feature lets an automation, script, or dashboard ask an AI model to produce text or structured data on demand, through the <code>ai_task.generate_data</code> action. Phoenix MCP can be that model: it registers an <strong>Phoenix MCP AI Task</strong> entity that runs Phoenix MCP's own model on a token's scope, so a task reads only what the token can see and every tool call it makes is gated, MESA-checked, and audited like any other. Requires Home Assistant 2025.7 or later (AI Task shipped then; the panel disables this card on older versions). Like Agent Chat, the model comes from a provider account, so each task's prompt and the tool results the model sees are sent to that provider; use a local Ollama account to keep tasks fully local.</p>
         <ol>
           <li>In <strong>Settings > AI Task</strong> (the Phoenix MCP panel), enable it and pick a token, an <a href="agentcli.html">Agent Chat</a> provider account, and a model. The <strong>Phoenix MCP AI Task</strong> entity appears once all four are set, and disappears again if you disable it or clear one of them.</li>
+          <li>Choose a <strong>Conversation style</strong> and <strong>Detail</strong> for free-text results. Structured tasks omit both preferences and follow their output schema exactly.</li>
           <li>Optionally click <strong>Make default</strong> in the AI Task setup section to make Phoenix MCP your default entity for Data generation tasks, so an <code>ai_task.generate_data</code> action that does not name an entity runs through Phoenix MCP. Home Assistant keeps a single default, so the panel confirms before replacing an existing one.</li>
           <li>Point an AI Task action at the <strong>Phoenix MCP AI Task</strong> entity by <code>entity_id</code>, or leave the entity unset to use your default.</li>
         </ol>
@@ -170,7 +173,7 @@
     data:
       title: Home summary
       message: "{{ result.data }}"</code></pre>
-        <p>Pass a <code>structure</code> to the action and Phoenix MCP returns a validated JSON object instead of prose (for example <code>{ "count": 3, "names": [&hellip;] }</code>), which an automation can branch on directly.</p>
+        <p>Pass a <code>structure</code> to the action and Phoenix MCP returns a validated JSON object instead of prose (for example <code>{ "count": 3, "names": [&hellip;] }</code>), which an automation can branch on directly. Conversation style and Detail are omitted for this structured path so presentation preferences cannot compete with the schema.</p>
 
         <div class="callout note">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>

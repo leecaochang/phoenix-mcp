@@ -122,6 +122,9 @@ export interface ArchivedTokenRecord {
   last_used_at: string | null;
 }
 
+export type ConversationStyle = "direct" | "warm" | "calm_guide" | "lively" | "technical";
+export type DetailLevel = "concise" | "balanced" | "detailed";
+
 export interface GlobalSettings {
   kill_switch: boolean;
   disable_all_logging: boolean;
@@ -140,6 +143,9 @@ export interface GlobalSettings {
   agentcli_scrollback_lines: number;
   agentcli_max_iterations: number;
   agentcli_global: boolean;
+  agentcli_conversation_style: ConversationStyle;
+  agentcli_detail_level: DetailLevel;
+  agentcli_home_focused: boolean;
   // Assist bridge: the token id whose scoped tools HA's native Assist/voice
   // pipeline resolves against (null = unbound). Writable.
   assist_bound_token_id?: string | null;
@@ -152,6 +158,9 @@ export interface GlobalSettings {
   voice_agent_token_id?: string | null;
   voice_agent_provider_id?: string | null;
   voice_agent_model?: string | null;
+  voice_agent_conversation_style?: ConversationStyle;
+  voice_agent_detail_level?: DetailLevel;
+  voice_agent_home_focused?: boolean;
   // Id of the Assist pipeline Phoenix MCP created via the one-click setup (null when set up
   // manually or not run). Read-only from the panel's perspective (set by the helper).
   voice_agent_pipeline_id?: string | null;
@@ -163,6 +172,8 @@ export interface GlobalSettings {
   ai_task_token_id?: string | null;
   ai_task_provider_id?: string | null;
   ai_task_model?: string | null;
+  ai_task_conversation_style?: ConversationStyle;
+  ai_task_detail_level?: DetailLevel;
   // Read-only: whether the running HA exposes the AI Task entity platform.
   ai_task_supported?: boolean;
   // Read-only: which ESPHome surfaces exist on this system (server-computed).

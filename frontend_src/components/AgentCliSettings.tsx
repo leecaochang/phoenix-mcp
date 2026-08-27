@@ -3,10 +3,11 @@ import { api } from "../api";
 import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
 import { effortLevelLabel, formatDateTime } from "../utils";
-import type { AgentCliInstance, AgentCliProviderType } from "../types";
+import type { AgentCliInstance, AgentCliProviderType, ConversationStyle, DetailLevel } from "../types";
 import { t } from "../i18n";
 import { tRich } from "../i18n/rich";
 import { ProviderAddForm } from "./ProviderAddForm";
+import { ConversationBehaviorControls } from "./ConversationBehaviorControls";
 
 // Which account warnings the operator has closed. Persisted, because the point
 // of closing one is that it stays closed across visits; an in-memory dismissal
@@ -168,10 +169,20 @@ interface Props {
   onMaxIterationsChange: (n: number) => void;
   globalVisible: boolean;
   onGlobalChange: (v: boolean) => void;
+  conversationStyle: ConversationStyle;
+  onConversationStyleChange: (v: ConversationStyle) => void;
+  detailLevel: DetailLevel;
+  onDetailLevelChange: (v: DetailLevel) => void;
+  homeFocused: boolean;
+  onHomeFocusedChange: (v: boolean) => void;
   saving: boolean;
 }
 
-export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations, onMaxIterationsChange, globalVisible, onGlobalChange, saving }: Props) {
+export function AgentCliSettings({
+  scrollback, onScrollbackChange, maxIterations, onMaxIterationsChange,
+  globalVisible, onGlobalChange, conversationStyle, onConversationStyleChange,
+  detailLevel, onDetailLevelChange, homeFocused, onHomeFocusedChange, saving,
+}: Props) {
   const [instances, setInstances] = useState<AgentCliInstance[] | null>(null);
   const [providerTypes, setProviderTypes] = useState<AgentCliProviderType[]>([]);
   const [busy, setBusy] = useState(false);
@@ -638,6 +649,16 @@ export function AgentCliSettings({ scrollback, onScrollbackChange, maxIterations
           onKeyDown={(e) => { if (e.key === "Enter") commitMaxIterNow(maxIterInput); }}
         />
       </div>
+      <ConversationBehaviorControls
+        surface={t("settings.agentcliCard")}
+        style={conversationStyle}
+        detail={detailLevel}
+        homeFocused={homeFocused}
+        saving={saving}
+        onStyleChange={onConversationStyleChange}
+        onDetailChange={onDetailLevelChange}
+        onHomeFocusedChange={onHomeFocusedChange}
+      />
     </div>
   );
 }

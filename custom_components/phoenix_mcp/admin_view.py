@@ -2004,7 +2004,16 @@ _BOOL_SETTINGS = frozenset({
     "kill_switch", "disable_all_logging", "log_allowed", "log_denied",
     "log_rate_limited", "log_entity_names", "log_client_ip", "notify_on_rate_limit",
     "notify_on_approval", "mesa_inject_enabled", "token_presets_enabled",
-    "agentcli_global", "voice_agent_enabled", "ai_task_enabled",
+    "agentcli_global", "agentcli_home_focused", "voice_agent_enabled",
+    "voice_agent_home_focused", "ai_task_enabled",
+})
+
+_CONVERSATION_STYLE_SETTINGS = frozenset({
+    "agentcli_conversation_style", "voice_agent_conversation_style",
+    "ai_task_conversation_style",
+})
+_DETAIL_LEVEL_SETTINGS = frozenset({
+    "agentcli_detail_level", "voice_agent_detail_level", "ai_task_detail_level",
 })
 
 # Nullable string settings: None/"" clears, anything else must be a string.
@@ -2025,7 +2034,7 @@ _PATCHABLE_SETTINGS = _BOOL_SETTINGS | {
     "audit_flush_interval", "audit_log_maxlen", "mesa_mode",
     "agentcli_scrollback_lines", "agentcli_max_iterations", "assist_bound_token_id",
     *_NULLABLE_STRING_SETTINGS,
-}
+} | _CONVERSATION_STYLE_SETTINGS | _DETAIL_LEVEL_SETTINGS
 
 
 def _coerce_int_setting(
@@ -2101,6 +2110,23 @@ async def _validated_settings_patch(
             400, rid, key="valueAllowed",
             params={"field": "mesa_mode", "values": ", ".join(sorted(MESA_MODES))},
         )
+
+    from .const import CONVERSATION_STYLES, DETAIL_LEVELS  # noqa: PLC0415
+
+    for key in _CONVERSATION_STYLE_SETTINGS & patchable.keys():
+        if not isinstance(patchable[key], str) or patchable[key] not in CONVERSATION_STYLES:
+            return {}, _err(
+                "invalid_request", f"{key} must be one of: {sorted(CONVERSATION_STYLES)}.",
+                400, rid, key="valueAllowed",
+                params={"field": key, "values": ", ".join(sorted(CONVERSATION_STYLES))},
+            )
+    for key in _DETAIL_LEVEL_SETTINGS & patchable.keys():
+        if not isinstance(patchable[key], str) or patchable[key] not in DETAIL_LEVELS:
+            return {}, _err(
+                "invalid_request", f"{key} must be one of: {sorted(DETAIL_LEVELS)}.",
+                400, rid, key="valueAllowed",
+                params={"field": key, "values": ", ".join(sorted(DETAIL_LEVELS))},
+            )
 
     int_checks = (
         ("audit_flush_interval", {"allowed": _VALID_FLUSH_INTERVALS}),

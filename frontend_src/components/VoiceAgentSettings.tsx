@@ -4,6 +4,7 @@ import { api } from "../api";
 import { Modal } from "./Modal";
 import { DocsHelpLink } from "./common";
 import { t } from "../i18n";
+import { ConversationBehaviorControls } from "./ConversationBehaviorControls";
 
 // Voice Agent settings card. Registers Phoenix MCP as a Home Assistant conversation agent
 // so "Phoenix MCP" appears in Settings > Voice assistants and runs Phoenix MCP's own model loop on
@@ -168,6 +169,17 @@ export function VoiceAgentSettings({
           ))}
         </select>
       </div>
+
+      <ConversationBehaviorControls
+        surface={t("settings.voiceCard")}
+        style={settings.voice_agent_conversation_style ?? "direct"}
+        detail={settings.voice_agent_detail_level ?? "concise"}
+        homeFocused={settings.voice_agent_home_focused ?? false}
+        saving={saving}
+        onStyleChange={(value) => onChange("voice_agent_conversation_style", value)}
+        onDetailChange={(value) => onChange("voice_agent_detail_level", value)}
+        onHomeFocusedChange={(value) => onChange("voice_agent_home_focused", value)}
+      />
 
       {pipelineSupported && (
         <div className="toggle-row toggle-row-plain settings-toggle-mt">

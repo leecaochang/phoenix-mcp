@@ -274,12 +274,53 @@ class TestGlobalSettings:
         assert s.kill_switch is False
         assert s.log_allowed is True
         assert s.notify_on_rate_limit is False
+        assert (s.agentcli_conversation_style, s.agentcli_detail_level,
+                s.agentcli_home_focused) == ("direct", "concise", False)
+        assert (s.voice_agent_conversation_style, s.voice_agent_detail_level,
+                s.voice_agent_home_focused) == ("direct", "concise", False)
+        assert (s.ai_task_conversation_style, s.ai_task_detail_level) == (
+            "direct", "balanced",
+        )
 
     def test_round_trip(self):
-        s = GlobalSettings(kill_switch=True, log_client_ip=False)
+        s = GlobalSettings(
+            kill_switch=True, log_client_ip=False,
+            agentcli_conversation_style="warm", agentcli_detail_level="detailed",
+            agentcli_home_focused=True,
+            voice_agent_conversation_style="technical", voice_agent_detail_level="balanced",
+            voice_agent_home_focused=True,
+            ai_task_conversation_style="calm_guide", ai_task_detail_level="concise",
+        )
         restored = GlobalSettings.from_dict(s.to_dict())
         assert restored.kill_switch is True
         assert restored.log_client_ip is False
+        assert restored.agentcli_conversation_style == "warm"
+        assert restored.agentcli_detail_level == "detailed"
+        assert restored.agentcli_home_focused is True
+        assert restored.voice_agent_conversation_style == "technical"
+        assert restored.voice_agent_detail_level == "balanced"
+        assert restored.voice_agent_home_focused is True
+        assert restored.ai_task_conversation_style == "calm_guide"
+        assert restored.ai_task_detail_level == "concise"
+
+    def test_conversation_behavior_invalid_storage_uses_safe_defaults(self):
+        s = GlobalSettings.from_dict({
+            "agentcli_conversation_style": "invented",
+            "agentcli_detail_level": "huge",
+            "voice_agent_conversation_style": 3,
+            "voice_agent_detail_level": None,
+            "ai_task_conversation_style": "",
+            "ai_task_detail_level": "verbose",
+        })
+        assert (s.agentcli_conversation_style, s.agentcli_detail_level) == (
+            "direct", "concise",
+        )
+        assert (s.voice_agent_conversation_style, s.voice_agent_detail_level) == (
+            "direct", "concise",
+        )
+        assert (s.ai_task_conversation_style, s.ai_task_detail_level) == (
+            "direct", "balanced",
+        )
 
     def test_agentcli_max_iterations_default_and_clamp(self):
         from custom_components.phoenix_mcp.const import AGENTCLI_MAX_ITERATIONS
@@ -1041,11 +1082,29 @@ class TestWipe:
     async def test_wipe_clears_all(self, token_store):
         await token_store.async_create_token("t1", "u")
         await token_store.async_create_token("t2", "u")
-        await token_store.async_patch_settings(kill_switch=True)
+        await token_store.async_patch_settings(
+            kill_switch=True,
+            agentcli_conversation_style="lively",
+            agentcli_detail_level="detailed",
+            agentcli_home_focused=True,
+            voice_agent_conversation_style="warm",
+            voice_agent_detail_level="balanced",
+            voice_agent_home_focused=True,
+            ai_task_conversation_style="technical",
+            ai_task_detail_level="concise",
+        )
         await token_store.async_wipe()
         assert token_store.list_tokens() == []
         assert token_store.list_archived() == []
-        assert token_store.get_settings().kill_switch is False
+        settings = token_store.get_settings()
+        assert settings.kill_switch is False
+        assert (settings.agentcli_conversation_style, settings.agentcli_detail_level,
+                settings.agentcli_home_focused) == ("direct", "concise", False)
+        assert (settings.voice_agent_conversation_style, settings.voice_agent_detail_level,
+                settings.voice_agent_home_focused) == ("direct", "concise", False)
+        assert (settings.ai_task_conversation_style, settings.ai_task_detail_level) == (
+            "direct", "balanced",
+        )
 
     async def test_wipe_saves_immediately(self, token_store, mock_store):
         mock_store.async_save.reset_mock()

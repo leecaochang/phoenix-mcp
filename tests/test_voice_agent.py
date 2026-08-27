@@ -106,6 +106,85 @@ async def test_voice_turn_tool_then_answer_uses_voice_sentinel():
 
 
 @pytest.mark.asyncio
+async def test_voice_focus_refusal_strips_marker_and_gives_localized_recovery():
+    token = _make_token()
+    data = _make_data(
+        voice_agent_conversation_style="calm_guide",
+        voice_agent_detail_level="detailed",
+        voice_agent_home_focused=True,
+    )
+    marker = agentcli._HOME_FOCUS_REFUSAL_MARKER
+    capture: dict = {}
+    events = [
+        {"type": EV_TEXT, "text": marker[:10]},
+        {"type": EV_TEXT, "text": marker[10:] + " This mode is for your home."},
+        _done("end_turn"),
+    ]
+
+    async def stream(provider, session, **kwargs):
+        capture.update(kwargs)
+        for event in events:
+            yield event
+    with patch.object(agentcli, "_stream_turn_resilient", stream), \
+         patch.object(agentcli, "build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="SYS"):
+        text = await async_run_voice_turn(
+            MagicMock(), data, token, _MockProvider(), MagicMock(), "http://h",
+            "write a sort algorithm", language="zh-Hans",
+        )
+    assert marker not in text
+    assert text.startswith("此对话处于居家专注模式")
+    assert "This mode is for your home." not in text
+    assert "请重复完整请求" in text
+    assert "patient, reassuring" in capture["system_prompt"]
+    assert "spoken-friendly" in capture["system_prompt"]
+    assert capture["system_prompt"].rfind(marker) > capture["system_prompt"].rfind(
+        "spoken-friendly"
+    )
+
+
+@pytest.mark.asyncio
+async def test_voice_answer_anyway_is_a_deterministic_one_turn_bypass():
+    token = _make_token()
+    data = _make_data(voice_agent_home_focused=True)
+    capture: dict = {}
+    events = [{"type": EV_TEXT, "text": "Jane Austen."}, _done("end_turn")]
+
+    async def stream(provider, session, **kwargs):
+        capture.update(kwargs)
+        for event in events:
+            yield event
+
+    with patch.object(agentcli, "_stream_turn_resilient", stream), \
+         patch.object(agentcli, "build_mcp_tool_list", return_value=[]), \
+         patch("custom_components.phoenix_mcp.mcp_view._build_instructions", return_value="SYS"):
+        text = await async_run_voice_turn(
+            MagicMock(), data, token, _MockProvider(), MagicMock(), "http://h",
+            "Who wrote Emma? ANSWER   ANYWAY.",
+        )
+
+    assert text == "Jane Austen."
+    assert agentcli._HOME_FOCUS_INSTRUCTION not in capture["system_prompt"]
+    assert agentcli._HOME_FOCUS_REFUSAL_MARKER not in capture["system_prompt"]
+
+
+@pytest.mark.parametrize(("language", "phrase"), [
+    ("de", "Bitte trotzdem antworten"),
+    ("es", "Responde de todos modos"),
+    ("fr", "Réponds quand même"),
+    ("ja", "そのまま回答してください"),
+    ("ko", "그래도 답변해 주세요"),
+    ("nl", "Wil je toch antwoorden"),
+    ("pl", "Mimo to odpowiedz"),
+    ("ru", "Ответь в любом случае"),
+    ("zh-Hans", "请仍然回答"),
+    ("zh-Hant", "請仍然回答"),
+])
+def test_voice_answer_anyway_recognizes_localized_phrase(language, phrase):
+    assert agentcli._voice_home_focus_bypass(phrase, language) is True
+
+
+@pytest.mark.asyncio
 async def test_voice_turn_pending_becomes_queued_without_blocking():
     token = _make_token()
     data = _make_data()
@@ -423,6 +502,16 @@ def test_sync_registers_only_when_fully_configured():
         voice_agent.async_sync_voice_agent(hass, entry, _make_data(kill_switch=True, **_FULL_CFG))
         assert set_agent.call_count == 2
         assert unset_agent.call_count == 2
+
+
+def test_sync_registers_configured_agent_before_runtime_ready_on_restart():
+    data = _make_data(**_FULL_CFG)
+    data.ready = False
+    with patch.object(voice_agent._conversation, "async_set_agent") as set_agent, \
+         patch.object(voice_agent._conversation, "async_unset_agent") as unset_agent:
+        voice_agent.async_sync_voice_agent(MagicMock(), MagicMock(), data)
+    set_agent.assert_called_once()
+    unset_agent.assert_not_called()
 
 
 @pytest.mark.asyncio

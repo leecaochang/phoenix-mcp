@@ -2496,6 +2496,7 @@ hui-card { display: block; min-width: 0; }
   font-size: 13px;
 }
 .agentcli-approval-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.agentcli-focus-action { display: flex; justify-content: flex-start; margin: -2px 0 8px; }
 .agentcli-approval-status { margin-top: 4px; font-size: 12px; color: var(--phx-text-2); }
 /* The admin's rejection reason or the executor's failure detail; selectable so
    it can be copied out of the transcript. */
