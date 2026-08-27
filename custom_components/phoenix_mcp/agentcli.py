@@ -86,6 +86,7 @@ from .const import (
     AGENTCLI_NVIDIA_DEFAULT_MODEL,
     AGENTCLI_OLLAMA_CLOUD_BASE_URL,
     AGENTCLI_OPENAI_BASE_URL,
+    AGENTCLI_OPENCODE_BASE_URL,
     AGENTCLI_OPENROUTER_BASE_URL,
     AGENTCLI_TOGETHER_BASE_URL,
     AGENTCLI_ZAI_BASE_URL,
@@ -296,6 +297,7 @@ _PROVIDER_LABEL_KEYS = {
     "minimax": "settings.providerMiniMax",
     "mistral": "settings.providerMistral",
     "nvidia": "settings.providerNvidia",
+    "opencode": "settings.providerOpenCodeZen",
     "ollama_cloud": "settings.providerOllamaCloud",
     "ollama": "settings.providerOllamaLocal",
     "openrouter": "settings.providerOpenRouter",
@@ -336,7 +338,8 @@ PROVIDER_DEFINITIONS: dict[str, ProviderDefinition] = {
         _definition("meta", "Meta", AGENTCLI_META_BASE_URL, model=AGENTCLI_META_DEFAULT_MODEL, reasoning="meta"),
         _definition("minimax", "MiniMax", AGENTCLI_MINIMAX_BASE_URL, adapter="anthropic", model=AGENTCLI_MINIMAX_DEFAULT_MODEL),
         _definition("mistral", "Mistral AI", AGENTCLI_MISTRAL_BASE_URL, reasoning="mistral", model_filter="mistral"),
-        _definition("nvidia", "NVIDIA", AGENTCLI_NVIDIA_BASE_URL, model=AGENTCLI_NVIDIA_DEFAULT_MODEL, reasoning="probed_effort", model_filter="nvidia"),
+        _definition("nvidia", "NVIDIA NIM", AGENTCLI_NVIDIA_BASE_URL, model=AGENTCLI_NVIDIA_DEFAULT_MODEL, reasoning="probed_effort", model_filter="nvidia"),
+        _definition("opencode", "OpenCode Zen", AGENTCLI_OPENCODE_BASE_URL, reasoning="probed_effort"),
         _definition("ollama_cloud", "Ollama (cloud)", AGENTCLI_OLLAMA_CLOUD_BASE_URL, reasoning="ollama", ollama="cloud"),
         _definition("ollama", "Ollama (local)", "", fields=(_OLLAMA_URL_FIELD,), reasoning="ollama", ollama="local"),
         _definition("openrouter", "OpenRouter", AGENTCLI_OPENROUTER_BASE_URL, include_usage=True, reasoning="probed_effort", model_filter="openrouter"),
@@ -1342,7 +1345,7 @@ def _effort_probe_body(kind: str, level: str) -> dict | None:
     OpenAI-compatible endpoint validates `reasoning_effort`, so it is probed like
     the other per-model APIs instead of being reduced to its older boolean shape.
 
-    The aggregators (OpenRouter, NVIDIA) ARE probed, and excluding them was a
+    The aggregators (OpenRouter, NVIDIA NIM) ARE probed, and excluding them was a
     wrong call worth not repeating. The reason given was that they pass through
     whatever the underlying model takes, which varies per model, but that is an
     argument FOR probing rather than against: a probe runs against the one
@@ -1358,7 +1361,7 @@ def _effort_probe_body(kind: str, level: str) -> dict | None:
         return {"thinking": {"type": "enabled"}, "reasoning_effort": level}
     if kind in (
         "chatgpt", "grok", "gemini", "kimi", "meta", "mistral", "openrouter",
-        "nvidia", "ollama", "ollama_cloud", "groq", "together", "cerebras",
+        "nvidia", "opencode", "ollama", "ollama_cloud", "groq", "together", "cerebras",
         "fireworks",
     ):
         return {"reasoning_effort": level}
@@ -1536,7 +1539,7 @@ def _filter_nvidia_models(models: list[str]) -> list[str]:
 
 class OpenAICompatProvider:
     """OpenAI-compatible chat/completions, streaming. Backs DeepSeek, ChatGPT,
-    Gemini, Grok, Kimi, Meta, Mistral, OpenRouter, NVIDIA, and both Ollama
+    Gemini, Grok, Kimi, Meta, Mistral, OpenRouter, NVIDIA, OpenCode Zen, and both Ollama
     flavours.
 
     Ollama uses a slightly different shape (the OpenAI path lives under /v1 and
@@ -3245,6 +3248,10 @@ async def async_run_agent_turn(
         usage_done_output += usage_cur_output
         usage_cur_input = usage_cur_output = 0
         if errored:
+            # An upstream error is already emitted to the browser. Mark the
+            # turn terminal so the generic empty-reply notice cannot mislabel
+            # a useful provider diagnostic, such as a billing refusal.
+            turn_errored = True
             break
         if assistant_msg is not None:
             # Check the prospective total BEFORE appending, and reject the message

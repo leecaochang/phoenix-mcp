@@ -132,6 +132,7 @@ const PROVIDER_KINDS = {
   mistral: true,
   openrouter: true,
   nvidia: true,
+  opencode: true,
   ollama: true,
   ollama_cloud: true,
   together: true,

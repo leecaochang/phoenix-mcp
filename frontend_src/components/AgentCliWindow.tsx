@@ -319,6 +319,7 @@ function shippedCaps(kind: AgentCliProviderKind, model: string, thinkingOn: bool
       return { thinking: thinkOpts(["off", "on"]), style: "boolean", defaultLevel: "on", temperature: true };
     case "openrouter":
     case "nvidia":
+    case "opencode":
       // Aggregators: one key fronting many vendors' models, so no built-in
       // answer fits and none is guessed at. This is the starting point rather
       // than the verdict: checking a model's options establishes its real levels

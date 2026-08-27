@@ -2608,6 +2608,8 @@ hui-card { display: block; min-width: 0; }
 .agentcli-add-row select { flex: 0 1 auto; }
 .agentcli-add-form { border: 1px dashed var(--phx-border); border-radius: var(--phx-radius-sm); padding: 10px; margin-bottom: 10px; }
 .agentcli-settings-hint { font-size: 12px; color: var(--phx-text-2); }
+.agentcli-provider-logo { width: 22px; height: 28px; object-fit: contain; }
+.phx-theme-dark .agentcli-provider-logo { filter: invert(1); }
 /* These were once .agentcli-icon-btn, which the chat window's TITLEBAR buttons
    have used since long before. Defined later, they silently won, and the
    titlebar's gear/minimize/maximize/close picked up a border and a fixed box.

@@ -671,6 +671,7 @@ def test_provider_registry_catalog_is_complete_and_secret_free():
 
 @pytest.mark.parametrize(("kind", "base_url"), [
     ("groq", "https://api.groq.com/openai/v1"),
+    ("opencode", "https://opencode.ai/zen/v1"),
     ("together", "https://api.together.ai/v1"),
     ("cerebras", "https://api.cerebras.ai/v1"),
     ("fireworks", "https://api.fireworks.ai/inference/v1"),
@@ -2871,6 +2872,7 @@ async def test_run_agent_turn_provider_error_stops(hass):
         )
     names = [n for n, _ in events]
     assert ("error", ) == tuple(dict.fromkeys(n for n in names if n == "error"))
+    assert not any(n == "notice" and p.get("code") == "empty_turn" for n, p in events)
     assert names[-1] == "done"
     err = next(p for n, p in events if n == "error")
     assert err["code"] == "auth"
@@ -3787,7 +3789,7 @@ class TestAggregatorEffort:
     against ONE selected model, which is exactly what per-model variation needs.
     """
 
-    @pytest.mark.parametrize("kind", ["openrouter", "nvidia"])
+    @pytest.mark.parametrize("kind", ["openrouter", "nvidia", "opencode"])
     def test_the_probe_asks_them_about_effort(self, kind):
         assert agentcli._effort_probe_body(kind, "high") == {"reasoning_effort": "high"}
 
@@ -3801,7 +3803,7 @@ class TestAggregatorEffort:
         assert agentcli._effort_probe_body(kind, "high") == {"reasoning_effort": "high"}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["openrouter", "nvidia"])
+    @pytest.mark.parametrize("kind", ["openrouter", "nvidia", "opencode"])
     async def test_an_effort_reaches_the_request(self, hass, kind):
         cfg = agentcli.ProviderConfig(kind=kind, model="vendor/m", base_url="https://x", api_key="k")
         # Capture the request the real builder produces.

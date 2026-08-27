@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, localizedApiMessage } from "../api";
+import OPENCODE_ICON from "../assets/opencode.svg";
 import { t } from "../i18n";
 import type {
   AgentCliInstance,
@@ -182,6 +183,9 @@ export function ProviderAddForm({
 
       {adding && (
         <div className="agentcli-settings-form agentcli-add-form">
+          {adding.kind === "opencode" && (
+            <img className="agentcli-provider-logo" src={OPENCODE_ICON} alt="" aria-hidden="true" />
+          )}
           <div className="agentcli-settings-hint">
             {t(addingLabelKey, { name: providerLabel(adding), label: providerLabel(adding) })}
           </div>

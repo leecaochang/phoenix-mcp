@@ -113,7 +113,7 @@ AGENTCLI_SECRETS_STORAGE_VERSION = 1
 AGENTCLI_PROVIDERS = frozenset({
     "claude", "deepseek", "chatgpt", "gemini", "grok", "kimi", "meta",
     "minimax", "mistral", "openrouter", "nvidia", "ollama", "ollama_cloud",
-    "zai", "groq", "together", "cerebras", "fireworks", "qwen"})
+    "zai", "groq", "together", "cerebras", "fireworks", "qwen", "opencode"})
 # Default endpoints/models; the panel may override the model per conversation.
 AGENTCLI_CLAUDE_BASE_URL = "https://api.anthropic.com"
 AGENTCLI_CLAUDE_DEFAULT_MODEL = "claude-opus-4-8"
@@ -187,6 +187,9 @@ AGENTCLI_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 AGENTCLI_TOGETHER_BASE_URL = "https://api.together.ai/v1"
 AGENTCLI_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
 AGENTCLI_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+# OpenCode Zen publishes an OpenAI-compatible Chat Completions API and a live
+# account-scoped model catalog at this base URL.
+AGENTCLI_OPENCODE_BASE_URL = "https://opencode.ai/zen/v1"
 AGENTCLI_DEFAULT_MAX_TOKENS = 8192
 # Explicit output cap sent to DeepSeek only. DeepSeek's undocumented default
 # (historically 4K non-thinking / 32K thinking) truncated a large tool call

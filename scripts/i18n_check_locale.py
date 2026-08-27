@@ -155,6 +155,7 @@ ALLOW_IDENTICAL = frozenset({
     "panel.settings.providerMiniMax",
     "panel.settings.providerMistral",
     "panel.settings.providerNvidia",
+    "panel.settings.providerOpenCodeZen",
     "panel.settings.providerOpenAI",
     "panel.settings.providerOpenRouter",
     "panel.settings.providerQwen",

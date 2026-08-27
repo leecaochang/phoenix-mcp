@@ -33,7 +33,7 @@ const UI_PROPS = new Set(["label", "title", "hint", "message", "intro", "sub", "
 const ALLOWED = new Set([
   "Phoenix MCP",           // the product mark, kept Latin in-panel
   "WIPE",                  // WipeConfirmModal compares the typed value
-  "Anthropic", "DeepSeek", "Gemini", "Grok", "Kimi", "Meta", "MiniMax", "NVIDIA",
+  "Anthropic", "DeepSeek", "Gemini", "Grok", "Kimi", "Meta", "MiniMax", "NVIDIA NIM",
   "OpenAI", "OpenRouter",
   "Ollama (cloud)", "Ollama (local)",   // resolved through kindLabel(); these are the fallbacks
   "Claude Code", "Gemini CLI", "Codex", "Cursor",   // agent product names (wizard_helpers AGENTS)
