@@ -137,7 +137,7 @@ from .tools.energy import (
     _tool_get_solar_forecast,
     async_restore_energy_prefs,
 )
-from .tools.discovery import _registry_relationship_preview, _registry_relationships_preview, _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_entities, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_repairs, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_search_entities, _tool_validate_config, _tool_whatif
+from .tools.discovery import _registry_relationship_preview, _registry_relationships_preview, _requires_satisfied, _requires_unavailable_reason, _tool_check_config, _tool_compare_entities, _tool_compare_state, _tool_describe_area, _tool_describe_entity, _tool_dry_run_service, _tool_find_available_actions, _tool_get_audit_summary, _tool_get_device, _tool_get_overview, _tool_get_relationships, _tool_get_repairs, _tool_get_system_health, _tool_list_areas, _tool_list_devices, _tool_list_floors, _tool_list_zones, _tool_recent_activity, _tool_recognize_intent, _tool_search_entities, _tool_validate_config, _tool_whatif
 from .tools.native import (
     _UNTRUSTED_DATA_BOUNDARY,
     _build_live_context,
@@ -9061,6 +9061,7 @@ _register_tool("list_zones", _tool_list_zones)
 _register_tool("list_devices", _tool_list_devices)
 _register_tool("get_device", _tool_get_device)
 _register_tool("search_entities", _tool_search_entities)
+_register_tool("recognize_intent", _tool_recognize_intent)
 _register_tool("get_overview", _tool_get_overview)
 _register_tool("describe_area", _tool_describe_area)
 _register_tool("find_available_actions", _tool_find_available_actions)

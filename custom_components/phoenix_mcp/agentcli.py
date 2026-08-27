@@ -2167,7 +2167,7 @@ def build_provider(cfg: ProviderConfig) -> ClaudeProvider | OpenAICompatProvider
 # (the sort is stable). Deterministic across turns, so it never busts the
 # provider prompt cache.
 _TOOL_PRIORITY = (
-    "get_capability_summary", "get_overview", "search_entities",
+    "get_capability_summary", "get_overview", "search_entities", "recognize_intent",
     "describe_entity", "describe_area", "get_state", "get_states",
     "call_service", "dry_run_service", "find_available_actions",
 )

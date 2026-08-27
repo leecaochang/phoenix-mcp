@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script>(function(){try{var t=localStorage.getItem("phx-docs-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <title>Tools reference &middot; Phoenix MCP docs</title>
-  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 136 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
+  <meta name="description" content="Every Phoenix MCP tool: the 23 native HA MCP tools plus 137 Phoenix MCP tools, each scoped to the token's permission tree and capabilities." />
   <link rel="icon" href="assets/phoenix-logo.png" type="image/png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,13 +25,13 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 136 of its own, 159 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 137 of its own, 160 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
         </header>
 
         <div class="tool-toolbar" role="search">
           <label class="tool-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="tool-search-input" placeholder="Search all 159 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
+            <input type="text" id="tool-search-input" placeholder="Search all 160 tools by name or keyword..." aria-label="Search tools" autocomplete="off" />
           </label>
           <button class="filter-chip" data-cap="all" aria-pressed="true">All</button>
           <button class="filter-chip" data-cap="read" aria-pressed="false">Reads</button>
@@ -294,6 +294,13 @@
             <p class="tool-desc">Filter accessible entities by text, domain, area, device class, state, or staleness. <code>registry_state</code> defaults to <code>enabled</code>. Choose <code>disabled</code> for disabled registry entries or <code>all</code> to include both states and registry entries whose integration currently publishes no state. Access to a registry-only result must be inherited from its device or domain.</p>
             <p class="tool-desc">Multi-word searches require every word and rank the best matches first. If no exact result exists, Phoenix retries entity IDs and friendly names with typo tolerance and sets <code>fuzzy_fallback: true</code>. Results include non-default MESA <code>control_mode</code> values and an <code>entity_category</code> for configuration or diagnostic entities.</p>
             <dl><dt>params</dt><dd><code>query</code>, <code>domain</code>, <code>area</code>, <code>device_class</code>, <code>state</code>, <code>unavailable</code>, <code>stale_hours</code>, <code>registry_state</code>, <code>limit</code> (all optional)</dd></dl>
+          </article>
+
+          <article class="tool" data-cap="discovery" data-search="recognize_intent sentence voice grammar near miss diagnostic">
+            <div class="tool-head"><span class="tool-name">recognize_intent</span><span class="badge badge-cap">Search or Config read</span></div>
+            <p class="tool-desc">Diagnose how Home Assistant's default conversation agent recognizes one sentence without running the intent or changing state. A complete match returns the intent, parsed slots, and resolved entities intersected with both this token's read scope and Assist exposure. An incomplete recognition returns the closest candidate in <code>near_misses</code>.</p>
+            <p class="tool-desc">Custom sentence templates and source file paths are omitted. The caller cannot select an agent, device, or satellite context.</p>
+            <dl><dt>params</dt><dd><code>sentence</code> (required; 1-512 characters), optional <code>language</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="discovery" data-search="whatif predict automations fire hypothetical">

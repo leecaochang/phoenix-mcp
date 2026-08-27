@@ -53,6 +53,10 @@ grain of the model gives the smoothest results and avoids dead ends.
   `registry_state: all` to include registry entries with no live state. Those
   registry-only rows require inherited device/domain permission. This is
   keyword/attribute search.
+- `recognize_intent`: diagnose how Home Assistant's default voice grammar reads
+  one sentence without executing it. A match includes parsed slots and only
+  entity targets in this token's read scope; an incomplete match includes the
+  closest candidate. Use it when a spoken command is not matching as expected.
 - `mesa_query_profiles`: a different search, by MESA's semantic profile (an
   entity's nature/role), not by name. Reach for it when you care about what an
   entity is, not what it is called.

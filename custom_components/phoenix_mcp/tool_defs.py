@@ -1562,6 +1562,35 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         },
     },
     {
+        "name": "recognize_intent",
+        "description": (
+            "Diagnose how Home Assistant's default conversation agent recognizes one natural-language "
+            "sentence, without invoking an intent handler or changing state. Returns the matched intent, "
+            "parsed slots, and resolved entities intersected with this token's read scope and Assist "
+            "exposure. An incomplete recognition is returned as a bounded near miss. Custom sentence "
+            "templates and source file paths are never exposed."
+        ),
+        "caps_any": ["cap_search", "cap_config_read"],
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sentence": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Natural-language sentence to recognize without executing it.",
+                },
+                "language": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Optional language tag; defaults to Home Assistant's configured language.",
+                },
+            },
+            "required": ["sentence"],
+        },
+    },
+    {
         "name": "get_overview",
         "description": (
             "A compact summary of the home as this token sees it: total accessible entities, "
@@ -3377,6 +3406,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "list_devices": _annot(True, False, True),
     "get_device": _annot(True, False, True),
     "search_entities": _annot(True, False, True),
+    "recognize_intent": _annot(True, False, True),
     "get_overview": _annot(True, False, True),
     "describe_area": _annot(True, False, True),
     "find_available_actions": _annot(True, False, True),

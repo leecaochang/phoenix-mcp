@@ -547,6 +547,228 @@ def _accessible_entity_ids(token: TokenRecord, hass: HomeAssistant) -> set[str]:
     return {e["entity_id"] for e in accessible}
 
 
+def _intent_slot_value(entity: Any) -> Any:
+    """Return HA's public debug value without disclosing a canonical selector.
+
+    Target selectors prefer the text the caller supplied. The canonical value
+    can contain an area or entity name outside the token's scope; the submitted
+    text cannot disclose anything the caller did not already know.
+    """
+    text = getattr(entity, "text", None)
+    return text if text not in (None, "") else getattr(entity, "value", None)
+
+
+def _intent_slots(result: Any) -> dict[str, Any]:
+    """Project recognized slots without HA's private debug metadata."""
+    return {
+        name: _intent_slot_value(entity)
+        for name, entity in getattr(result, "entities", {}).items()
+    }
+
+
+def _intent_unmatched_slots(result: Any) -> dict[str, Any]:
+    """Return HA's best unmatched slot guesses, excluding missing context."""
+    unmatched: dict[str, Any] = {}
+    for entity in getattr(result, "unmatched_entities_list", []):
+        name = getattr(entity, "name", None)
+        if not isinstance(name, str) or not name:
+            continue
+        text = getattr(entity, "text", None)
+        if text is not None:
+            if text != "<missing>":
+                unmatched[name] = text
+            continue
+        value = getattr(entity, "value", None)
+        if value is not None:
+            unmatched[name] = value
+    return unmatched
+
+
+def _intent_source(result: Any) -> str:
+    """Classify a sentence without exposing its custom-sentence file path."""
+    metadata = getattr(result, "intent_metadata", None)
+    if isinstance(metadata, dict) and metadata.get("hass_custom_sentence"):
+        return "custom"
+    return "builtin"
+
+
+def _string_set(value: Any) -> set[str] | None:
+    """Normalize one HA intent slot to a string set."""
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values = {str(item) for item in value if isinstance(item, (str, int, float))}
+        return values or None
+    if isinstance(value, (int, float)):
+        return {str(value)}
+    return None
+
+
+def _recognized_entity_value(result: Any, name: str) -> Any:
+    entity = getattr(result, "entities", {}).get(name)
+    return getattr(entity, "value", None) if entity is not None else None
+
+
+def _recognized_targets(
+    result: Any, token: TokenRecord, hass: HomeAssistant
+) -> list[dict[str, Any]]:
+    """Resolve one recognition against the intersection of Assist and token scope.
+
+    HA's matcher treats an empty ``states`` list as "use every state", so the
+    explicit empty guard is a security boundary, not an optimization.
+    """
+    from homeassistant.helpers.intent import (  # noqa: PLC0415
+        MatchTargetsConstraints,
+        async_match_targets,
+    )
+
+    name_value = _recognized_entity_value(result, "name")
+    area_value = _recognized_entity_value(result, "area")
+    floor_value = _recognized_entity_value(result, "floor")
+    domains = _string_set(_recognized_entity_value(result, "domain"))
+    device_classes = _string_set(_recognized_entity_value(result, "device_class"))
+    state_names = _string_set(_recognized_entity_value(result, "state"))
+    name = str(name_value) if name_value is not None else None
+    area = str(area_value) if area_value is not None else None
+    floor = str(floor_value) if floor_value is not None else None
+
+    if not (name or area or floor or domains or device_classes or state_names):
+        return []
+
+    accessible_ids = _accessible_entity_ids(token, hass)
+    accessible_states = [
+        state for state in hass.states.async_all()
+        if state.entity_id in accessible_ids
+    ]
+    if not accessible_states:
+        return []
+
+    constraints = MatchTargetsConstraints(
+        name=name,
+        area_name=area,
+        floor_name=floor,
+        domains=domains,
+        device_classes=device_classes,
+        assistant="conversation",
+    )
+    match = async_match_targets(hass, constraints, states=accessible_states)
+    if not match.is_match:
+        return []
+
+    return [
+        {
+            "entity_id": state.entity_id,
+            "state_match": state_names is None or state.state in state_names,
+        }
+        for state in sorted(match.states, key=lambda item: item.entity_id)
+    ]
+
+
+async def _tool_recognize_intent(
+    args: dict, token: TokenRecord, hass: HomeAssistant
+) -> tuple[dict, str, str]:
+    """Recognize one sentence without invoking an intent handler."""
+    if all(
+        effective_cap(token, cap) == CAP_DENY
+        for cap in ("cap_search", "cap_config_read")
+    ):
+        return _tool_error("Forbidden."), "denied", "recognize_intent"
+
+    sentence = args.get("sentence")
+    if not isinstance(sentence, str) or not sentence.strip():
+        return (
+            _tool_error("sentence must be a non-empty string."),
+            "invalid_request", "recognize_intent",
+        )
+    sentence = sentence.strip()
+    if len(sentence) > MAX_SEARCH_QUERY_LEN:
+        return (
+            _tool_error(
+                f"sentence must be at most {MAX_SEARCH_QUERY_LEN} characters."
+            ),
+            "invalid_request", "recognize_intent",
+        )
+
+    language_arg = args.get("language")
+    if language_arg is not None and (
+        not isinstance(language_arg, str)
+        or not language_arg.strip()
+        or len(language_arg.strip()) > 64
+    ):
+        return (
+            _tool_error("language must be a non-empty language tag of at most 64 characters."),
+            "invalid_request", "recognize_intent",
+        )
+    language = language_arg.strip() if isinstance(language_arg, str) else hass.config.language
+
+    from homeassistant.components.conversation.agent_manager import (  # noqa: PLC0415
+        async_get_agent,
+    )
+    from homeassistant.components.conversation.const import (  # noqa: PLC0415
+        HOME_ASSISTANT_AGENT,
+    )
+    from homeassistant.components.conversation.models import (  # noqa: PLC0415
+        ConversationInput,
+    )
+    from homeassistant.core import Context  # noqa: PLC0415
+
+    try:
+        default_agent = async_get_agent(hass, HOME_ASSISTANT_AGENT)
+    except KeyError:
+        default_agent = None
+    recognize = getattr(default_agent, "async_recognize_intent", None)
+    if recognize is None:
+        return (
+            _tool_error("Home Assistant's default conversation agent is unavailable."),
+            "not_implemented", "recognize_intent",
+        )
+
+    # ConversationInput gained satellite_id after Phoenix's HA version floor.
+    # Supply only fields declared by the installed HA dataclass so one code path
+    # works on both shapes. agent_id is internal and fixed: it is not caller input.
+    wanted = {
+        "text": sentence,
+        "context": Context(),
+        "conversation_id": None,
+        "device_id": None,
+        "satellite_id": None,
+        "language": language,
+        "agent_id": HOME_ASSISTANT_AGENT,
+        "extra_system_prompt": None,
+    }
+    declared = {field.name for field in dataclasses.fields(ConversationInput)}
+    conversation_input_type: Any = ConversationInput
+    user_input = conversation_input_type(**{
+        key: value for key, value in wanted.items() if key in declared
+    })
+    result = await recognize(user_input)
+
+    if result is None:
+        body = {"match": False, "near_misses": []}
+    elif getattr(result, "unmatched_entities", {}):
+        body = {
+            "match": False,
+            "near_misses": [{
+                "intent": {"name": getattr(result.intent, "name", "")},
+                "slots": _intent_slots(result),
+                "unmatched_slots": _intent_unmatched_slots(result),
+                "source": _intent_source(result),
+            }],
+        }
+    else:
+        body = {
+            "match": True,
+            "intent": {"name": getattr(result.intent, "name", "")},
+            "slots": _intent_slots(result),
+            "resolved_entities": _recognized_targets(result, token, hass),
+            "source": _intent_source(result),
+        }
+    return (
+        _tool_success(json.dumps(body, default=str)),
+        "allowed", "recognize_intent",
+    )
+
+
 async def _tool_list_areas(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:

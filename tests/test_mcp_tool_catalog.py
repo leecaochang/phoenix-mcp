@@ -178,26 +178,26 @@ def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wire
     }
     assert metrics == {
         "read_only": {
-            "tool_count": 49,
-            "canonical_bytes": 40428,
-            "claude_bytes": 35383,
-            "openai_bytes": 36804,
+            "tool_count": 50,
+            "canonical_bytes": 41338,
+            "claude_bytes": 36190,
+            "openai_bytes": 37640,
         },
         "write_capable": {
-            "tool_count": 93,
-            "canonical_bytes": 88143,
-            "claude_bytes": 78553,
-            "openai_bytes": 81250,
+            "tool_count": 94,
+            "canonical_bytes": 89053,
+            "claude_bytes": 79360,
+            "openai_bytes": 82086,
         },
         "announce_all": {
-            "tool_count": 153,
-            "canonical_bytes": 148481,
-            "claude_bytes": 132690,
-            "openai_bytes": 137127,
+            "tool_count": 154,
+            "canonical_bytes": 149391,
+            "claude_bytes": 133497,
+            "openai_bytes": 137963,
         },
     }
-    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 153
-    assert mcp_view.tool_catalog_counts()["total"] == 159
+    assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 154
+    assert mcp_view.tool_catalog_counts()["total"] == 160
 
 
 def test_every_public_parameter_has_a_description():
@@ -521,3 +521,20 @@ def test_list_integrations_is_visible_with_either_integration_capability():
         assert mcp_view._tool_is_announced(definition, token, False, None)
     denied = TokenRecord(**base)
     assert not mcp_view._tool_is_announced(definition, denied, False, None)
+
+
+def test_recognize_intent_is_visible_with_search_or_config_read():
+    """Sentence diagnostics use OR semantics and never require both read caps."""
+    base = dict(
+        id="t1", name="t", token_hash="x", created_at=utcnow(), created_by="u",
+        permissions=PermissionTree(),
+    )
+    definition = next(d for d in _all_defs() if d["name"] == "recognize_intent")
+    for granted in ("cap_search", "cap_config_read"):
+        token = TokenRecord(**base, **{granted: "allow"})
+        assert mcp_view._tool_is_announced(definition, token, False, None)
+    denied = TokenRecord(**base)
+    assert not mcp_view._tool_is_announced(definition, denied, False, None)
+    assert "recognize_intent" not in mcp_view._EXECUTOR_REGISTRY
+    assert definition["annotations"]["readOnlyHint"] is True
+    assert "agent_id" not in definition["inputSchema"]["properties"]
