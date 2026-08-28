@@ -880,7 +880,15 @@ async def test_tools_list_includes_read_tools_always():
     )
 
     tool_names = [t["name"] for t in result["result"]["tools"]]
-    for name in ("get_state", "get_states", "get_history", "get_statistics", "GetLiveContext", "GetDateTime", "get_approval_status"):
+    for name in (
+        "get_state",
+        "get_states",
+        "get_history",
+        "get_statistics",
+        "homeassistant__GetLiveContext",
+        "llm__GetDateTime",
+        "get_approval_status",
+    ):
         assert name in tool_names
 
 
@@ -902,7 +910,7 @@ async def test_initialize_includes_token_aware_instructions():
     assert "get_capability_summary" in instr
     assert "pending_approval" in instr
     assert "cap_automation_write" in instr  # confirm-gated cap is surfaced
-    assert "GetDateTime" in instr
+    assert "llm__GetDateTime" in instr
     assert "timestamps may be returned in UTC" in instr
     assert "do not already know Home Assistant's local offset" in instr
     assert "Present the local date and time directly" in instr
@@ -973,7 +981,13 @@ async def test_tools_list_hides_control_tools_without_write_scope():
     )
 
     tool_names = [t["name"] for t in result["result"]["tools"]]
-    for name in ("call_service", "HassTurnOn", "HassTurnOff", "HassLightSet", "HassStopMoving"):
+    for name in (
+        "call_service",
+        "intent__HassTurnOn",
+        "intent__HassTurnOff",
+        "light__HassLightSet",
+        "intent__HassStopMoving",
+    ):
         assert name not in tool_names
 
 
@@ -989,7 +1003,7 @@ async def test_tools_list_shows_control_tools_with_write_scope():
     )
 
     tool_names = [t["name"] for t in result["result"]["tools"]]
-    for name in ("call_service", "HassTurnOn", "HassTurnOff"):
+    for name in ("call_service", "intent__HassTurnOn", "intent__HassTurnOff"):
         assert name in tool_names
 
 
@@ -1006,7 +1020,7 @@ async def test_tools_list_pass_through_has_write_scope():
 
     tool_names = [t["name"] for t in result["result"]["tools"]]
     assert "call_service" in tool_names
-    assert "HassTurnOn" in tool_names
+    assert "intent__HassTurnOn" in tool_names
 
 
 @pytest.mark.asyncio
@@ -1023,7 +1037,13 @@ async def test_tools_list_announce_all_overrides_gating():
     )
 
     tool_names = [t["name"] for t in result["result"]["tools"]]
-    for name in ("call_service", "HassTurnOn", "get_config", "create_automation", "restart_ha"):
+    for name in (
+        "call_service",
+        "intent__HassTurnOn",
+        "get_config",
+        "create_automation",
+        "restart_ha",
+    ):
         assert name in tool_names
 
 
@@ -2830,8 +2850,10 @@ async def test_turn_on_confirm_creates_real_approval_then_executor_actuates(hass
     Intent resolution itself is stubbed (covered in test_policy_engine).
     """
     import asyncio as _asyncio
-    from custom_components.phoenix_mcp.mcp_view import async_execute_approved_tool
-    from custom_components.phoenix_mcp.tools.native import _tool_hass_turn_on
+    from custom_components.phoenix_mcp.mcp_view import (
+        _call_tool,
+        async_execute_approved_tool,
+    )
     from custom_components.phoenix_mcp.data import PhoenixData
 
     class _ApprStore:
@@ -2861,7 +2883,15 @@ async def test_turn_on_confirm_creates_real_approval_then_executor_actuates(hass
     hass.services.async_register("lock", "lock", _lock_handler)
 
     with patch("custom_components.phoenix_mcp.tools.native.resolve_intent_entities", return_value=["lock.front_door"]):
-        result = await _tool_hass_turn_on({"area": "Hall"}, token, hass, data, "rid-1", "1.2.3.4")
+        result = await _call_tool(
+            "intent__HassTurnOn",
+            {"area": "Hall"},
+            token,
+            hass,
+            data,
+            "rid-1",
+            "1.2.3.4",
+        )
         # A real approval exists; the lock is held, not actuated.
         assert result[1] == "pending_approval"
         assert lock_calls == []
@@ -3103,10 +3133,33 @@ def test_polling_an_approval_that_never_ran_carries_no_note():
 async def _dt_call(token, hass, data, msg_id=1):
     """One benign tools/call; returns the result content list."""
     result, _m, _r, _o = await _dispatch_mcp(
-        "tools/call", msg_id, {"name": "GetDateTime", "arguments": {}},
+        "tools/call", msg_id, {"name": "llm__GetDateTime", "arguments": {}},
         token, hass, data, "127.0.0.1", base_url="http://homeassistant.local",
     )
     return result["result"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_native_name_remains_callable_but_is_not_advertised():
+    token, _ = _make_token()
+    data = _make_data(token)
+    hass = _make_hass(data)
+
+    listed, _m, _r, _o = await _dispatch_mcp(
+        "tools/list", 1, {}, token, hass, data, "127.0.0.1",
+        base_url="http://homeassistant.local",
+    )
+    names = {tool["name"] for tool in listed["result"]["tools"]}
+    assert "llm__GetDateTime" in names
+    assert "GetDateTime" not in names
+
+    called, method, resource, outcome = await _dispatch_mcp(
+        "tools/call", 2, {"name": "GetDateTime", "arguments": {}},
+        token, hass, data, "127.0.0.1",
+        base_url="http://homeassistant.local",
+    )
+    assert called["result"].get("isError") is not True
+    assert (method, resource, outcome) == ("GetDateTime", "GetDateTime", "allowed")
 
 
 def _has_advisory(content) -> bool:
@@ -3263,7 +3316,7 @@ async def test_stale_advisory_suppressed_for_agentcli():
 
     # An agentCLI-sentinel call gets no advisory and does not mark the epoch.
     res_ac, _m, _r, _o = await _dispatch_mcp(
-        "tools/call", 1, {"name": "GetDateTime", "arguments": {}},
+        "tools/call", 1, {"name": "llm__GetDateTime", "arguments": {}},
         token, hass, data, AGENTCLI_CLIENT_IP, base_url="http://homeassistant.local",
     )
     assert not _has_advisory(res_ac["result"]["content"])
@@ -3285,7 +3338,7 @@ async def test_stale_advisory_suppressed_for_assist():
     token.settings_version += 1
 
     res, _m, _r, _o = await _dispatch_mcp(
-        "tools/call", 1, {"name": "GetDateTime", "arguments": {}},
+        "tools/call", 1, {"name": "llm__GetDateTime", "arguments": {}},
         token, hass, data, ASSIST_CLIENT_IP, base_url="http://homeassistant.local",
     )
     assert not _has_advisory(res["result"]["content"])

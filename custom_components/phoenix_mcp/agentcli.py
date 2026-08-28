@@ -3172,12 +3172,12 @@ async def async_run_agent_turn(
         + _AGENTCLI_ADDENDUM
         + _home_focus_output_contract(home_focused)
     )
-    # Current local time is supplied above on every user turn. Keeping GetDateTime
-    # out of this one catalog prevents a model from redundantly calling it at the
-    # start of a chat. External MCP catalogs continue to announce the tool.
+    # Current local time is supplied above on every user turn. Keeping both the
+    # canonical and legacy date-time names out of this one catalog prevents a
+    # redundant call. External MCP catalogs continue to announce the canonical name.
     agent_tools = [
         tool for tool in build_mcp_tool_list(token, data)
-        if tool.get("name") != "GetDateTime"
+        if tool.get("name") not in ("llm__GetDateTime", "GetDateTime")
     ]
     tools = provider.format_tools(agent_tools)
     # The token is re-resolved per dispatch (see _current_dispatch_token), so a

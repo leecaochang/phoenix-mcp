@@ -249,9 +249,9 @@ config is good on the strength of validation alone if you can compile it.
   whether the entities it references exist and are accessible, before you save.
 
 ### 4. Act
-- Prefer the native intent tools (`HassTurnOn`, `HassTurnOff`, `HassLightSet`,
-  `HassSetPosition`, climate/media/fan tools) for everyday control; fall back to
-  `call_service` for anything they do not cover.
+- Prefer the native intent tools (`intent__HassTurnOn`, `intent__HassTurnOff`,
+  `light__HassLightSet`, `intent__HassSetPosition`, climate/media/fan tools) for
+  everyday control; fall back to `call_service` for anything they do not cover.
 - Target entities explicitly. Phoenix MCP resolves areas and devices to explicit entity
   lists anyway, and an area or device target silently drops members you cannot
   access, so naming entities makes the result predictable.

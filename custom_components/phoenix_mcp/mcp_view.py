@@ -209,6 +209,8 @@ from .tools.esphome import _ESPHOME_DOMAIN, _execute_delete_esphome_yaml, _execu
 from .tool_defs import (
     _ENTITY_TOOL_DEFS,
     _NATIVE_TOOL_DEFS,
+    _NATIVE_TOOL_NAMES,
+    _NATIVE_TOOL_PUBLIC_TO_INTERNAL,
     _SYSTEM_TOOL_DEFS,
     _TOOL_ANNOTATIONS,
 )
@@ -282,14 +284,14 @@ def tool_catalog_counts() -> dict[str, int]:
 
     Every other statement of the count derives from here: the docs-count test,
     the admin info endpoint, and scripts/count_tools.py. Native means HA's own
-    MCP tool names (Hass*/Get*, uppercase-initial), which Phoenix implements
-    1:1; additional is everything Phoenix defines beyond them, mesa_* included.
+    domain-prefixed MCP tool names, which Phoenix implements 1:1; additional is
+    everything Phoenix defines beyond them, mesa_* included.
     """
     names = {
         d["name"]
         for d in (*_ENTITY_TOOL_DEFS, *_NATIVE_TOOL_DEFS, *_SYSTEM_TOOL_DEFS, *mesa_tool_defs())
     }
-    native = {n for n in names if n[0].isupper()}
+    native = names & set(_NATIVE_TOOL_NAMES.values())
     return {"total": len(names), "native": len(native), "additional": len(names - native)}
 
 
@@ -353,7 +355,10 @@ def _tool_is_announced(
         return False
     if any_caps and all(effective_cap(token, cap) == CAP_DENY for cap in any_caps):
         return False
-    if not caps and not any_caps and tool_def["name"] in _WRITE_GATED_TOOLS and not has_write:
+    internal_name = _NATIVE_TOOL_PUBLIC_TO_INTERNAL.get(
+        tool_def["name"], tool_def["name"]
+    )
+    if not caps and not any_caps and internal_name in _WRITE_GATED_TOOLS and not has_write:
         return False
     return _requires_satisfied(tool_def, hass)
 
@@ -407,6 +412,7 @@ def _tool_gate_map(
     reasons: dict[str, str] = {}
     for tool_def in list(_ENTITY_TOOL_DEFS) + list(_NATIVE_TOOL_DEFS) + list(_SYSTEM_TOOL_DEFS) + mesa_defs:
         name = tool_def["name"]
+        internal_name = _NATIVE_TOOL_PUBLIC_TO_INTERNAL.get(name, name)
         caps = _tool_required_caps(tool_def)
         any_caps = _tool_any_caps(tool_def)
         if not _requires_satisfied(tool_def, hass):
@@ -420,11 +426,11 @@ def _tool_gate_map(
             elif (
                 CAP_CONFIRM in modes
                 or (any_modes and all(mode == CAP_CONFIRM for mode in any_modes))
-            ) and name in _EXECUTOR_REGISTRY:
+            ) and internal_name in _EXECUTOR_REGISTRY:
                 needs_approval.append(name)
             else:
                 usable.append(name)
-        elif name in _WRITE_GATED_TOOLS:
+        elif internal_name in _WRITE_GATED_TOOLS:
             (usable if has_write else unavailable).append(name)
         else:
             usable.append(name)
@@ -7270,7 +7276,8 @@ async def _call_tool(
     them as Any, so their own returns are erased here. A valid outcome per tool
     is enforced by an adversarial sweep over the whole surface instead.
     """
-    entry = _TOOL_HANDLERS.get(tool_name)
+    internal_name = _NATIVE_TOOL_PUBLIC_TO_INTERNAL.get(tool_name, tool_name)
+    entry = _TOOL_HANDLERS.get(internal_name)
     if entry is None:
         return _tool_error(f"Unknown tool: {tool_name}"), "denied", tool_name
     handler, wanted, bound = entry
@@ -7483,7 +7490,8 @@ def _build_instructions(token: TokenRecord, data: PhoenixData, base_url: str) ->
         "needs approval. Use get_overview or search_entities to discover entities; you only "
         "see entities in this token's scope.",
         "- Entity and history timestamps may be returned in UTC. When you need to present one "
-        "in local time and do not already know Home Assistant's local offset, call GetDateTime. "
+        "in local time and do not already know Home Assistant's local offset, call "
+        "llm__GetDateTime. "
         "Present the local date and time directly. Do not mention UTC, offsets, or conversion "
         "unless the user asks.",
         # Must agree with tool_common._tool_pending, which the agent reads at the
@@ -7776,7 +7784,7 @@ async def _dispatch_mcp(
                 {
                     "uri": "homeassistant://assist/context-snapshot",
                     "name": "Assist Context Snapshot",
-                    "description": "A snapshot of the current Assist context, matching the existing GetLiveContext tool output",
+                    "description": "A snapshot of the current Assist context, matching the existing homeassistant__GetLiveContext tool output",
                     "mimeType": "text/plain",
                 },
                 {

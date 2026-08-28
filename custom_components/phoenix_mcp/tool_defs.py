@@ -1,6 +1,6 @@
 """The published MCP tool catalog: schemas and annotations.
 
-Declarative data only, no behaviour. Three def lists (entity / native Hass* /
+Declarative data only, no behaviour. Three def lists (entity / native HA /
 system tools) and the `_TOOL_ANNOTATIONS` map that stamps every def with its four
 MCP hints at import, so a tool added without one raises KeyError here rather than
 silently shipping the spec's unsafe defaults.
@@ -18,6 +18,34 @@ registries, in both directions.
 from __future__ import annotations
 
 
+_NATIVE_TOOL_NAMES: dict[str, str] = {
+    "GetLiveContext": "homeassistant__GetLiveContext",
+    "GetDateTime": "llm__GetDateTime",
+    "HassTurnOn": "intent__HassTurnOn",
+    "HassTurnOff": "intent__HassTurnOff",
+    "HassLightSet": "light__HassLightSet",
+    "HassFanSetSpeed": "fan__HassFanSetSpeed",
+    "HassClimateSetTemperature": "climate__HassClimateSetTemperature",
+    "HassSetPosition": "intent__HassSetPosition",
+    "HassSetVolume": "media_player__HassSetVolume",
+    "HassSetVolumeRelative": "media_player__HassSetVolumeRelative",
+    "HassMediaPause": "media_player__HassMediaPause",
+    "HassMediaUnpause": "media_player__HassMediaUnpause",
+    "HassMediaNext": "media_player__HassMediaNext",
+    "HassMediaPrevious": "media_player__HassMediaPrevious",
+    "HassMediaSearchAndPlay": "media_player__HassMediaSearchAndPlay",
+    "HassMediaPlayerMute": "media_player__HassMediaPlayerMute",
+    "HassMediaPlayerUnmute": "media_player__HassMediaPlayerUnmute",
+    "HassCancelAllTimers": "intent__HassCancelAllTimers",
+    "HassVacuumStart": "vacuum__HassVacuumStart",
+    "HassVacuumReturnToBase": "vacuum__HassVacuumReturnToBase",
+    "HassVacuumCleanArea": "vacuum__HassVacuumCleanArea",
+    "HassStopMoving": "intent__HassStopMoving",
+    "HassBroadcast": "assist_satellite__HassBroadcast",
+}
+_NATIVE_TOOL_PUBLIC_TO_INTERNAL: dict[str, str] = {
+    public: internal for internal, public in _NATIVE_TOOL_NAMES.items()
+}
 
 
 _ENTITY_TOOL_DEFS: list[dict] = [
@@ -1446,7 +1474,7 @@ _SYSTEM_TOOL_DEFS: list[dict] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "HassBroadcast",
+        "name": _NATIVE_TOOL_NAMES["HassBroadcast"],
         "description": "Broadcast a message through the home",
         "cap": "cap_broadcast",
         "inputSchema": {
@@ -3045,7 +3073,7 @@ _CLEAN_AREA_NAME = (
 
 _NATIVE_TOOL_DEFS: list[dict] = [
     {
-        "name": "GetLiveContext",
+        "name": _NATIVE_TOOL_NAMES["GetLiveContext"],
         "description": (
             "Provides real-time information about the CURRENT state, value, or mode of devices, "
             "sensors, entities, or areas. Use this tool for: 1. Answering questions about current "
@@ -3055,12 +3083,12 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "GetDateTime",
+        "name": _NATIVE_TOOL_NAMES["GetDateTime"],
         "description": "Provides the current date and time.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "HassTurnOn",
+        "name": _NATIVE_TOOL_NAMES["HassTurnOn"],
         "description": "Turns on/opens/presses a device or entity. For locks, this performs a 'lock' action. Use for requests like 'turn on', 'activate', 'enable', or 'lock'.",
         "inputSchema": {
             "type": "object",
@@ -3074,7 +3102,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassTurnOff",
+        "name": _NATIVE_TOOL_NAMES["HassTurnOff"],
         "description": "Turns off/closes a device or entity. For locks, this performs an 'unlock' action. Use for requests like 'turn off', 'deactivate', 'disable', or 'unlock'.",
         "inputSchema": {
             "type": "object",
@@ -3088,7 +3116,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassLightSet",
+        "name": _NATIVE_TOOL_NAMES["HassLightSet"],
         "description": "Sets the brightness percentage or color of a light",
         "inputSchema": {
             "type": "object",
@@ -3104,7 +3132,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassFanSetSpeed",
+        "name": _NATIVE_TOOL_NAMES["HassFanSetSpeed"],
         "description": "Sets a fan's speed by percentage",
         "inputSchema": {
             "type": "object",
@@ -3119,7 +3147,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassClimateSetTemperature",
+        "name": _NATIVE_TOOL_NAMES["HassClimateSetTemperature"],
         "description": "Sets the target temperature of a climate device or entity",
         "inputSchema": {
             "type": "object",
@@ -3133,7 +3161,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassSetPosition",
+        "name": _NATIVE_TOOL_NAMES["HassSetPosition"],
         "description": "Sets the position of a device or entity",
         "inputSchema": {
             "type": "object",
@@ -3148,7 +3176,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassSetVolume",
+        "name": _NATIVE_TOOL_NAMES["HassSetVolume"],
         "description": "Sets the volume percentage of a media player",
         "inputSchema": {
             "type": "object",
@@ -3163,7 +3191,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassSetVolumeRelative",
+        "name": _NATIVE_TOOL_NAMES["HassSetVolumeRelative"],
         "description": "Increases or decreases the volume of a media player",
         "inputSchema": {
             "type": "object",
@@ -3176,7 +3204,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaPause",
+        "name": _NATIVE_TOOL_NAMES["HassMediaPause"],
         "description": "Pauses a media player",
         "inputSchema": {
             "type": "object",
@@ -3190,7 +3218,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaUnpause",
+        "name": _NATIVE_TOOL_NAMES["HassMediaUnpause"],
         "description": "Resumes a media player",
         "inputSchema": {
             "type": "object",
@@ -3204,7 +3232,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaNext",
+        "name": _NATIVE_TOOL_NAMES["HassMediaNext"],
         "description": "Skips a media player to the next item",
         "inputSchema": {
             "type": "object",
@@ -3218,7 +3246,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaPrevious",
+        "name": _NATIVE_TOOL_NAMES["HassMediaPrevious"],
         "description": "Replays the previous item for a media player",
         "inputSchema": {
             "type": "object",
@@ -3232,7 +3260,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaSearchAndPlay",
+        "name": _NATIVE_TOOL_NAMES["HassMediaSearchAndPlay"],
         "description": "Searches for media and plays the first result",
         "inputSchema": {
             "type": "object",
@@ -3246,7 +3274,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaPlayerMute",
+        "name": _NATIVE_TOOL_NAMES["HassMediaPlayerMute"],
         "description": "Mutes a media player",
         "inputSchema": {
             "type": "object",
@@ -3260,7 +3288,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassMediaPlayerUnmute",
+        "name": _NATIVE_TOOL_NAMES["HassMediaPlayerUnmute"],
         "description": "Unmutes a media player",
         "inputSchema": {
             "type": "object",
@@ -3274,7 +3302,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassCancelAllTimers",
+        "name": _NATIVE_TOOL_NAMES["HassCancelAllTimers"],
         "description": "Cancels all timers",
         "inputSchema": {
             "type": "object",
@@ -3284,7 +3312,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassVacuumStart",
+        "name": _NATIVE_TOOL_NAMES["HassVacuumStart"],
         "description": "Starts a vacuum",
         "inputSchema": {
             "type": "object",
@@ -3297,7 +3325,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassVacuumReturnToBase",
+        "name": _NATIVE_TOOL_NAMES["HassVacuumReturnToBase"],
         "description": "Returns a vacuum to base",
         "inputSchema": {
             "type": "object",
@@ -3310,7 +3338,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassVacuumCleanArea",
+        "name": _NATIVE_TOOL_NAMES["HassVacuumCleanArea"],
         "description": "Tells a vacuum to clean a specific area",
         "inputSchema": {
             "type": "object",
@@ -3322,7 +3350,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
         },
     },
     {
-        "name": "HassStopMoving",
+        "name": _NATIVE_TOOL_NAMES["HassStopMoving"],
         "description": "Stops a moving device or entity",
         "inputSchema": {
             "type": "object",
@@ -3501,7 +3529,7 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "delete_blueprint": _annot(False, True, True),
     # System actions.
     "restart_ha": _annot(False, True, False),
-    "HassBroadcast": _annot(False, False, False),
+    _NATIVE_TOOL_NAMES["HassBroadcast"]: _annot(False, False, False),
     "permit_zigbee_join": _annot(False, False, False),
     "reconfigure_zigbee_device": _annot(False, True, True),
     "remove_zigbee_device": _annot(False, True, True),
@@ -3514,26 +3542,26 @@ _TOOL_ANNOTATIONS: dict[str, dict] = {
     "set_zigbee_group_members": _annot(False, True, True),
     "remove_zigbee_group": _annot(False, True, True),
     # Native HA MCP tools.
-    "GetLiveContext": _annot(True, False, True),
-    "GetDateTime": _annot(True, False, True),
-    "HassTurnOn": _annot(False, True, True),
-    "HassTurnOff": _annot(False, True, True),
-    "HassLightSet": _annot(False, True, True),
-    "HassFanSetSpeed": _annot(False, True, True),
-    "HassClimateSetTemperature": _annot(False, True, True),
-    "HassSetPosition": _annot(False, True, True),
-    "HassSetVolume": _annot(False, True, True),
-    "HassSetVolumeRelative": _annot(False, True, False),
-    "HassMediaPause": _annot(False, True, True),
-    "HassMediaUnpause": _annot(False, True, True),
-    "HassMediaNext": _annot(False, True, False),
-    "HassMediaPrevious": _annot(False, True, False),
-    "HassMediaSearchAndPlay": _annot(False, True, False),
-    "HassMediaPlayerMute": _annot(False, True, True),
-    "HassMediaPlayerUnmute": _annot(False, True, True),
-    "HassCancelAllTimers": _annot(False, True, True),
-    "HassStopMoving": _annot(False, True, True),
-    "HassVacuumStart": _annot(False, True, True),
-    "HassVacuumReturnToBase": _annot(False, True, True),
-    "HassVacuumCleanArea": _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["GetLiveContext"]: _annot(True, False, True),
+    _NATIVE_TOOL_NAMES["GetDateTime"]: _annot(True, False, True),
+    _NATIVE_TOOL_NAMES["HassTurnOn"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassTurnOff"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassLightSet"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassFanSetSpeed"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassClimateSetTemperature"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassSetPosition"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassSetVolume"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassSetVolumeRelative"]: _annot(False, True, False),
+    _NATIVE_TOOL_NAMES["HassMediaPause"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassMediaUnpause"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassMediaNext"]: _annot(False, True, False),
+    _NATIVE_TOOL_NAMES["HassMediaPrevious"]: _annot(False, True, False),
+    _NATIVE_TOOL_NAMES["HassMediaSearchAndPlay"]: _annot(False, True, False),
+    _NATIVE_TOOL_NAMES["HassMediaPlayerMute"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassMediaPlayerUnmute"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassCancelAllTimers"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassStopMoving"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassVacuumStart"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassVacuumReturnToBase"]: _annot(False, True, True),
+    _NATIVE_TOOL_NAMES["HassVacuumCleanArea"]: _annot(False, True, True),
 }

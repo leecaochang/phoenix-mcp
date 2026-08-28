@@ -41,6 +41,7 @@ import pytest
 from custom_components.phoenix_mcp.tool_defs import (
     _ENTITY_TOOL_DEFS,
     _NATIVE_TOOL_DEFS,
+    _NATIVE_TOOL_NAMES,
     _SYSTEM_TOOL_DEFS,
 )
 from custom_components.phoenix_mcp.tool_contracts import (
@@ -263,7 +264,7 @@ def _tools_by_module() -> dict[pathlib.Path, set[str]]:
     for tool, handler in _registered_handlers().items():
         home = homes.get(handler)
         if home is not None:
-            out.setdefault(home, set()).add(tool)
+            out.setdefault(home, set()).add(_NATIVE_TOOL_NAMES.get(tool, tool))
     return out
 
 

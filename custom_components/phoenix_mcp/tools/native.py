@@ -1,8 +1,9 @@
 """Native HA MCP tools: the Hass* surface HA itself publishes, implemented 1:1.
 
-These are the Hass* tool names HA's own MCP server exposes, plus GetLiveContext
-and GetDateTime. Parity with HA's shapes is the contract, not a preference: a
-client written against HA's MCP server has to work here unchanged, which is why
+These handlers back the domain-prefixed tool names HA's own MCP server exposes.
+Public names are translated to the stable internal operation names at the
+transport boundary. Parity with HA's shapes is the contract, not a preference:
+a client written against HA's MCP server has to work here unchanged, which is why
 every action returns the full native envelope
 ({"speech": {}, "response_type": "action_done", "data": {"success": [], "failed": []}})
 even when nothing matched, and why HassCancelAllTimers always carries

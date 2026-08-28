@@ -17,6 +17,10 @@ import pytest
 from homeassistant.util.dt import utcnow
 
 from custom_components.phoenix_mcp import agentcli, const, mcp_view, mesa_tools
+from custom_components.phoenix_mcp.tool_defs import (
+    _NATIVE_TOOL_NAMES,
+    _NATIVE_TOOL_PUBLIC_TO_INTERNAL,
+)
 from custom_components.phoenix_mcp.token_store import (
     PermissionNode,
     PermissionTree,
@@ -43,6 +47,14 @@ def _all_defs() -> list[dict]:
 
 def _by_name() -> dict[str, dict]:
     return {d["name"]: d for d in _all_defs()}
+
+
+def _public_name(name: str) -> str:
+    return _NATIVE_TOOL_NAMES.get(name, name)
+
+
+def _internal_name(name: str) -> str:
+    return _NATIVE_TOOL_PUBLIC_TO_INTERNAL.get(name, name)
 
 
 def test_every_tool_carries_exactly_the_four_hints():
@@ -75,7 +87,8 @@ def test_executor_registry_tools_are_not_read_only():
     defs = _by_name()
     offenders = [
         name for name in mcp_view._EXECUTOR_REGISTRY
-        if name in defs and defs[name]["annotations"]["readOnlyHint"]
+        if _public_name(name) in defs
+        and defs[_public_name(name)]["annotations"]["readOnlyHint"]
     ]
     assert not offenders, f"executor-backed tools marked readOnlyHint true: {sorted(offenders)}"
 
@@ -84,7 +97,7 @@ def test_write_gated_tools_are_not_read_only():
     defs = _by_name()
     offenders = [
         name for name in mcp_view._WRITE_GATED_TOOLS
-        if defs[name]["annotations"]["readOnlyHint"]
+        if defs[_public_name(name)]["annotations"]["readOnlyHint"]
     ]
     assert not offenders, f"write-gated tools marked readOnlyHint true: {sorted(offenders)}"
 
@@ -93,8 +106,9 @@ def test_read_only_tools_are_in_neither_write_set():
     # The reverse direction: a tool claiming readOnlyHint must not be gated as a
     # write anywhere, or the annotation is lying to the client.
     read_only = {d["name"] for d in _all_defs() if d["annotations"]["readOnlyHint"]}
-    assert not (read_only & set(mcp_view._EXECUTOR_REGISTRY))
-    assert not (read_only & mcp_view._WRITE_GATED_TOOLS)
+    read_only_internal = {_internal_name(name) for name in read_only}
+    assert not (read_only_internal & set(mcp_view._EXECUTOR_REGISTRY))
+    assert not (read_only_internal & mcp_view._WRITE_GATED_TOOLS)
 
 
 def test_destroying_tools_are_marked_destructive():
@@ -179,21 +193,21 @@ def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wire
     assert metrics == {
         "read_only": {
             "tool_count": 50,
-            "canonical_bytes": 41564,
-            "claude_bytes": 36416,
-            "openai_bytes": 37866,
+            "canonical_bytes": 41584,
+            "claude_bytes": 36436,
+            "openai_bytes": 37886,
         },
         "write_capable": {
             "tool_count": 94,
-            "canonical_bytes": 89279,
-            "claude_bytes": 79586,
-            "openai_bytes": 82312,
+            "canonical_bytes": 89510,
+            "claude_bytes": 79817,
+            "openai_bytes": 82543,
         },
         "announce_all": {
             "tool_count": 154,
-            "canonical_bytes": 149617,
-            "claude_bytes": 133723,
-            "openai_bytes": 138189,
+            "canonical_bytes": 149866,
+            "claude_bytes": 133972,
+            "openai_bytes": 138438,
         },
     }
     assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 154
@@ -313,7 +327,7 @@ async def test_announcement_mirrors_agree_across_esphome_availability(integratio
 
 
 def test_dispatch_registry_matches_the_def_lists_both_ways():
-    published = set(_by_name())
+    published = {_internal_name(name) for name in _by_name()}
     registered = set(mcp_view._TOOL_HANDLERS)
     assert published - registered == set(), "published but not dispatchable"
     assert registered - published == set(), "dispatchable but not published"
@@ -371,8 +385,8 @@ _NATIVE_TARGET_PARAMS = ("name", "area", "floor", "domain", "device_class")
 # on, and its `name` is optional (omitting it uses every capable vacuum), so the
 # at-least-one-selector rule in the shared text would be wrong there.
 _NOT_A_TARGETING_SELECTOR = {
-    ("HassVacuumCleanArea", "area"),
-    ("HassVacuumCleanArea", "name"),
+    (_NATIVE_TOOL_NAMES["HassVacuumCleanArea"], "area"),
+    (_NATIVE_TOOL_NAMES["HassVacuumCleanArea"], "name"),
 }
 
 
@@ -480,7 +494,11 @@ def test_executor_registry_is_an_exact_proxy_for_gating():
     MESA sentinel executor that _call_tool can never dispatch; none of the three
     is cap-tied, so none reaches the branch this protects.
     """
-    capped = {d["name"] for d in _all_defs() if mcp_view._tool_caps(d)}
+    capped = {
+        _internal_name(d["name"])
+        for d in _all_defs()
+        if mcp_view._tool_caps(d)
+    }
     executors = set(mcp_view._EXECUTOR_REGISTRY)
     gating = {
         name for name, (fn, _pos, _kw) in mcp_view._TOOL_HANDLERS.items()

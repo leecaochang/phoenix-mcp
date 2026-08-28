@@ -27,13 +27,17 @@ from pathlib import Path
 
 import homeassistant
 import pytest
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.helpers import intent
+from homeassistant.helpers import llm as ha_llm
 from homeassistant.setup import async_setup_component
 
 from custom_components.phoenix_mcp import const
 from custom_components.phoenix_mcp.tool_defs import (
     _ENTITY_TOOL_DEFS,
     _NATIVE_TOOL_DEFS,
+    _NATIVE_TOOL_NAMES,
+    _NATIVE_TOOL_PUBLIC_TO_INTERNAL,
     _SYSTEM_TOOL_DEFS,
 )
 
@@ -93,9 +97,75 @@ def _published_hass_tools() -> dict[str, str]:
     tools: dict[str, str] = {}
     for defs in (_NATIVE_TOOL_DEFS, _ENTITY_TOOL_DEFS, _SYSTEM_TOOL_DEFS):
         for tool_def in defs:
-            if tool_def["name"].startswith("Hass"):
-                tools[tool_def["name"]] = tool_def["description"]
+            internal_name = _NATIVE_TOOL_PUBLIC_TO_INTERNAL.get(tool_def["name"])
+            if internal_name and internal_name.startswith("Hass"):
+                tools[internal_name] = tool_def["description"]
     return tools
+
+
+def test_native_public_names_are_domain_prefixed_and_legacy_names_are_hidden():
+    published = {
+        tool_def["name"]
+        for defs in (_NATIVE_TOOL_DEFS, _ENTITY_TOOL_DEFS, _SYSTEM_TOOL_DEFS)
+        for tool_def in defs
+    }
+    assert set(_NATIVE_TOOL_NAMES.values()) <= published
+    assert not (set(_NATIVE_TOOL_NAMES) & published)
+    assert all("__" in name for name in _NATIVE_TOOL_NAMES.values())
+
+
+async def test_native_public_names_match_installed_ha_llm_platforms(hass, ha_intents):
+    """Pin each native public name to the installed platform that owns it."""
+    version = tuple(int(part) for part in HA_VERSION.split(".")[:2])
+    if version < (2026, 9):
+        pytest.skip("domain-prefixed HA LLM tools start in Home Assistant 2026.9")
+
+    llm_context = ha_llm.LLMContext(
+        platform="phoenix_mcp",
+        context=None,
+        language="en",
+        assistant="conversation",
+        device_id=None,
+    )
+    always_available: set[str] = set()
+    for domain in ("homeassistant", "llm"):
+        platform = importlib.import_module(f"homeassistant.components.{domain}.llm")
+        result = platform.async_get_tools(hass, llm_context, ha_llm.LLM_API_ASSIST)
+        if result is not None:
+            always_available.update(tool.name for tool in result.tools)
+    assert always_available == {
+        _NATIVE_TOOL_NAMES["GetLiveContext"],
+        _NATIVE_TOOL_NAMES["GetDateTime"],
+    }
+
+    owners: dict[str, set[str]] = {}
+    for domain in (
+        "intent",
+        "light",
+        "fan",
+        "climate",
+        "media_player",
+        "vacuum",
+    ):
+        platform = importlib.import_module(f"homeassistant.components.{domain}.llm")
+        for intent_name in platform.LLM_INTENTS:
+            if intent_name in _NATIVE_TOOL_NAMES:
+                owners.setdefault(intent_name, set()).add(domain)
+
+    expected_intents = set(_NATIVE_TOOL_NAMES) - {
+        "GetLiveContext",
+        "GetDateTime",
+        "HassBroadcast",
+    }
+    assert set(owners) == expected_intents
+    for intent_name, domains in owners.items():
+        assert len(domains) == 1
+        domain = next(iter(domains))
+        assert _NATIVE_TOOL_NAMES[intent_name] == f"{domain}__{intent_name}"
+
+    assert _NATIVE_TOOL_NAMES["HassBroadcast"] == (
+        "assist_satellite__HassBroadcast"
+    )
 
 
 def _ha_llm_intents() -> set[str]:

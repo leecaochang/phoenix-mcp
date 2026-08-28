@@ -34,6 +34,7 @@ from custom_components.phoenix_mcp.mcp_view import (
     tool_catalog_counts,
 )
 from custom_components.phoenix_mcp.mesa_tools import mesa_tool_defs
+from custom_components.phoenix_mcp.tool_defs import _NATIVE_TOOL_NAMES
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
@@ -123,7 +124,7 @@ def test_required_params_are_marked_required_in_single_tool_articles() -> None:
 # the docs, each with the reason. An exemption is a claim that listing the values
 # would make the page WORSE, which is a higher bar than "it would be tedious".
 _ENUM_DOC_EXEMPT: dict[tuple[str, str], str] = {
-    ("HassMediaSearchAndPlay", "media_class"): (
+    (_NATIVE_TOOL_NAMES["HassMediaSearchAndPlay"], "media_class"): (
         "Home Assistant's own 20-value media taxonomy (album/artist/episode/genre/"
         "podcast/season/track/tv_show/...). It is a value domain, not a set of "
         "behaviours: no reader is choosing between them from the docs, and listing "
