@@ -349,6 +349,156 @@ def _finish(consumer: dict) -> dict:
     }
 
 
+_GRAPH_CONSUMER_KINDS = frozenset({
+    "automation", "script", "scene", "group", "person",
+})
+
+# These describe what the queried entity belongs to, not a configuration that
+# would break if the entity changed. HA returns them beside actual consumers.
+_GRAPH_NON_CONSUMER_KINDS = frozenset({
+    "area", "device", "floor", "label", "config_entry", "integration", "entity",
+})
+
+
+async def _relationship_graph_hits(
+    hass: HomeAssistant, scope: set[str],
+) -> tuple[set[tuple[str, str, str]], list[dict], bool]:
+    """Ask HA's loaded reference graph what consumes each entity in scope.
+
+    Each hit is ``(consumer kind, consumer entity id, referenced entity id)``.
+    Home Assistant's graph sees loaded package and blueprint configurations and
+    integration-managed consumers that Phoenix's direct YAML walk cannot read.
+    It deliberately remains a complement: HA's extractor skips templated entity
+    ids, while Phoenix's body walk can still see literal ids inside those bodies.
+
+    The boolean says whether at least one definitive graph response was read.
+    A missing command, changed payload shape, or unknown related type is returned
+    as an explicit coverage gap rather than being collapsed into an empty graph.
+    """
+    hits: set[tuple[str, str, str]] = set()
+    gaps: list[dict] = []
+    graph_read = False
+    gap_kinds: set[str] = set()
+
+    def _gap(kind: str, reason: str) -> None:
+        if kind not in gap_kinds:
+            gap_kinds.add(kind)
+            gaps.append({"kind": kind, "reason": reason})
+
+    for entity_id in sorted(scope):
+        try:
+            raw = await async_ws_command(
+                hass,
+                "search/related",
+                {"item_type": "entity", "item_id": entity_id},
+            )
+        except WsDispatchError:
+            _LOGGER.debug("get_relationships could not consult search/related", exc_info=True)
+            _gap(
+                "reference_graph",
+                "Home Assistant's reference graph is unavailable, so UI-loaded "
+                "and integration-managed consumers may be missing.",
+            )
+            break
+
+        if not isinstance(raw, dict):
+            _gap(
+                "reference_graph",
+                "Home Assistant's reference graph returned an unreadable result, so "
+                "UI-loaded and integration-managed consumers may be missing.",
+            )
+            continue
+
+        graph_read = True
+        for raw_kind, raw_ids in raw.items():
+            kind = str(raw_kind)
+            if not isinstance(raw_ids, (set, frozenset, list, tuple)) or any(
+                not isinstance(item, str) for item in raw_ids
+            ):
+                _gap(
+                    "reference_graph",
+                    "Home Assistant's reference graph returned an unreadable result, so "
+                    "UI-loaded and integration-managed consumers may be missing.",
+                )
+                continue
+            ids = set(raw_ids)
+            if kind in _GRAPH_CONSUMER_KINDS:
+                hits.update((kind, consumer_id, entity_id) for consumer_id in ids)
+            elif kind not in _GRAPH_NON_CONSUMER_KINDS and ids:
+                _gap(
+                    kind,
+                    "Home Assistant's reference graph returned a related type Phoenix "
+                    "does not model, so this consumer type is not included.",
+                )
+
+    return hits, gaps, graph_read
+
+
+def _graph_consumer_identity(
+    hass: HomeAssistant, kind: str, entity_id: str,
+) -> tuple[str, str | None]:
+    """Translate a graph entity id into Phoenix's existing consumer identity."""
+    registry_entry = er.async_get(hass).async_get(entity_id)
+    if registry_entry is not None and registry_entry.unique_id:
+        consumer_id = registry_entry.unique_id
+    else:
+        domain, separator, object_id = entity_id.partition(".")
+        consumer_id = object_id if separator and domain == kind else entity_id
+
+    state = hass.states.get(entity_id)
+    name: str | None
+    if state is not None:
+        name = state.name
+    elif registry_entry is not None:
+        name = registry_entry.name or registry_entry.original_name
+    else:
+        name = None
+    return str(consumer_id), name
+
+
+def _merge_graph_hits(
+    hass: HomeAssistant,
+    consumers: list[dict],
+    hits: set[tuple[str, str, str]],
+) -> None:
+    """Merge graph-only consumers without weakening detailed YAML roles."""
+    by_key = {
+        (consumer["kind"], str(consumer["id"])): consumer
+        for consumer in consumers
+    }
+    for kind, graph_entity_id, target_entity_id in sorted(hits):
+        consumer_id, name = _graph_consumer_identity(hass, kind, graph_entity_id)
+        key = (kind, consumer_id)
+        consumer = by_key.get(key)
+        if consumer is None:
+            consumer = {
+                "kind": kind,
+                "id": consumer_id,
+                "name": name,
+                "roles": ["reference"],
+                "entities": [],
+            }
+            consumers.append(consumer)
+            by_key[key] = consumer
+
+        existing = next(
+            (item for item in consumer["entities"] if item["entity_id"] == target_entity_id),
+            None,
+        )
+        if existing is not None:
+            # The body scan knows whether this is a trigger, condition, action,
+            # sequence, or member. A graph hit only knows "references", so it
+            # must never dilute the stronger role already present.
+            continue
+        consumer["entities"].append(
+            {"entity_id": target_entity_id, "roles": ["reference"]}
+        )
+        consumer["entities"].sort(key=lambda item: item["entity_id"])
+        if "reference" not in consumer["roles"]:
+            consumer["roles"].append("reference")
+            consumer["roles"].sort()
+
+
 def _scan_relationships(
     hass: HomeAssistant,
     scope: set[str],
@@ -1877,6 +2027,9 @@ async def _registry_relationships_preview(
     hass: HomeAssistant, entity_ids: list[str]
 ) -> dict[str, Any]:
     """Full known-consumer preview for one or more registry entities."""
+    graph_hits, graph_gaps, graph_read = await _relationship_graph_hits(
+        hass, set(entity_ids),
+    )
     dashboards, skipped = await _relationship_dashboards(hass)
     entries = _relationship_config_entries(hass)
     consumers, _refs, unreadable = await hass.async_add_executor_job(
@@ -1886,7 +2039,8 @@ async def _registry_relationships_preview(
         dashboards,
         entries,
     )
-    incomplete = [*skipped, *unreadable]
+    _merge_graph_hits(hass, consumers, graph_hits)
+    incomplete = [*graph_gaps, *skipped, *unreadable]
     preview: dict[str, Any] = {
         "consumers": consumers,
         "consumer_count": len(consumers),
@@ -1895,6 +2049,7 @@ async def _registry_relationships_preview(
             "script",
             "scene",
             "group",
+            *(["person"] if graph_read else []),
             "dashboard",
             "config_entry",
         ],
@@ -1934,6 +2089,10 @@ async def _tool_get_relationships(
 
     searched = ["automation", "script", "scene", "group"]
     not_searched: list[dict] = []
+    graph_hits, graph_gaps, graph_read = await _relationship_graph_hits(hass, scope)
+    not_searched.extend(graph_gaps)
+    if graph_read:
+        searched.append("person")
     dashboards: list[tuple[str, str | None, Any]] = []
     entries: list[dict] = []
     if effective_cap(token, "cap_lovelace_write") == CAP_DENY:
@@ -1951,6 +2110,7 @@ async def _tool_get_relationships(
     consumers, refs, unreadable = await hass.async_add_executor_job(
         _scan_relationships, hass, scope, dashboards, entries,
     )
+    _merge_graph_hits(hass, consumers, graph_hits)
     # A YAML branch this cannot read is the same class of gap as a capability it
     # does not hold, so it lands in the same field rather than a second one.
     not_searched.extend(unreadable)

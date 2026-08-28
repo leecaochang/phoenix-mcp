@@ -38,8 +38,9 @@ DEFAULT_TIMEOUT = 10.0
 # refuses anything outside this set, so a future caller cannot turn user input
 # into an arbitrary privileged command run as admin. Adding a command here is a
 # deliberate act. Keep in sync with the callers in mcp_view.py (helper CRUD +
-# list, backup read/create, lovelace dashboard CRUD) and radio.py (the two ZHA
-# reads). restore_backup is deliberately absent (too destructive). The helper
+# list, backup read/create, lovelace dashboard CRUD), tools/discovery.py
+# (loaded reference graph), and radio.py (the two ZHA reads). restore_backup is
+# deliberately absent (too destructive). The helper
 # "list" read is used to capture the pre-change config for version history.
 # Most ZHA write-side commands (zha/devices/permit, zha/devices/reconfigure,
 # zha/topology/update) are deliberately absent: their handlers enable
@@ -65,6 +66,11 @@ ALLOWED_WS_COMMANDS: frozenset[str] = frozenset(
         "lovelace/dashboards/list", "lovelace/dashboards/create",
         "lovelace/dashboards/update", "lovelace/dashboards/delete",
         "logbook/get_events",
+        # Loaded-config reverse references. This complements Phoenix's direct
+        # YAML walk with packages, blueprint-expanded configs, people, and
+        # integration-managed consumers. The caller supplies only entity ids
+        # already resolved through the Phoenix permission tree.
+        "search/related",
         # Integration-aware logger control. Unlike logger/set_level, this resolves
         # the integration's declared logger set and preserves HA's none/once/
         # permanent semantics. Phoenix adds capability, scope, approval, and

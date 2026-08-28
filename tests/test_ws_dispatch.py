@@ -121,6 +121,33 @@ async def test_only_integration_aware_logger_control_is_allowlisted():
     assert "logger/set_level" not in ALLOWED_WS_COMMANDS
 
 
+async def test_search_related_is_allowlisted_and_matches_home_assistant(hass, hass_admin_user):
+    """The relationship graph is a real HA command with a stable result shape."""
+    from custom_components.phoenix_mcp.ws_dispatch import ALLOWED_WS_COMMANDS
+
+    hass.states.async_set("light.kitchen", "off")
+    assert await async_setup_component(hass, "automation", {
+        "automation": [{
+            "id": "graph-contract",
+            "alias": "Graph contract",
+            "trigger": [{"platform": "state", "entity_id": "light.kitchen"}],
+            "action": [],
+        }],
+    })
+    await hass.async_block_till_done()
+
+    assert "search/related" in ALLOWED_WS_COMMANDS
+    assert await async_setup_component(hass, "search", {"search": {}})
+
+    result = await async_ws_command(
+        hass,
+        "search/related",
+        {"item_type": "entity", "item_id": "light.kitchen"},
+    )
+    assert isinstance(result, dict)
+    assert result["automation"] == {"automation.graph_contract"}
+
+
 async def test_zha_leaky_write_commands_are_not_allowlisted():
     # zha/devices/permit enables process-wide ZHA debug logging and parks its
     # cleanup in connection.subscriptions; zha/devices/reconfigure parks a

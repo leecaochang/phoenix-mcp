@@ -350,8 +350,195 @@ class TestRelationshipCoverage:
         content, _, _ = await _call("get_relationships", {"entity_id": "light.kitchen"}, _token(), hass)
         body = _json(content)
         assert body["searched"] == ["automation", "script", "scene", "group"]
-        assert {n["kind"] for n in body["not_searched"]} == {"dashboard", "config_entry"}
-        assert all("requires cap_" in n["reason"] for n in body["not_searched"])
+        assert {n["kind"] for n in body["not_searched"]} == {
+            "dashboard", "config_entry", "reference_graph",
+        }
+        cap_gaps = [n for n in body["not_searched"] if n["kind"] != "reference_graph"]
+        assert all("requires cap_" in n["reason"] for n in cap_gaps)
+
+    async def test_reference_graph_adds_a_consumer_absent_from_yaml(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """HA's loaded graph covers consumers Phoenix cannot read from YAML."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        registry = er.async_get(hass)
+        graph_only = registry.async_get_or_create(
+            "automation",
+            "test_integration",
+            "graph-only-id",
+            suggested_object_id="graph_only",
+        )
+        hass.states.async_set(graph_only.entity_id, "on", {"friendly_name": "Graph only"})
+
+        async def _graph(hass_, command, payload):
+            assert command == "search/related"
+            assert payload == {"item_type": "entity", "item_id": "light.kitchen"}
+            return {"automation": {graph_only.entity_id}}
+
+        monkeypatch.setattr(disc, "async_ws_command", _graph)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"}, _token(), hass,
+        )
+        body = _json(content)
+        consumer = next(c for c in body["consumers"] if c["name"] == "Graph only")
+        assert consumer == {
+            "kind": "automation",
+            "id": "graph-only-id",
+            "name": "Graph only",
+            "roles": ["reference"],
+            "entities": [{"entity_id": "light.kitchen", "roles": ["reference"]}],
+        }
+        assert "person" in body["searched"]
+        assert not [n for n in body.get("not_searched", []) if n["kind"] == "reference_graph"]
+
+    async def test_real_home_assistant_graph_reaches_the_tool(
+        self, hass, hass_admin_user,
+    ):
+        """Contract test: drive HA's real graph through Phoenix end to end."""
+        from homeassistant.setup import async_setup_component
+
+        hass.states.async_set("light.graph_target", "off")
+        assert await async_setup_component(hass, "automation", {
+            "automation": [{
+                "id": "real-graph-contract",
+                "alias": "Real graph contract",
+                "trigger": [{"platform": "state", "entity_id": "light.graph_target"}],
+                "action": [],
+            }],
+        })
+        await hass.async_block_till_done()
+        assert await async_setup_component(hass, "search", {"search": {}})
+
+        content, outcome, _ = await _call(
+            "get_relationships", {"entity_id": "light.graph_target"}, _token(), hass,
+        )
+        assert outcome == "allowed"
+        consumer = next(
+            item for item in _json(content)["consumers"]
+            if item["name"] == "Real graph contract"
+        )
+        assert consumer["id"] == "real-graph-contract"
+        assert consumer["roles"] == ["reference"]
+        assert consumer["entities"] == [
+            {"entity_id": "light.graph_target", "roles": ["reference"]},
+        ]
+
+    async def test_reference_graph_merges_without_weakening_yaml_roles(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """A graph hit must not duplicate a YAML hit or replace trigger/action detail."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        async def _graph(hass_, command, payload):
+            return {"automation": {rel_env["automation"]}}
+
+        monkeypatch.setattr(disc, "async_ws_command", _graph)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"}, _token(), hass,
+        )
+        automations = [
+            c for c in _json(content)["consumers"]
+            if c["kind"] == "automation" and c["id"] == "auto1"
+        ]
+        assert len(automations) == 1
+        assert automations[0]["roles"] == ["trigger"]
+        assert automations[0]["entities"] == [
+            {"entity_id": "light.kitchen", "roles": ["trigger"]},
+        ]
+
+    async def test_reference_graph_failure_keeps_yaml_and_discloses_the_gap(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """An unavailable graph is partial evidence, never an empty graph."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+        from custom_components.phoenix_mcp.ws_dispatch import WsDispatchError
+
+        async def _unavailable(hass_, command, payload):
+            raise WsDispatchError("WebSocket command not available: search/related")
+
+        monkeypatch.setattr(disc, "async_ws_command", _unavailable)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"}, _token(), hass,
+        )
+        body = _json(content)
+        assert {c["kind"] for c in body["consumers"]} >= {
+            "automation", "script", "scene", "group",
+        }
+        gap = next(n for n in body["not_searched"] if n["kind"] == "reference_graph")
+        assert "UI-loaded" in gap["reason"]
+
+    async def test_reference_graph_queries_every_entity_in_a_broad_scope(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """The broad selector must not regain the exact-entity graph blind spot."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        queried = []
+
+        async def _graph(hass_, command, payload):
+            queried.append(payload["item_id"])
+            return {}
+
+        monkeypatch.setattr(disc, "async_ws_command", _graph)
+        content, _, _ = await _call(
+            "get_relationships", {"integration": "test_integration"}, _token(), hass,
+        )
+        body = _json(content)
+        assert queried == sorted(body["scope"]["entity_ids"])
+        assert "person" in body["searched"]
+
+    async def test_reference_graph_unknown_consumer_type_is_a_visible_gap(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """A future HA relation must not be silently misread as completeness."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        async def _future(hass_, command, payload):
+            return {"future_consumer": {"future.example"}}
+
+        monkeypatch.setattr(disc, "async_ws_command", _future)
+        content, _, _ = await _call(
+            "get_relationships", {"entity_id": "light.kitchen"}, _token(), hass,
+        )
+        gap = next(
+            item for item in _json(content)["not_searched"]
+            if item["kind"] == "future_consumer"
+        )
+        assert "does not model" in gap["reason"]
+
+    async def test_registry_write_preview_uses_the_same_reference_graph(
+        self, hass, rel_env, monkeypatch,
+    ):
+        """Rename/delete approval previews need the same safety coverage."""
+        import custom_components.phoenix_mcp.tools.discovery as disc
+
+        registry = er.async_get(hass)
+        graph_only = registry.async_get_or_create(
+            "automation",
+            "test_integration",
+            "preview-graph-id",
+            suggested_object_id="preview_graph",
+        )
+        hass.states.async_set(graph_only.entity_id, "on", {"friendly_name": "Preview graph"})
+
+        async def _dispatch(hass_, command, payload):
+            if command == "search/related":
+                return {"automation": {graph_only.entity_id}}
+            assert command == "lovelace/dashboards/list"
+            return []
+
+        async def _dashboard(hass_, url_path):
+            return None
+
+        monkeypatch.setattr(disc, "async_ws_command", _dispatch)
+        monkeypatch.setattr(disc, "async_get_lovelace_config", _dashboard)
+        preview = await disc._registry_relationships_preview(hass, ["light.kitchen"])
+        assert any(
+            consumer["id"] == "preview-graph-id"
+            for consumer in preview["consumers"]
+        )
+        assert "person" in preview["searched"]
 
     async def test_dashboards_are_searched_with_a_patchable_path(self, hass, rel_env, monkeypatch):
         """The path is patch_dashboard's own addressing form, so a hit is
