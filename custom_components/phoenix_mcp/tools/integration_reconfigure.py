@@ -94,12 +94,17 @@ def _is_form_section(value: Any) -> bool:
     )
 
 
-def _marker_fallback(
+def _step_owned_fallback(
     marker: Any, inherited_suggestions: Mapping[str, Any] | None = None
 ) -> tuple[bool, Any]:
-    """Return a suggested/default value without exposing where it came from."""
+    """Return only a current value the edit step itself supplies.
+
+    A static voluptuous default is intentionally not returned here. Omitting
+    that field lets Home Assistant apply the same default it applies to the
+    frontend form, while submitting it would overwrite an existing value.
+    """
     description = _marker_description(marker)
-    if "suggested_value" in description:
+    if "suggested_value" in description and description["suggested_value"] is not None:
         return True, description["suggested_value"]
     name = _marker_name(marker)
     if (
@@ -108,13 +113,14 @@ def _marker_fallback(
         and name in inherited_suggestions
     ):
         return True, inherited_suggestions[name]
-    default = getattr(marker, "default", vol.UNDEFINED)
-    if default is not vol.UNDEFINED:
-        try:
-            return True, default() if callable(default) else default
-        except Exception:  # third-party schema callable
-            return False, None
     return False, None
+
+
+def _clears_by_omission(marker: Any) -> bool:
+    """Whether omitting a caller-supplied null clears this optional field."""
+    return not isinstance(marker, vol.Required) and getattr(
+        marker, "default", vol.UNDEFINED
+    ) is vol.UNDEFINED
 
 
 def _sanitize_public_schema(value: Any) -> Any:
@@ -180,7 +186,7 @@ def _form_payload(
             if name is None:
                 return None, ["The integration returned a non-string form field."]
             if _is_form_section(validator):
-                found, section_values = _marker_fallback(
+                found, section_values = _step_owned_fallback(
                     marker, inherited_suggestions
                 )
                 nested_suggestions = (
@@ -202,13 +208,16 @@ def _form_payload(
             # the same caller value across every form/section encounter.
             encountered.add(name)
             if name in config:
+                if config[name] is None and _clears_by_omission(marker):
+                    continue
                 payload[name] = config[name]
                 continue
-            found, fallback = _marker_fallback(marker, inherited_suggestions)
+            found, fallback = _step_owned_fallback(marker, inherited_suggestions)
             if found:
                 payload[name] = fallback
             elif isinstance(marker, vol.Required):
-                missing.append(name)
+                if getattr(marker, "default", vol.UNDEFINED) is vol.UNDEFINED:
+                    missing.append(name)
         return payload, missing
 
     return _walk(schema)

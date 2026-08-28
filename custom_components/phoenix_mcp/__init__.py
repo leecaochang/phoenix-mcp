@@ -397,8 +397,13 @@ async def _async_setup_entry_impl(hass: HomeAssistant, entry: ConfigEntry) -> bo
     # conversation agents can drive the bound token's tools. Kill-switch-gated like
     # the client routes (Assist is agent activity); the admin settings PATCH toggles
     # it live when the kill switch flips. No-op on HA versions lacking the seam.
-    from .assist_api import async_register_assist_api, async_unregister_assist_api
-    if not settings.kill_switch:
+    from .assist_api import (
+        async_probe_assist_api,
+        async_register_assist_api,
+        async_unregister_assist_api,
+    )
+    assist_supported = await async_probe_assist_api(hass)
+    if not settings.kill_switch and assist_supported:
         async_register_assist_api(hass, data)
     entry.async_on_unload(lambda: async_unregister_assist_api(data))
 

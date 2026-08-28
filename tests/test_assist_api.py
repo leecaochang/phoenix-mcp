@@ -19,6 +19,7 @@ from custom_components.phoenix_mcp import assist_api
 from custom_components.phoenix_mcp.assist_api import (
     PhoenixAssistAPI,
     PhoenixAssistTool,
+    async_probe_assist_api,
     assist_api_supported,
     async_register_assist_api,
     async_unregister_assist_api,
@@ -62,8 +63,54 @@ def _make_data(token: TokenRecord | None, *, kill_switch: bool = False, bound_id
 # --------------------------------------------------------------------------- #
 
 def test_assist_api_supported_in_test_env():
-    # The pinned HA test env ships helpers.llm + voluptuous_openapi.
+    # The pinned HA test env ships helpers.llm and the legacy converter.
     assert assist_api_supported() is True
+
+
+@pytest.mark.asyncio
+async def test_schema_converter_probe_runs_off_the_event_loop(hass):
+    executor = MagicMock()
+
+    async def _run_in_executor(func, *args):
+        executor()
+        return func(*args)
+
+    with patch.object(hass, "async_add_executor_job", side_effect=_run_in_executor):
+        assert await async_probe_assist_api(hass) is True
+    executor.assert_called_once_with()
+
+
+def test_schema_converter_falls_back_to_probatio_when_legacy_module_is_absent(monkeypatch):
+    assist_api._schema_converter.cache_clear()
+    legacy_error = ModuleNotFoundError(
+        "No module named 'voluptuous_openapi'", name="voluptuous_openapi"
+    )
+    probatio = SimpleNamespace(from_openapi=lambda schema: {"probatio": schema})
+
+    def _import_module(name):
+        if name == "voluptuous_openapi":
+            raise legacy_error
+        assert name == "probatio"
+        return probatio
+
+    monkeypatch.setattr(assist_api.importlib, "import_module", _import_module)
+    assert assist_api._convert_to_voluptuous({"type": "object"}) == {
+        "probatio": {"type": "object"}
+    }
+    assist_api._schema_converter.cache_clear()
+
+
+def test_schema_converter_preserves_nested_module_not_found(monkeypatch):
+    assist_api._schema_converter.cache_clear()
+
+    def _import_module(name):
+        assert name == "voluptuous_openapi"
+        raise ModuleNotFoundError("No module named 'dependency'", name="dependency")
+
+    monkeypatch.setattr(assist_api.importlib, "import_module", _import_module)
+    with pytest.raises(ModuleNotFoundError, match="dependency"):
+        assist_api._convert_to_voluptuous({"type": "object"})
+    assist_api._schema_converter.cache_clear()
 
 
 @pytest.mark.asyncio

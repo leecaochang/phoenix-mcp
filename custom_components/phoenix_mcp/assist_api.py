@@ -13,18 +13,24 @@ take effect on the next call with no re-registration.
 
 HA-COUPLING POINT (re-verify on HA upgrades, same posture as ws_dispatch):
 ``homeassistant.helpers.llm`` (async_register_api / API / Tool / APIInstance) is
-under active refactoring, and ``voluptuous_openapi.convert_to_voluptuous``
-translates each tool's JSON-Schema parameters into the voluptuous schema
-``llm.Tool`` advertises (HA's own ``mcp`` client integration uses the same call).
-Both are feature-detected at import: when either is missing the bridge simply
-never registers (``assist_api_supported()`` is False) and the panel shows a
-"requires HA X+" hint, decoupled from MIN_HA_VERSION like the MESA injector.
+under active refactoring, and Home Assistant's schema converter translates each
+tool's JSON-Schema parameters into the voluptuous schema ``llm.Tool`` advertises
+(HA's own ``mcp`` client integration uses the same call). Stable releases expose
+``voluptuous_openapi.convert_to_voluptuous``; HA 2026.9 exposes
+``probatio.from_openapi`` instead. Both are feature-detected and the converter
+is resolved once on the executor before registration; when either dependency is
+missing the bridge simply never registers (``assist_api_supported()`` is False)
+and the panel shows a "requires HA X+" hint, decoupled from MIN_HA_VERSION like
+the MESA injector.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import logging
-from typing import Any
+from collections.abc import Callable
+from functools import cache
+from typing import Any, cast
 
 from homeassistant.core import HomeAssistant
 
@@ -34,13 +40,47 @@ _LOGGER = logging.getLogger(__name__)
 
 try:
     from homeassistant.helpers import llm as _llm
-    from voluptuous_openapi import convert_to_voluptuous as _convert_to_voluptuous
 
     _ASSIST_API_SUPPORTED = True
 except ImportError:  # pragma: no cover - depends on HA version
     _llm = None  # type: ignore[assignment]
-    _convert_to_voluptuous = None
     _ASSIST_API_SUPPORTED = False
+
+
+@cache
+def _schema_converter() -> Callable[[Any], Any]:
+    """Resolve Home Assistant's schema converter once for this process."""
+    try:
+        legacy = importlib.import_module("voluptuous_openapi")
+    except ModuleNotFoundError as err:
+        if err.name != "voluptuous_openapi":
+            raise
+        probatio = importlib.import_module("probatio")
+        return cast(Callable[[Any], Any], probatio.from_openapi)
+    return cast(Callable[[Any], Any], legacy.convert_to_voluptuous)
+
+
+def _convert_to_voluptuous(schema: Any) -> Any:
+    """Convert an OpenAPI schema on stable and Probatio-based HA Core."""
+    return _schema_converter()(schema)
+
+
+async def async_probe_assist_api(hass: HomeAssistant) -> bool:
+    """Resolve the schema converter off the event loop and report support."""
+    global _ASSIST_API_SUPPORTED
+    if _llm is None:
+        return False
+    try:
+        await hass.async_add_executor_job(_schema_converter)
+    except ImportError as err:
+        _LOGGER.warning(
+            "Phoenix MCP Assist bridge is unavailable because its Home Assistant "
+            "schema converter could not be imported: %s",
+            err,
+        )
+        _ASSIST_API_SUPPORTED = False
+        return False
+    return True
 
 
 def assist_api_supported() -> bool:

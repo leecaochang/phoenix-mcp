@@ -205,6 +205,23 @@ class TestRead:
 
 
 class TestWrite:
+    async def test_partial_options_update_preserves_untouched_current_fields(
+        self, hass, helper_entry, as_helper,
+    ):
+        init, configure, created = _flow(hass)
+        with init, configure:
+            content, outcome, _ = await _call(
+                "set_config_entry_options",
+                {"entry_id": "helper1", "settings": {"entity_id": "sensor.other"}},
+                _token(), hass)
+
+        assert outcome == "allowed"
+        assert created["options"] == {
+            "entity_id": "sensor.other",
+            "hysteresis": 0.0,
+        }
+        assert _json(content)["settings"] == created["options"]
+
     async def test_repointing_a_helper_at_a_new_source(self, hass, helper_entry, as_helper):
         """The migration case: the original source is gone, point it elsewhere."""
         init, configure, created = _flow(hass)

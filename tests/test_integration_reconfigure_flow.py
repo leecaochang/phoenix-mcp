@@ -97,7 +97,7 @@ def _success():
 
 
 @pytest.mark.asyncio
-async def test_forms_reuse_repeated_fields_and_fill_required_defaults():
+async def test_forms_reuse_repeated_fields_and_leave_static_defaults_to_ha():
     entry = _Entry()
 
     def commit(call, _payload):
@@ -126,9 +126,29 @@ async def test_forms_reuse_repeated_fields_and_fill_required_defaults():
     )
     assert result.status == subject.STATUS_VERIFIED
     assert manager.inputs == [
-        ("flow-1", {"host": "ha.local", "port": 8123, "username": "stored-user"}),
+        ("flow-1", {"host": "ha.local", "username": "stored-user"}),
         ("flow-1", {"host": "ha.local"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_optional_null_is_omitted_only_without_a_schema_default():
+    entry = _Entry()
+    form = _form({
+        vol.Optional("clearable"): str,
+        vol.Optional("defaulted", default="keep"): str,
+    })
+    def commit(_call, _payload):
+        entry.modified_at += timedelta(seconds=1)
+        entry.transition(ConfigEntryState.LOADED)
+
+    hass, manager = _hass(entry, [form, _success()], configure_hook=commit)
+    result = await subject.async_run_reconfigure_flow(
+        hass, entry, {"clearable": None, "defaulted": None}, []
+    )
+
+    assert result.status == subject.STATUS_VERIFIED
+    assert manager.inputs == [("flow-1", {"defaulted": None})]
     assert manager.init_context[1] == {"source": "reconfigure", "entry_id": "entry-1"}
     assert not manager.aborted
 

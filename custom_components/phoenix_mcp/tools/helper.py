@@ -20,11 +20,12 @@ come from ..tool_common.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Any, cast
 import hashlib
 import json
 import logging
+from typing import Any, cast
 
 import voluptuous as vol
 import voluptuous_serialize
@@ -57,6 +58,7 @@ from ..tool_common import (
     _pending_or_inline,
     _record_version,
     _restore_ctx,
+    redaction_sentinel_path,
     _tool_error,
     _tool_success,
     _truncate,
@@ -1999,6 +2001,128 @@ def _settings_store(entry: Any, mechanism: str | None) -> dict:
     return dict(entry.data if mechanism == _RECONFIGURE else entry.options)
 
 
+def _settings_marker_name(marker: Any) -> str | None:
+    """Return a string field name from a voluptuous marker."""
+    raw = marker.schema if isinstance(marker, vol.Marker) else marker
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _settings_marker_description(marker: Any) -> dict[str, Any]:
+    """Return a marker description without trusting third-party shapes."""
+    description = getattr(marker, "description", None)
+    return description if isinstance(description, dict) else {}
+
+
+def _settings_is_section(value: Any) -> bool:
+    """Recognize Home Assistant form sections without importing private APIs."""
+    value_type = type(value)
+    return (
+        value_type.__module__ == "homeassistant.data_entry_flow"
+        and value_type.__name__ == "section"
+        and isinstance(getattr(value, "schema", None), vol.Schema)
+    )
+
+
+def _settings_suggested_value(
+    marker: Any, inherited: dict[str, Any] | None
+) -> tuple[bool, Any]:
+    """Return a current value supplied by the edit step, if any."""
+    description = _settings_marker_description(marker)
+    if "suggested_value" in description and description["suggested_value"] is not None:
+        return True, copy.deepcopy(description["suggested_value"])
+    name = _settings_marker_name(marker)
+    if inherited is not None and name in inherited:
+        return True, copy.deepcopy(inherited[name])
+    return False, None
+
+
+def _settings_clear_by_omission(marker: Any) -> bool:
+    """Return whether an optional field has no default to replace omission."""
+    return not isinstance(marker, vol.Required) and getattr(
+        marker, "default", vol.UNDEFINED
+    ) is vol.UNDEFINED
+
+
+def _settings_form_payload(result: Any, settings: dict[str, Any]) -> dict[str, Any]:
+    """Build an edit-flow payload without resetting omitted stored values.
+
+    Home Assistant's edit forms arrive with current values as suggested values.
+    The frontend submits those values back. Phoenix must do the same for fields
+    the caller did not name, but must not submit a field's static schema default
+    as though it were the current value.
+    """
+    schema = result.get("data_schema")
+    if not isinstance(schema, vol.Schema) or not isinstance(schema.schema, dict):
+        return dict(settings)
+
+    def _walk(
+        nested_schema: vol.Schema,
+        inherited: dict[str, Any] | None = None,
+        explicit: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], set[str]]:
+        payload: dict[str, Any] = {}
+        consumed: set[str] = set()
+        for marker, validator in nested_schema.schema.items():
+            name = _settings_marker_name(marker)
+            if name is None:
+                continue
+            if _settings_is_section(validator):
+                section_value = settings.get(name)
+                section_named = isinstance(section_value, dict)
+                found, suggested = _settings_suggested_value(marker, inherited)
+                nested_inherited = suggested if found and isinstance(suggested, dict) else None
+                child, child_consumed = _walk(
+                    validator.schema,
+                    nested_inherited,
+                    section_value if section_named else None,
+                )
+                section_has_flat_input = any(
+                    child_name in settings for child_name in child_consumed
+                )
+                if (
+                    section_named
+                    or section_has_flat_input
+                    or isinstance(marker, vol.Required)
+                    or found
+                ):
+                    payload[name] = child
+                consumed.add(name)
+                consumed.update(child_consumed)
+                continue
+
+            consumed.add(name)
+            if name in settings:
+                value = settings[name]
+            elif explicit is not None and name in explicit:
+                value = explicit[name]
+            else:
+                found, value = _settings_suggested_value(marker, inherited)
+                if not found or redaction_sentinel_path(value) is not None:
+                    if isinstance(marker, vol.Required) and getattr(
+                        marker, "default", vol.UNDEFINED
+                    ) is vol.UNDEFINED:
+                        # Let the flow report a genuinely missing required value.
+                        continue
+                    continue
+            if value is None and _settings_clear_by_omission(marker):
+                continue
+            payload[name] = copy.deepcopy(value)
+
+        if explicit is not None:
+            for name, value in explicit.items():
+                if name not in consumed:
+                    payload[name] = copy.deepcopy(value)
+        return payload, consumed
+
+    payload, consumed = _walk(schema)
+    for name, value in settings.items():
+        if name not in consumed:
+            # Preserve unknown keys so Home Assistant can reject them instead
+            # of Phoenix silently turning an invalid request into a no-op.
+            payload[name] = copy.deepcopy(value)
+    return payload
+
+
 async def _init_settings_flow(hass: HomeAssistant, entry: Any, mechanism: str) -> Any:
     """Open the entry's settings flow and return its first step."""
     if mechanism == _RECONFIGURE:
@@ -2364,7 +2488,13 @@ async def _execute_set_config_entry_options(
         result = await _init_settings_flow(hass, entry, mechanism)
         flow_id = result.get("flow_id")
         result = await _configure_settings_flow(
-            hass, mechanism, flow_id, dict(settings) if isinstance(settings, dict) else {})
+            hass,
+            mechanism,
+            flow_id,
+            _settings_form_payload(result, settings)
+            if isinstance(settings, dict)
+            else {},
+        )
     except vol.Invalid as err:
         await _abort_flow(hass, mechanism, flow_id)
         return _tool_error(f"The settings were rejected: {err}"), "invalid_request", tool
