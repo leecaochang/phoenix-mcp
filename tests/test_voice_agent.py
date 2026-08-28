@@ -215,7 +215,7 @@ async def test_voice_turn_appends_review_link_only_when_requested():
     data = _make_data()
 
     async def dispatch_pending(method, msg_id, params, *a, **k):
-        return ({"result": {"content": [{"type": "text", "text": '{"status":"pending_approval","approval_id":"ap1","review_url":"/phoenix-mcp#approvals/ap1"}'}]}}, "n", "r", "pending")
+        return ({"result": {"content": [{"type": "text", "text": '{"status":"pending_approval","approval_id":"ap1","review_url":"/phoenix-mcp/approvals/ap1"}'}]}}, "n", "r", "pending")
 
     def stream_factory():
         return _staged_stream(
@@ -233,7 +233,7 @@ async def test_voice_turn_appends_review_link_only_when_requested():
                 MagicMock(), data, token, _MockProvider(), MagicMock(), "http://h", "unlock",
                 include_review_links=include,
             )
-        assert ("http://h/phoenix-mcp#approvals/ap1" in text) is expect_link
+        assert ("http://h/phoenix-mcp/approvals/ap1" in text) is expect_link
         assert "It is queued." in text
 
 

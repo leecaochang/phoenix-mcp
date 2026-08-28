@@ -598,7 +598,7 @@ def create_approval_notification(hass: HomeAssistant, approval: PendingApproval)
         message=notification_text(
             hass, "approval.message",
             token=approval.token_name,
-            url=f"/phoenix-mcp#approvals/{approval.id}",
+            url=f"/phoenix-mcp/approvals/{approval.id}",
         ),
         title=notification_text(hass, "approval.title"),
         notification_id=notification_id_for_approval(approval.id),

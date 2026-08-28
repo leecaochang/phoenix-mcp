@@ -34,7 +34,14 @@ let winMod: typeof import("./AgentChatWindow") | null = null;
 let disposed = false;
 const timeouts = new Set<number>();
 let unregisterShortcut: (() => void) | null = null;
-let bridge: { ready: boolean; open: typeof summon; close: typeof close; toggle: typeof toggle } | null = null;
+let bridge: {
+  ready: boolean;
+  open: typeof summon;
+  restore: typeof restore;
+  close: typeof close;
+  toggle: typeof toggle;
+  isVisible: () => boolean;
+} | null = null;
 
 function trackedTimeout(fn: () => void, delay: number): number {
   const id = window.setTimeout(() => {
@@ -106,7 +113,14 @@ function start(): void {
     return;
   }
   if (!hass.user.is_admin) return; // non-admins get nothing
-  bridge = { ready: true, open: summon, close, toggle };
+  bridge = {
+    ready: true,
+    open: summon,
+    restore,
+    close,
+    toggle,
+    isVisible: () => Boolean(winMod?.isAgentChatVisible()),
+  };
   (window as any).__phxAgentChat = bridge;
   unregisterShortcut = registerAgentChatShortcut(getHass, toggle);
   // Opportunistic card-catalog harvest, same reasoning as the profile injector:

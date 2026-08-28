@@ -30,6 +30,11 @@ def _message(**kwargs) -> str:
 
 
 class TestPendingToolResult:
+    def test_it_uses_the_custom_panel_route_for_review(self):
+        approval = SimpleNamespace(id="appr-1", tool_name="create_scene", expires_at=None)
+        payload = json.loads(_tool_pending(approval)["content"][0]["text"])
+        assert payload["review_url"] == "/phoenix-mcp/approvals/appr-1"
+
     def test_it_points_at_the_plural_wait(self):
         """The singular form is the defect: it predates approval_ids."""
         message = _message()

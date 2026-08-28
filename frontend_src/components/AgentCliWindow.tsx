@@ -1413,18 +1413,21 @@ export function AgentCliWindow({
     setMode("min");
   }, [pillPos, pos]);
 
-  // Open the full approval in the Phoenix MCP panel's Approvals tab. Minimize
-  // the in-app chat first so its higher stacking layer cannot cover the review.
-  // A popped-out chat is already in a separate browser window and cannot cover
-  // the panel. Navigation stays on HA's soft SPA path so the turn survives.
+  // Open the full approval in the Phoenix MCP panel's Approvals tab. A narrow
+  // in-app chat fills the viewport, so minimize it before the review and restore
+  // it after a decision. Desktop keeps the floating window open and in place;
+  // a popped-out chat is already in a separate browser window. Navigation stays
+  // on HA's soft SPA path so the turn survives.
   const openReview = useCallback((reviewUrl: string | undefined, approvalId: string) => {
-    if (!poppedOut) {
-      reviewRestoreRef.current = isNarrowViewport() && mode !== "min"
+    if (!poppedOut && isNarrowViewport()) {
+      reviewRestoreRef.current = mode !== "min"
         ? { approvalId, mode }
         : null;
       minimize();
+    } else {
+      reviewRestoreRef.current = null;
     }
-    const url = reviewUrl || `/phoenix-mcp#approvals/${approvalId}`;
+    const url = reviewUrl || `/phoenix-mcp/approvals/${encodeURIComponent(approvalId)}`;
     try {
       window.history.pushState(null, "", url);
       window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));

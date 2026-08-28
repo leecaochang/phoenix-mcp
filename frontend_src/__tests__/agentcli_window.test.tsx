@@ -1261,12 +1261,12 @@ describe("AgentCliWindow streaming", () => {
     expect(approveApproval).toHaveBeenCalledWith("ap9");
   });
 
-  it("minimizes the in-app chat before opening an approval review", async () => {
+  it("keeps the desktop chat open while opening an approval review", async () => {
     agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
       onEvent("approval_required", {
         approval_id: "ap9",
         tool_name: "restart_ha",
-        review_url: "/phoenix-mcp#approvals/ap9",
+        review_url: "/phoenix-mcp/approvals/ap9",
       });
       onEvent("messages", { messages: [] });
       onEvent("done", { stop_reason: "tool_use" });
@@ -1284,17 +1284,16 @@ describe("AgentCliWindow streaming", () => {
 
       fireEvent.click(await screen.findByText("Review…"));
 
-      await waitFor(() => expect(screen.getByRole("dialog", { name: "Agent Chat" }))
-        .toHaveClass("agentcli-minimized"));
+      expect(screen.getByRole("dialog", { name: "Agent Chat" }))
+        .not.toHaveClass("agentcli-minimized");
       expect(window.location.pathname + window.location.hash)
-        .toBe("/phoenix-mcp#approvals/ap9");
+        .toBe("/phoenix-mcp/approvals/ap9");
       expect(locationChanged).toHaveBeenCalledOnce();
 
-      // Desktop keeps the existing behavior: completing the review does not
-      // automatically reopen a window the operator may want left minimized.
+      // A panel decision must not change a desktop window that Review left open.
       notifyAgentChatReviewDecided("ap9");
       expect(screen.getByRole("dialog", { name: "Agent Chat" }))
-        .toHaveClass("agentcli-minimized");
+        .not.toHaveClass("agentcli-minimized");
     } finally {
       window.removeEventListener("location-changed", locationChanged);
     }
@@ -1306,7 +1305,7 @@ describe("AgentCliWindow streaming", () => {
       onEvent("approval_required", {
         approval_id: "ap-mobile",
         tool_name: "restart_ha",
-        review_url: "/phoenix-mcp#approvals/ap-mobile",
+        review_url: "/phoenix-mcp/approvals/ap-mobile",
       });
       onEvent("messages", { messages: [] });
       onEvent("done", { stop_reason: "tool_use" });

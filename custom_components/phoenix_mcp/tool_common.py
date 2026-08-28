@@ -88,7 +88,7 @@ def _tool_pending(approval: Any, waited_seconds: int | None = None) -> dict:
         "status": "pending_approval",
         "approval_id": approval.id,
         "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
-        "review_url": f"/phoenix-mcp#approvals/{approval.id}",
+        "review_url": f"/phoenix-mcp/approvals/{approval.id}",
         "message": (
             f"{waited}This action is queued for admin approval and will be applied once approved; "
             "the admin has been notified. Do not retry it. Continue with your remaining steps: "

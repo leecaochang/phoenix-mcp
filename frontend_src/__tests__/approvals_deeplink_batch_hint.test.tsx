@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { ApprovalsView } from "../views/ApprovalsView";
 import { api } from "../api";
 import type { ApprovalRecord } from "../types";
@@ -159,5 +159,33 @@ describe("deep-link batch hint", () => {
     );
     await findByRole("dialog");
     expect(queryByText(/waiting for review/)).toBeNull();
+  });
+
+  it("leaves an unconsumed deep-link intact when the panel unmounts mid-fetch", async () => {
+    vi.mocked(api.listApprovals).mockResolvedValue({
+      approvals: [record("a")], total: 1, limit: 50, offset: 0,
+    });
+    let resolveApproval!: (value: ApprovalRecord) => void;
+    vi.mocked(api.getApproval).mockReturnValue(new Promise((resolve) => {
+      resolveApproval = resolve;
+    }));
+    const onConsumedDeepLink = vi.fn();
+    const { unmount } = render(
+      <ApprovalsView
+        tab="pending"
+        onTabChange={() => {}}
+        openApprovalId="a"
+        onConsumedDeepLink={onConsumedDeepLink}
+      />,
+    );
+    await waitFor(() => expect(api.getApproval).toHaveBeenCalledWith("a"));
+
+    unmount();
+    await act(async () => {
+      resolveApproval(record("a"));
+      await Promise.resolve();
+    });
+
+    expect(onConsumedDeepLink).not.toHaveBeenCalled();
   });
 });

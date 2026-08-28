@@ -89,6 +89,19 @@ function readStoredApprovalsTab(): ApprovalsTab {
   return "pending";
 }
 
+function approvalDeepLink(): { approvalId: string | null } | null {
+  const pathMatch = window.location.pathname.match(/^\/phoenix-mcp\/approvals(?:\/([^/]+))?\/?$/);
+  const hashMatch = window.location.hash.replace(/^#/, "").match(/^approvals(?:\/(.+))?$/);
+  const match = pathMatch ?? hashMatch;
+  if (!match) return null;
+  if (!match[1]) return { approvalId: null };
+  try {
+    return { approvalId: decodeURIComponent(match[1]) };
+  } catch {
+    return { approvalId: null };
+  }
+}
+
 function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageChange }: { hass: unknown; narrow: boolean; theme: Theme; onThemeChange: (t: Theme) => void; language: string; onLanguageChange: (lang: string) => void }) {
   const [tab, setTab] = useState<Tab>(readStoredTab);
   const [view, setView] = useState<View>(() => readStoredView(readStoredTab()));
@@ -130,40 +143,48 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
   const lastSeenPendingCountRef = useRef<number | null>(null);
   const openAgentCliRef = useRef<(tokenId?: string) => void>(() => {});
 
-  // Deep-link from a notification: /phoenix-mcp#approvals or /phoenix-mcp#approvals/{id} opens
-  // the Approvals tab (and that specific approval's popup). We listen on
-  // hashchange AND HA's SPA-navigation signals (location-changed, popstate):
-  // when the panel is already open, HA's router navigates without a real
-  // hashchange, so hashchange alone would miss the deep-link (F3).
+  // Deep-link from a notification: /phoenix-mcp/approvals/{id} opens the
+  // Approvals tab and that specific approval. Legacy fragment links remain
+  // readable. Listen on HA's SPA-navigation signals as well as hashchange:
+  // when the panel is already open, HA routes without remounting this tree.
   useEffect(() => {
-    function handleHash() {
-      const m = window.location.hash.replace(/^#/, "").match(/^approvals(?:\/(.+))?$/);
-      if (!m) return;
+    function handleApprovalDeepLink() {
+      const link = approvalDeepLink();
+      if (!link) return;
       setTab("approvals");
       setView({ name: "list" });
-      if (m[1]) {
-        setDeepApprovalId(decodeURIComponent(m[1]));
+      if (link.approvalId) {
+        setDeepApprovalId(link.approvalId);
         // A notification deep-link is for a pending approval, so show Pending
         // immediately: otherwise a persisted History sub-tab flashes until the
         // fetch resolves (ApprovalsView corrects to History if it is already
         // resolved). Fixes "the link took me to History".
         setApprovalsTab("pending");
-        // Strip the approval id from the URL so a later reload or revisit does not
-        // re-open this (by then resolved) approval from a stale hash.
-        try {
-          window.history.replaceState(null, "", window.location.pathname + window.location.search);
-        } catch { /* URL API blocked: leave the hash */ }
       }
     }
-    handleHash();
-    window.addEventListener("hashchange", handleHash);
-    window.addEventListener("location-changed", handleHash);
-    window.addEventListener("popstate", handleHash);
+    handleApprovalDeepLink();
+    window.addEventListener("hashchange", handleApprovalDeepLink);
+    window.addEventListener("location-changed", handleApprovalDeepLink);
+    window.addEventListener("popstate", handleApprovalDeepLink);
     return () => {
-      window.removeEventListener("hashchange", handleHash);
-      window.removeEventListener("location-changed", handleHash);
-      window.removeEventListener("popstate", handleHash);
+      window.removeEventListener("hashchange", handleApprovalDeepLink);
+      window.removeEventListener("location-changed", handleApprovalDeepLink);
+      window.removeEventListener("popstate", handleApprovalDeepLink);
     };
+  }, []);
+
+  const consumeDeepApprovalLink = useCallback(() => {
+    setDeepApprovalId(null);
+    if (!approvalDeepLink()?.approvalId) return;
+    // Clear only after ApprovalsView has fetched and opened the record. Keeping
+    // the route until then lets a custom-panel remount consume the same target.
+    try {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `/phoenix-mcp${window.location.search}`,
+      );
+    } catch { /* URL API blocked: leave the deep link */ }
   }, []);
 
   // Build the dashboard card catalog once per panel visit. Backgrounded and
@@ -302,7 +323,12 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
     if (globalChatReady && settings?.agentcli_global && agentCliOpen) {
       setAgentCliOpen(false);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).__phxAgentChat?.open?.();
+      const globalChat = (window as any).__phxAgentChat;
+      // Navigating into this panel can mount it underneath an Agent Chat that
+      // already owns the global host. A visible window needs no action; a fresh
+      // page load needs a restore, which preserves the saved desktop geometry.
+      // The explicit header button remains the only path that summons/centers.
+      if (!globalChat?.isVisible?.()) globalChat?.restore?.();
     }
   }, [globalChatReady, settings?.agentcli_global, agentCliOpen]);
 
@@ -589,7 +615,7 @@ function PhoenixApp({ hass, narrow, theme, onThemeChange, language, onLanguageCh
             refreshSignal={approvalSignal}
             claimedApprovals={claimedApprovals}
             openApprovalId={deepApprovalId}
-            onConsumedDeepLink={() => setDeepApprovalId(null)}
+            onConsumedDeepLink={consumeDeepApprovalLink}
           />
         )}
         {tab === "mesa" && <MesaView />}

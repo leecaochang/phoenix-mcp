@@ -3677,7 +3677,7 @@ async def async_run_voice_turn(
     if include_review_links and turn.review_urls:
         # Deterministically append a clickable approval link (the Assist chat renders
         # the reply as markdown). Absolute when a base URL is known so it clicks from
-        # anywhere; the review_url is already a same-origin path like /phoenix-mcp#approvals/id.
+        # anywhere; the review_url is already a same-origin path like /phoenix-mcp/approvals/id.
         links = [f"{base_url}{u}" if base_url else u for u in turn.review_urls]
         joined = " ".join(f"[Approve in the Phoenix MCP panel]({href})" for href in links)
         answer = f"{answer}\n\n{joined}"

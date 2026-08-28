@@ -558,6 +558,7 @@ class TestNotificationGating:
         with patch("homeassistant.components.persistent_notification.async_create") as m:
             create_approval_notification(hass, self._approval())
             m.assert_called_once()
+            assert "/phoenix-mcp/approvals/appr_x" in m.call_args.kwargs["message"]
 
 
 class TestArgsRedaction:

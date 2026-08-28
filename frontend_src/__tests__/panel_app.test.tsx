@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, waitFor } from "@testing-library/react";
+import { patchDurable as patchAgentCliDurable } from "../utils/agentcli_state";
 
 // Companion to panel_shell.test.tsx. That test stubs react-dom/client to isolate
 // the custom-element shell; this one lets the REAL PhoenixApp tree render (with a
@@ -26,11 +27,19 @@ const { apiMock } = vi.hoisted(() => {
     permissions: { domains: {}, devices: {}, entities: {} },
     ...Object.fromEntries(CAPS.map((c) => [c, "deny"])),
   };
+  const approval = {
+    id: "ap-9", token_id: token.id, token_name: token.name,
+    cap_name: "cap_restart", tool_name: "restart_ha", args: {},
+    status: "pending", created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    request_id: "req-9", client_ip: "browser",
+  };
   const settings = {
     kill_switch: false, disable_all_logging: false, log_allowed: true,
     log_denied: true, log_rate_limited: true, log_entity_names: true,
     log_client_ip: true, notify_on_rate_limit: false, notify_on_approval: true,
     audit_flush_interval: 15, audit_log_maxlen: 10000, mesa_mode: "advisory",
+    agentcli_global: true,
   };
   // Specific returns for the app-mount calls; everything else gets a permissive
   // empty shape so any child effect resolves without throwing.
@@ -38,6 +47,7 @@ const { apiMock } = vi.hoisted(() => {
     listTokens: async () => [token],
     getSettings: async () => settings,
     listApprovals: async () => ({ approvals: [], total: 3 }),
+    getApproval: async () => approval,
     getEntityHints: async () => ({ entity_hints: {} }),
   };
   const permissive = {
@@ -68,11 +78,12 @@ function mountPanel(): HTMLElement & { hass: unknown; narrow: boolean } {
 describe("phoenix-mcp-panel full app shell", () => {
   beforeEach(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
-    window.location.hash = "";
+    window.history.replaceState(null, "", "/phoenix-mcp");
   });
 
   afterEach(() => {
     document.querySelectorAll("phoenix-mcp-panel").forEach((el) => el.remove());
+    delete (window as unknown as Record<string, unknown>).__phxAgentChat;
   });
 
   it("loads tokens through the real tree and shows them in the list", async () => {
@@ -112,5 +123,48 @@ describe("phoenix-mcp-panel full app shell", () => {
     for (const tab of el.shadowRoot!.querySelectorAll("[role='tab']")) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
     }
+  });
+
+  it("keeps legacy approval hash links opening their specific record", async () => {
+    window.location.hash = "#approvals/ap-9";
+    const el = mountPanel();
+    await waitFor(() => {
+      expect(el.shadowRoot!.querySelector("[role='dialog']")).toBeTruthy();
+    });
+  });
+
+  it("does not re-summon an already-visible global chat when the panel mounts", async () => {
+    const open = vi.fn();
+    (window as unknown as Record<string, unknown>).__phxAgentChat = {
+      ready: true,
+      isVisible: () => true,
+      open,
+    };
+    patchAgentCliDurable({ open: true });
+    // Home Assistant routes custom-panel subpaths through the panel's route.
+    // The Phoenix element mounts only after that navigation has completed.
+    window.history.replaceState(null, "", "/phoenix-mcp/approvals/ap-9");
+
+    const el = mountPanel();
+    await waitFor(() => {
+      expect(el.shadowRoot!.querySelector("[role='dialog']")).toBeTruthy();
+    });
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("restores rather than re-centers a hidden global chat after a reload", async () => {
+    const open = vi.fn();
+    const restore = vi.fn();
+    (window as unknown as Record<string, unknown>).__phxAgentChat = {
+      ready: true,
+      isVisible: () => false,
+      open,
+      restore,
+    };
+    patchAgentCliDurable({ open: true, pos: { x: 123, y: 234 } });
+
+    mountPanel();
+    await waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    expect(open).not.toHaveBeenCalled();
   });
 });

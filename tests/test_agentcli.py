@@ -2052,7 +2052,7 @@ async def test_run_agent_turn_inline_approval_resume(hass):
     ])
     data = _loop_data()
     pending_result = {"content": [{"type": "text", "text": json.dumps(
-        {"status": "pending_approval", "approval_id": "ap1", "review_url": "/phoenix-mcp#approvals/ap1"})}]}
+        {"status": "pending_approval", "approval_id": "ap1", "review_url": "/phoenix-mcp/approvals/ap1"})}]}
     fake_dispatch = AsyncMock(return_value=({"result": pending_result}, "m", "r", "pending_approval"))
 
     approved_record = MagicMock(status=STATUS_APPROVED, diff=None,
@@ -2102,7 +2102,7 @@ async def test_cancel_mid_approval_wait_skips_remaining_batch_calls(hass):
     ])
     data = _loop_data()
     pending_result = {"content": [{"type": "text", "text": json.dumps(
-        {"status": "pending_approval", "approval_id": "ap1", "review_url": "/phoenix-mcp#approvals/ap1"})}]}
+        {"status": "pending_approval", "approval_id": "ap1", "review_url": "/phoenix-mcp/approvals/ap1"})}]}
     fake_dispatch = AsyncMock(return_value=({"result": pending_result}, "m", "r", "pending_approval"))
     pending_record = MagicMock(status=STATUS_PENDING, diff=None, result=None)
     events: list = []
@@ -2594,7 +2594,7 @@ async def test_run_agent_turn_rejection_reason_reaches_agent(hass):
     ])
     data = _loop_data()
     pending_result = {"content": [{"type": "text", "text": json.dumps(
-        {"status": "pending_approval", "approval_id": "ap1", "review_url": "/phoenix-mcp#approvals/ap1"})}]}
+        {"status": "pending_approval", "approval_id": "ap1", "review_url": "/phoenix-mcp/approvals/ap1"})}]}
     fake_dispatch = AsyncMock(return_value=({"result": pending_result}, "m", "r", "pending_approval"))
 
     rejected_record = MagicMock(status=STATUS_REJECTED, diff=None, result=None,

@@ -31,7 +31,7 @@ interface Props {
     *  seconds; these render non-actionable for that window so a second click, which
     *  the server would only answer with a 409, is not offered in the first place. */
   claimedApprovals?: ReadonlySet<string>;
-  /** Deep-link target from a notification (/phoenix-mcp#approvals/{id}); opens that approval. */
+  /** Deep-link target from a notification (/phoenix-mcp/approvals/{id}); opens that approval. */
   openApprovalId?: string | null;
   /** Called once the deep-link has been consumed so the parent can clear it. */
   onConsumedDeepLink?: () => void;
@@ -183,6 +183,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
   // on screen behind it, so the "others are waiting" banner would repeat what
   // they can see, and a signal that is always present is one that gets skipped.
   const [deepLinkedId, setDeepLinkedId] = useState<string | null>(null);
+  const consumedDeepLink = useRef<string | null>(null);
   // Pre-slice total from the pending fetch, not shown.length: the list pages at
   // HISTORY_PAGE, so counting the loaded rows would under-report the queue to an
   // operator deciding whether it is worth opening.
@@ -321,9 +322,14 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
     return () => { cancelled = true; };
   }, [refreshSignal, selected, onCountChange]);
 
-  // Consume a notification deep-link: fetch the approval and open it.
+  // Fetch a notification deep-link, but do not clear its URL yet. Home Assistant
+  // can replace this custom-panel element while routing; keeping the target in
+  // the address bar lets the replacement mount finish the same request.
   useEffect(() => {
-    if (!openApprovalId) return;
+    if (!openApprovalId) {
+      consumedDeepLink.current = null;
+      return;
+    }
     let cancelled = false;
     api.getApproval(openApprovalId)
       .then((rec) => {
@@ -332,10 +338,27 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
         setDeepLinkedId(rec.id);
         setSelected(rec);
       })
-      .catch(() => { /* stale/unknown id: ignore */ })
-      .finally(() => onConsumedDeepLink?.());
+      .catch(() => {
+        if (cancelled) return;
+        // A stale/unknown id cannot be opened, so it is safe to discard.
+        consumedDeepLink.current = openApprovalId;
+        onConsumedDeepLink?.();
+      });
     return () => { cancelled = true; };
   }, [openApprovalId, onConsumedDeepLink, onTabChange]);
+
+  // Clear the route only after React has committed the requested record as the
+  // open modal. This prevents the first navigation from being consumed by the
+  // panel mount itself, which previously made both chat and notification links
+  // require a second click.
+  useEffect(() => {
+    if (!openApprovalId
+      || selected?.id !== openApprovalId
+      || deepLinkedId !== openApprovalId
+      || consumedDeepLink.current === openApprovalId) return;
+    consumedDeepLink.current = openApprovalId;
+    onConsumedDeepLink?.();
+  }, [deepLinkedId, onConsumedDeepLink, openApprovalId, selected]);
 
   function handleResolved(updated: ApprovalRecord) {
     closeRecord();

@@ -36,6 +36,10 @@ describe("global Agent Chat bootstrap", () => {
     await vi.advanceTimersByTimeAsync(250);
 
     expect((window as unknown as Record<string, unknown>).__phxAgentChat)
-      .toMatchObject({ ready: true });
+      .toMatchObject({
+        ready: true,
+        isVisible: expect.any(Function),
+        restore: expect.any(Function),
+      });
   });
 });
