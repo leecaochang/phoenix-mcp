@@ -2229,6 +2229,30 @@ async def test_resources_list_returns_server_info():
 
 
 @pytest.mark.asyncio
+async def test_resource_templates_list_returns_an_audited_empty_catalog():
+    token, _ = _make_token()
+    data = _make_data(token)
+    hass = _make_hass(data)
+
+    result, method, resource, outcome = await _dispatch_mcp(
+        "resources/templates/list", 10, {}, token, hass, data, "127.0.0.1",
+        base_url="http://homeassistant.local"
+    )
+
+    assert result == {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {"resourceTemplates": []},
+    }
+    assert (method, resource, outcome) == (
+        "resources/templates/list", "/api/phoenix-mcp", "allowed",
+    )
+    data.audit.record.assert_called_once()
+    assert data.audit.record.call_args.kwargs["method"] == "resources/templates/list"
+    assert data.audit.record.call_args.kwargs["outcome"] == "allowed"
+
+
+@pytest.mark.asyncio
 async def test_resources_read_server_info():
     token, _ = _make_token()
     data = _make_data(token)

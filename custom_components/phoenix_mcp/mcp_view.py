@@ -7652,6 +7652,7 @@ _MCP_METHODS: frozenset[str] = frozenset({
     "tools/list",
     "tools/call",
     "resources/list",
+    "resources/templates/list",
     "resources/read",
     "prompts/list",
     "prompts/get",
@@ -7788,6 +7789,16 @@ async def _dispatch_mcp(
         _log(data, token, request_id=request_id, method="resources/list",
              resource="/api/phoenix-mcp", outcome="allowed", client_ip=client_ip)
         return resp, "resources/list", "/api/phoenix-mcp", "allowed"
+
+    if method == "resources/templates/list":
+        # Phoenix's two resources have fixed URIs, so there are no parameterized
+        # resource templates to advertise. Clients routinely probe this method
+        # whenever a server advertises resource support; an empty catalog is the
+        # protocol answer, not Method not found.
+        resp = _jsonrpc_result(msg_id, {"resourceTemplates": []})
+        _log(data, token, request_id=request_id, method="resources/templates/list",
+             resource="/api/phoenix-mcp", outcome="allowed", client_ip=client_ip)
+        return resp, "resources/templates/list", "/api/phoenix-mcp", "allowed"
 
     if method == "resources/read":
         uri = params.get("uri", "")
