@@ -342,6 +342,11 @@ describe("AgentCliSettings default model", () => {
     renderCard();
     fireEvent.click(await screen.findByLabelText("Change default model"));
     const select = await screen.findByLabelText("Select default model:");
+    const editor = select.closest(".agentcli-settings-model-edit") as HTMLElement;
+    expect(editor).toHaveClass("agentcli-settings-model-edit");
+    expect(editor.querySelector(".agentcli-settings-model-actions")).toBeTruthy();
+    expect(editor.querySelector("input[type='checkbox']")?.closest(".toggle-switch")).toBeTruthy();
+    expect(editor.querySelector(".agentcli-settings-model-actions button")?.textContent).toBe("Save");
     fireEvent.change(select, { target: { value: "deepseek-v4-pro" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(setAgentCliProviderModel).toHaveBeenCalledWith("i1", "deepseek-v4-pro"));
@@ -719,6 +724,9 @@ describe("AgentCliSettings account actions", () => {
     await beginAdd();
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "sk-test" } });
     fireEvent.click(screen.getByText("Validate"));
+    const probe = await screen.findByLabelText(/Check which options this model accepts/);
+    expect(probe.closest(".toggle-switch")).toBeTruthy();
+    expect(probe.closest(".agentcli-settings-model-actions")?.querySelector("button")?.textContent).toBe("Done");
     fireEvent.click(await screen.findByText("Done"));
     await waitFor(() => expect(probeAgentCliCapabilities).toHaveBeenCalledWith("new1"));
   });

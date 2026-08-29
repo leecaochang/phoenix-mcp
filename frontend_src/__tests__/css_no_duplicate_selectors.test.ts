@@ -95,7 +95,8 @@ describe("panel stylesheet", () => {
 
   it("stacks select-backed setting help above its control", () => {
     expect(CSS).toMatch(/\.toggle-row-stacked-control\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*stretch;/s);
-    expect(CSS).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*?\.toggle-row-stacked-control\s*>\s*\.input\s*\{[^}]*width:\s*100%;/s);
+    expect(CSS).toMatch(/@media\s*\(min-width:\s*901px\)[\s\S]*?\.toggle-row-stacked-control\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(220px,\s*320px\);/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*?\.toggle-row-stacked-control\s*>\s*\.input\s*\{[^}]*width:\s*100%;/s);
   });
 
   it("contains modal boundary overscroll", () => {
@@ -106,6 +107,11 @@ describe("panel stylesheet", () => {
   it("keeps localized theme choices on one line", () => {
     expect(CSS).toMatch(/\.theme-toggle\s*\{[^}]*flex-shrink:\s*0;/s);
     expect(CSS).toMatch(/\.theme-toggle-btn\s*\{[^}]*white-space:\s*nowrap;/s);
+  });
+
+  it("bounds Agent Chat provider model selects without constraining compact screens", () => {
+    expect(CSS).toMatch(/\.agentcli-settings-model-edit\s*>\s*select,\s*\.agentcli-settings-model-row\s+select\s*\{[^}]*width:\s*320px;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/s);
+    expect(CSS).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*?\.agentcli-settings-model-edit\s*>\s*select,\s*\.agentcli-settings-model-row\s+select\s*\{[^}]*width:\s*100%;/s);
   });
 
   it("keeps long localized change types inside their own column", () => {

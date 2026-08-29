@@ -197,6 +197,7 @@ export function ProviderAddForm({
                 {field.type === "choice" ? (
                   <select
                     id={id}
+                    className="input"
                     ref={index === 0 ? (element) => { firstFieldRef.current = element; } : undefined}
                     value={form.values[field.id] ?? ""}
                     disabled={form.validating || form.saving}
@@ -240,9 +241,11 @@ export function ProviderAddForm({
             </div>
           )}
           {form.validated && (
-            <label className="agentcli-settings-model-row">
+            <label className="agentcli-settings-model-row" htmlFor="agentcli-add-model">
               <span>{t("settings.agentcliSelectModel")}</span>
               <select
+                id="agentcli-add-model"
+                className="input input-auto"
                 value={form.model}
                 disabled={form.saving || !form.models.length}
                 onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}
@@ -254,26 +257,43 @@ export function ProviderAddForm({
             </label>
           )}
           {form.validated && (
-            <label className="agentcli-settings-probe-opt">
-              <input
-                type="checkbox"
-                checked={form.probe}
-                onChange={(event) => setForm((current) => ({ ...current, probe: event.target.checked }))}
-              />
-              <span>{t("settings.agentcliProbeOnAdd")}</span>
-            </label>
+            <div className="agentcli-settings-model-actions">
+              <div className="agentcli-settings-probe-opt">
+                <label className="toggle-switch" htmlFor="agentcli-add-probe-on-save">
+                  <input
+                    id="agentcli-add-probe-on-save"
+                    type="checkbox"
+                    checked={form.probe}
+                    onChange={(event) => setForm((current) => ({ ...current, probe: event.target.checked }))}
+                  />
+                  <span className="toggle-switch-track" />
+                </label>
+                <label className="agentcli-settings-probe-copy" htmlFor="agentcli-add-probe-on-save">
+                  {t("settings.agentcliProbeOnAdd")}
+                </label>
+              </div>
+              <div className="agentcli-settings-form-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={form.saving}
+                  onClick={() => void complete()}
+                >
+                  {completeLabel}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={form.saving}
+                  onClick={() => reset()}
+                >
+                  {t("settings.cancel")}
+                </button>
+              </div>
+            </div>
           )}
-          <div className="agentcli-settings-form-actions">
-            {form.validated ? (
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={form.saving}
-                onClick={() => void complete()}
-              >
-                {completeLabel}
-              </button>
-            ) : (
+          {!form.validated && (
+            <div className="agentcli-settings-form-actions">
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -282,16 +302,16 @@ export function ProviderAddForm({
               >
                 {t("settings.agentcliValidate")}
               </button>
-            )}
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={form.saving}
-              onClick={() => reset()}
-            >
-              {t("settings.cancel")}
-            </button>
-          </div>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={form.saving}
+                onClick={() => reset()}
+              >
+                {t("settings.cancel")}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </>

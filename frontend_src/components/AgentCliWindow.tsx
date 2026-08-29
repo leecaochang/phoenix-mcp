@@ -1716,7 +1716,7 @@ export function AgentCliWindow({
             // One dropdown carries this provider's real API thinking levels.
             <label className="agentcli-gear-row">
               {kind === "ollama" ? t("agentchat.thinkingOllama") : t("agentchat.thinking")}
-              <select value={thinkValue(caps, options)}
+              <select className="input agentcli-select" value={thinkValue(caps, options)}
                       onChange={(e) => applyThink(caps, e.target.value, setOptions)}>
                 {caps.thinking.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
               </select>
@@ -1740,19 +1740,19 @@ export function AgentCliWindow({
               <span className="toggle-switch-track" />
             </label>
           </div>
-          <div className="agentcli-gear-row" title={t("agentchat.showFooterHint")}>
-            <span>{t("agentchat.showFooter")}</span>
-            <label className="toggle-switch">
-              <input type="checkbox" checked={showFooter} aria-label={t("agentchat.showFooter")}
-                     onChange={(e) => setShowFooter(e.target.checked)} />
-              <span className="toggle-switch-track" />
-            </label>
-          </div>
           <div className="agentcli-gear-row" title={t("agentchat.showTimestampsHint")}>
             <span>{t("agentchat.showTimestamps")}</span>
             <label className="toggle-switch">
               <input type="checkbox" checked={showTimestamps} aria-label={t("agentchat.showTimestamps")}
                      onChange={(e) => setShowTimestamps(e.target.checked)} />
+              <span className="toggle-switch-track" />
+            </label>
+          </div>
+          <div className="agentcli-gear-row" title={t("agentchat.showFooterHint")}>
+            <span>{t("agentchat.showFooter")}</span>
+            <label className="toggle-switch">
+              <input type="checkbox" checked={showFooter} aria-label={t("agentchat.showFooter")}
+                     onChange={(e) => setShowFooter(e.target.checked)} />
               <span className="toggle-switch-track" />
             </label>
           </div>
@@ -1766,13 +1766,13 @@ export function AgentCliWindow({
           <div className="agentcli-controls">
             <label className="agentcli-control" title={t("agentchat.tokenHint")}>
               <span>{t("agentchat.token")}</span>
-              <select value={tokenId} onChange={(e) => { setGearOpen(false); setTokenId(e.target.value); }} aria-label={t("agentchat.token")} disabled={sending}>
+              <select className="input agentcli-select" value={tokenId} onChange={(e) => { setGearOpen(false); setTokenId(e.target.value); }} aria-label={t("agentchat.token")} disabled={sending}>
                 {tokens.map((tok) => <option key={tok.id} value={tok.id}>{tok.name}</option>)}
               </select>
             </label>
             <label className="agentcli-control" title={t("agentchat.providerHint")}>
               <span>{t("agentchat.provider")}</span>
-              <select value={instanceId} onChange={(e) => { setGearOpen(false); setInstanceId(e.target.value); }} aria-label={t("agentchat.provider")} disabled={sending || noInstances}>
+              <select className="input agentcli-select" value={instanceId} onChange={(e) => { setGearOpen(false); setInstanceId(e.target.value); }} aria-label={t("agentchat.provider")} disabled={sending || noInstances}>
                 {noInstances
                   ? <option value="">{t("common.none")}</option>
                   : instances.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
@@ -1780,7 +1780,7 @@ export function AgentCliWindow({
             </label>
             <label className="agentcli-control" title={t("agentchat.modelHint")}>
               <span>{t("agentchat.model")}</span>
-              <select value={model} onChange={(e) => { setGearOpen(false); setModel(e.target.value); }} aria-label={t("agentchat.model")} disabled={sending || !models.length}>
+              <select className="input agentcli-select" value={model} onChange={(e) => { setGearOpen(false); setModel(e.target.value); }} aria-label={t("agentchat.model")} disabled={sending || !models.length}>
                 {noInstances
                   ? <option value="">{t("common.none")}</option>
                   : models.length

@@ -472,7 +472,7 @@ export function AgentCliSettings({
             )}
             {editing === inst.id ? (
               <div className="agentcli-settings-model-edit">
-                <select value={modelDraft} disabled={busy}
+                <select className="input input-auto" value={modelDraft} disabled={busy}
                         aria-label={t("settings.agentcliSelectModel")}
                         onChange={(e) => setModelDraft(e.target.value)}>
                   {(liveModels[inst.id] ?? []).map((m) => (
@@ -492,16 +492,25 @@ export function AgentCliSettings({
                     </option>
                   )}
                 </select>
-                <label className="agentcli-settings-probe-opt">
-                  <input type="checkbox" checked={probeOnSave}
-                         onChange={(e) => setProbeOnSave(e.target.checked)} />
-                  <span>{t("settings.agentcliProbeOnAdd")}</span>
-                </label>
-                <button className="btn btn-primary btn-sm"
-                        disabled={busy || !modelDraft || modelDraft === inst.model}
-                        onClick={() => void saveModel(inst.id)}>{t("common.save")}</button>
-                <button className="btn btn-text btn-sm" disabled={busy}
-                        onClick={() => { setEditing(null); setModelError(null); }}>{t("settings.cancel")}</button>
+                <div className="agentcli-settings-model-actions">
+                  <div className="agentcli-settings-probe-opt">
+                    <label className="toggle-switch" htmlFor={`agentcli-probe-on-save-${inst.id}`}>
+                      <input id={`agentcli-probe-on-save-${inst.id}`} type="checkbox" checked={probeOnSave}
+                             onChange={(e) => setProbeOnSave(e.target.checked)} />
+                      <span className="toggle-switch-track" />
+                    </label>
+                    <label className="agentcli-settings-probe-copy" htmlFor={`agentcli-probe-on-save-${inst.id}`}>
+                      {t("settings.agentcliProbeOnAdd")}
+                    </label>
+                  </div>
+                  <div className="agentcli-settings-form-actions">
+                    <button className="btn btn-primary btn-sm"
+                            disabled={busy || !modelDraft || modelDraft === inst.model}
+                            onClick={() => void saveModel(inst.id)}>{t("common.save")}</button>
+                    <button className="btn btn-text btn-sm" disabled={busy}
+                            onClick={() => { setEditing(null); setModelError(null); }}>{t("settings.cancel")}</button>
+                  </div>
+                </div>
               </div>
             ) : (
               <span className="agentcli-settings-model">

@@ -638,7 +638,21 @@ select.input {
    keep their compact side-by-side relationship. */
 .toggle-row-stacked-control { flex-direction: column; align-items: stretch; gap: 8px; }
 .toggle-row-stacked-control > .input { align-self: flex-start; max-width: 100%; }
-@media (max-width: 600px) {
+@media (min-width: 901px) {
+  .toggle-row-stacked-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+    column-gap: 24px;
+    align-items: start;
+  }
+  .toggle-row-stacked-control > .toggle-label { grid-column: 1; }
+  .toggle-row-stacked-control > .input {
+    grid-column: 2;
+    width: 100%;
+    min-width: 0;
+  }
+}
+@media (max-width: 900px) {
   .toggle-row-stacked-control > .input { width: 100%; }
 }
 
@@ -2464,7 +2478,11 @@ hui-card { display: block; min-width: 0; }
   gap: 8px;
   font-size: 13px;
 }
-.agentcli-gear-row select, .agentcli-gear-row input[type="number"] { width: 90px; }
+.agentcli-gear-row select.agentcli-select, .agentcli-gear-row input[type="number"] { width: 90px; }
+.agentcli-select {
+  font-size: 12px;
+  padding: 6px 28px 6px 8px;
+}
 .agentcli-gear-clear { align-self: stretch; }
 
 .agentcli-controls {
@@ -2477,7 +2495,7 @@ hui-card { display: block; min-width: 0; }
 .agentcli-control > span {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--phx-text-2);
 }
-.agentcli-control select { width: 100%; min-width: 0; font-size: 12px; }
+.agentcli-control select.agentcli-select { width: 100%; min-width: 0; }
 
 .agentcli-body {
   flex: 1 1 auto;
@@ -2769,9 +2787,10 @@ hui-card { display: block; min-width: 0; }
 .agentcli-account-btn.is-danger:hover:not(:disabled) { background: var(--phx-error-bg); color: var(--phx-error); }
 .agentcli-account-btn.is-busy { opacity: 0.6; }
 .agentcli-settings-probe-opt {
-  display: flex; align-items: flex-start; gap: 8px; font-size: 12px;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
   color: var(--phx-text-2); line-height: 1.4;
 }
+.agentcli-settings-probe-copy { font-size: 12px; cursor: pointer; }
 
 /* A closable account warning, and the marker it leaves behind. The close control
    is pushed to the end rather than floated so a long message wraps under itself
@@ -2794,15 +2813,27 @@ hui-card { display: block; min-width: 0; }
 }
 .agentcli-warn-badge:hover { background: var(--phx-error-bg); }
 
-/* Inline default-model editor on a configured account. Wraps on a narrow panel
-   rather than shrinking the select, since a model id is long and unabbreviable. */
+/* Agent Chat provider model choices stay left aligned in a bounded desktop
+   column. The action row below them keeps the optional paid probe and its save
+   action together, while compact screens use the full available width. */
 .agentcli-settings-model-edit {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 6px;
 }
-.agentcli-settings-model-edit select { width: auto; max-width: 260px; min-width: 140px; }
-.agentcli-settings-model-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.agentcli-settings-model-row > span { white-space: nowrap; }
-.agentcli-settings-model-row select { width: auto; max-width: 220px; min-width: 120px; }
+.agentcli-settings-model-edit > select,
+.agentcli-settings-model-row select { width: 320px; max-width: 100%; min-width: 0; }
+.agentcli-settings-model-actions {
+  display: flex; align-items: center; gap: 12px; width: 100%; flex-wrap: wrap;
+}
+.agentcli-settings-model-actions > .agentcli-settings-probe-opt { flex: 1 1 280px; }
+.agentcli-settings-model-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  font-size: 13px;
+}
+.agentcli-settings-model-row > span { color: var(--phx-text-muted); font-weight: 600; }
+@media (max-width: 900px) {
+  .agentcli-settings-model-edit > select,
+  .agentcli-settings-model-row select { width: 100%; }
+}
 /* Post-create "how do you want to use this token" choice list. */
 .post-create-choices { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
 .post-create-choice {
