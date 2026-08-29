@@ -2532,7 +2532,21 @@ hui-card { display: block; min-width: 0; }
 }
 /* Optional per-message time (gear toggle). Inherits the bubble's text color at
    reduced opacity so it reads on both bubble backgrounds without new vars. */
-.agentcli-ts { font-size: 10px; opacity: 0.6; margin-top: 3px; user-select: none; }
+.agentcli-ts {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10px; opacity: 0.6; margin-top: 3px; user-select: none;
+}
+.agentcli-copy-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin: -2px 0; padding: 3px;
+  border: 0; border-radius: var(--phx-radius-xs);
+  background: transparent; color: currentColor; cursor: pointer;
+  opacity: 0.85; transition: background 0.15s, opacity 0.15s, color 0.15s;
+}
+.agentcli-copy-btn:hover { background: var(--phx-hover); opacity: 1; }
+.agentcli-copy-btn:focus-visible { outline: 2px solid var(--phx-accent); outline-offset: 1px; }
+.agentcli-copy-btn.is-copied { color: var(--phx-accent); opacity: 1; }
+.agentcli-copy-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .agentcli-thinking { font-size: 0.92em; color: var(--phx-text-2); margin-bottom: 6px; }
 .agentcli-thinking-body {
   margin: 4px 0 0;

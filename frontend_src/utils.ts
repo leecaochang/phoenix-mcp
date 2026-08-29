@@ -111,16 +111,27 @@ export function tokenStatusLabel(status: string): string {
 
 export async function copyToClipboard(text: string): Promise<void> {
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    await navigator.clipboard.writeText(text);
-  } else {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Some HTTP contexts expose the API but reject it at call time. Try the
+      // older document command before reporting that copying is unavailable.
+    }
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  try {
     ta.focus();
     ta.select();
-    document.execCommand("copy");
+    if (typeof document.execCommand !== "function" || !document.execCommand("copy")) {
+      throw new Error("Clipboard unavailable");
+    }
+  } finally {
     document.body.removeChild(ta);
   }
 }

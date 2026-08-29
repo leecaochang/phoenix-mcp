@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, render, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 // Mock the API module: agentCliChat drives the window's event handling, and the
 // admin api methods back the model list + approval buttons.
@@ -1145,6 +1145,47 @@ describe("AgentCliWindow streaming", () => {
       expect(el.textContent?.trim()).toBeTruthy();
     }
     expect(getDurable().showTimestamps).toBe(true);
+  });
+
+  it("copies timestamped bubble text and returns from checkmark to copy", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
+      onEvent("assistant_delta", { text: "Copy this response." });
+      onEvent("messages", { messages: [] });
+      onEvent("done", { stop_reason: "end_turn" });
+    });
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+    const textarea = screen.getByPlaceholderText(/Message Agent Chat/i);
+    fireEvent.change(textarea, { target: { value: "copy it" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("Copy this response.")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Options"));
+    fireEvent.click(screen.getByLabelText("Show timestamps"));
+    const copyButtons = screen.getAllByRole("button", { name: "Copy" });
+    expect(copyButtons).toHaveLength(2);
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        fireEvent.click(copyButtons[1]);
+        await Promise.resolve();
+      });
+      expect(writeText).toHaveBeenCalledWith("Copy this response.");
+      expect(screen.getAllByRole("button", { name: "Copied!" })).toHaveLength(1);
+
+      act(() => vi.advanceTimersByTime(1999));
+      expect(screen.getAllByRole("button", { name: "Copied!" })).toHaveLength(1);
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not render orphaned timestamps for hidden thinking-only messages", async () => {

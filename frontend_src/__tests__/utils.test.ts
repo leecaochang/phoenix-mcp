@@ -113,11 +113,30 @@ describe("copyToClipboard", () => {
 
   it("falls back to textarea when clipboard API is unavailable", async () => {
     Object.assign(navigator, { clipboard: undefined });
-    const execCommand = vi.fn();
+    const execCommand = vi.fn().mockReturnValue(true);
     document.execCommand = execCommand;
 
     await copyToClipboard("fallback-value");
     expect(execCommand).toHaveBeenCalledWith("copy");
+  });
+
+  it("falls back when the Clipboard API rejects", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("insecure context"));
+    Object.assign(navigator, { clipboard: { writeText } });
+    const execCommand = vi.fn().mockReturnValue(true);
+    document.execCommand = execCommand;
+
+    await copyToClipboard("rejected-value");
+
+    expect(writeText).toHaveBeenCalledWith("rejected-value");
+    expect(execCommand).toHaveBeenCalledWith("copy");
+  });
+
+  it("reports when neither clipboard mechanism is available", async () => {
+    Object.assign(navigator, { clipboard: undefined });
+    document.execCommand = vi.fn().mockReturnValue(false);
+
+    await expect(copyToClipboard("unavailable-value")).rejects.toThrow("Clipboard unavailable");
   });
 });
 

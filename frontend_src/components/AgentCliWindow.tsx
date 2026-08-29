@@ -9,7 +9,7 @@ import {
   AGENTCLI_TEXT_SIZE_MIN_PT, AGENTCLI_TEXT_SIZE_MAX_PT, AGENTCLI_TEXT_SIZE_STEP_PT,
   normalizeAgentCliTextSize,
 } from "../utils/agentcli_state";
-import { approvalStatusLabel, effortLevelLabel } from "../utils";
+import { approvalStatusLabel, copyToClipboard, effortLevelLabel } from "../utils";
 import { clearReasonDraft, getReasonDraft } from "../utils/approval_reason_draft";
 import { localizedApprovalReason } from "../utils/approval_reason";
 import { subscribeApprovalEvents } from "../utils/approval_events";
@@ -1945,6 +1945,48 @@ function rateLimitDiagnostics(info?: ProviderRateLimit): string {
   return lines.join("\n");
 }
 
+function CopyResponseButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  const copy = async () => {
+    window.clearTimeout(timer.current);
+    try {
+      await copyToClipboard(text);
+      setCopied(true);
+      timer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // A browser may deny both clipboard mechanisms, especially on HTTP. Keep
+      // the action available and do not claim the response was copied.
+      setCopied(false);
+    }
+  };
+
+  const label = copied ? t("common.copied") : t("common.copy");
+  return (
+    <button
+      type="button"
+      className={`agentcli-copy-btn${copied ? " is-copied" : ""}`}
+      aria-label={label}
+      title={label}
+      onClick={(event) => { event.stopPropagation(); void copy(); }}
+    >
+      {copied ? (
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 12.5 9.5 17 19 7" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="8" y="8" width="12" height="12" rx="2" />
+          <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function ChatItem({
   entry, verbose, showTs, onResolve, onReview, onAnswerAnyway, showAnswerAnyway,
 }: {
@@ -1958,8 +2000,16 @@ function ChatItem({
 }) {
   // Wall-clock label under a message bubble; entries predating the ts field
   // (a restored session transcript) simply show none.
+  const copyText = (entry.kind === "user" || entry.kind === "assistant") && entry.text.trim()
+    ? entry.text
+    : null;
   const ts = showTs && "ts" in entry && entry.ts
-    ? <div className="agentcli-ts">{fmtClock(entry.ts)}</div>
+    ? (
+      <div className="agentcli-ts">
+        {copyText !== null && <CopyResponseButton text={copyText} />}
+        <span>{fmtClock(entry.ts)}</span>
+      </div>
+    )
     : null;
   switch (entry.kind) {
     case "user":
