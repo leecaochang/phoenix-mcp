@@ -2,11 +2,26 @@
 // they share the same browser Window. A DOM event is therefore the narrow,
 // synchronous bridge for completing a review opened from Agent Chat without
 // coupling either bundle to the other's React tree.
+export const AGENTCHAT_REVIEW_OPENED_EVENT = "phx-agentchat-review-opened";
 export const AGENTCHAT_REVIEW_DECIDED_EVENT = "phx-agentchat-review-decided";
+export const AGENTCHAT_REVIEW_CLOSED_EVENT = "phx-agentchat-review-closed";
+
+export function notifyAgentChatReviewOpened(approvalId: string): void {
+  window.dispatchEvent(new CustomEvent(AGENTCHAT_REVIEW_OPENED_EVENT, {
+    detail: { approvalId },
+  }));
+}
 
 export function notifyAgentChatReviewDecided(approvalId: string): void {
   if (!approvalId) return;
   window.dispatchEvent(new CustomEvent(AGENTCHAT_REVIEW_DECIDED_EVENT, {
+    detail: { approvalId },
+  }));
+}
+
+export function notifyAgentChatReviewClosed(approvalId: string): void {
+  if (!approvalId) return;
+  window.dispatchEvent(new CustomEvent(AGENTCHAT_REVIEW_CLOSED_EVENT, {
     detail: { approvalId },
   }));
 }

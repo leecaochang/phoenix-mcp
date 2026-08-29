@@ -75,6 +75,24 @@ describe("panel stylesheet", () => {
     expect(CSS).toMatch(/\.agentcli-md pre\s*\{[^}]*overscroll-behavior:\s*contain;/s);
   });
 
+  it("scales all transcript prose while keeping metadata and controls fixed", () => {
+    expect(CSS).toMatch(/\.agentcli-body\s*\{[^}]*font-size:\s*var\(--phx-agentcli-text-size,\s*13px\);/s);
+    for (const selector of [
+      "agentcli-working",
+      "agentcli-thinking",
+      "agentcli-tool",
+      "agentcli-tool-result",
+      "agentcli-tool-image-unavailable",
+      "agentcli-progress",
+      "agentcli-notice",
+      "agentcli-unsafe",
+    ]) {
+      expect(CSS).toMatch(new RegExp(`\\.${selector}\\s*\\{[^}]*font-size:\\s*0\\.92em;`, "s"));
+    }
+    expect(CSS).toMatch(/\.agentcli-ts\s*\{[^}]*font-size:\s*10px;/s);
+    expect(CSS).toMatch(/\.btn-sm\s*\{[^}]*font-size:\s*12px;/s);
+  });
+
   it("stacks select-backed setting help above its control", () => {
     expect(CSS).toMatch(/\.toggle-row-stacked-control\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*stretch;/s);
     expect(CSS).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*?\.toggle-row-stacked-control\s*>\s*\.input\s*\{[^}]*width:\s*100%;/s);

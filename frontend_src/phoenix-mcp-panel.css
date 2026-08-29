@@ -702,7 +702,30 @@ select.input {
 .modal-title { font-size: 18px; font-weight: 700; margin: 0 0 20px 0; color: var(--phx-text); }
 .modal-title-error { color: var(--phx-error); }
 .modal-body-text { margin: 0 0 16px; color: var(--phx-text-2); line-height: 1.5; }
-.modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+/* Keep approval execution inside one stable button box. On iOS a label-width
+   change plus the disabled opacity transition can leave the old button tile
+   painted beside the new one inside a fixed modal. The spinner slot exists in
+   both states, so neither the text nor geometry changes when execution starts. */
+.approval-approve-btn { min-width: 124px; white-space: nowrap; }
+.approval-approve-btn::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0;
+}
+.approval-approve-btn[aria-busy="true"] { opacity: 1; cursor: wait; }
+.approval-approve-btn[aria-busy="true"]::after {
+  opacity: 1;
+  animation: agentcli-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .approval-approve-btn[aria-busy="true"]::after { animation: none; }
+}
 
 /* ============================================================
    Warning / info blocks
@@ -1630,6 +1653,32 @@ select.input {
   .approvals-batch-bar { flex-direction: column; align-items: stretch; }
   .approvals-toolbar { align-items: stretch; flex-direction: column; padding-bottom: 8px; }
   .approvals-toolbar > .diff-mode-toggle { align-self: flex-start; margin: 0; }
+  /* The normal pending review has exactly three actions. Keep those together
+     as one touch row and use the established short-label span for Approve.
+     Card previews can add a fourth error-rejection action, so that variant
+     deliberately retains the generic wrapping behavior. */
+  .modal-wide { padding: 20px; }
+  .approval-modal-actions-compact {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 0.85fr);
+    gap: 4px;
+    width: 100%;
+  }
+  .approval-modal-actions-compact .btn { min-width: 0; width: 100%; padding-inline: 8px; overflow: hidden; }
+  .approval-modal-actions-compact .approval-action-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* A desktop card puts title and status metadata on one line. The timestamp is
+     intentionally non-shrinking there, so on a phone it collides with a long
+     tool name. Give each group its own row and let both wrap within the card. */
+  .approval-card-header { align-items: stretch; flex-direction: column; gap: 6px; }
+  .approval-card-title { width: 100%; flex-wrap: wrap; row-gap: 2px; }
+  .approval-card-tool { min-width: 0; overflow-wrap: anywhere; }
+  .approval-card-meta { width: 100%; justify-content: space-between; flex-wrap: wrap; row-gap: 4px; }
+  .approval-card-time { margin-left: auto; text-align: right; }
 }
 
 .approval-card {
@@ -1704,6 +1753,7 @@ select.input {
 .approval-summary-actions .btn-text:first-child { margin-right: auto; }
 .approval-summary-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .approval-summary-status.is-approved { background: var(--phx-success-bg); }
+.approval-summary-status.is-failed,
 .approval-summary-status.is-rejected { background: var(--phx-error-bg); }
 .approval-summary-status-text { display: flex; align-items: center; gap: 10px; color: var(--phx-text-2); font-size: 12px; flex-wrap: wrap; }
 .approval-summary-result { padding-block: 16px; }
@@ -2268,6 +2318,34 @@ hui-card { display: block; min-width: 0; }
   width: 220px !important;
   min-width: 0;
 }
+@media (max-width: 700px) {
+  .agentcli-window.agentcli-minimized {
+    width: 44px !important;
+    height: 44px !important;
+    border-radius: 50%;
+  }
+  .agentcli-window.agentcli-minimized.agentcli-reviewing {
+    visibility: hidden;
+  }
+  .agentcli-mobile-pill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--phx-agentcli-titlebar);
+    color: var(--phx-text);
+    cursor: pointer;
+  }
+  .agentcli-mobile-pill .agentcli-title-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+  }
+}
 /* Full screen geometry comes from inset alone. Narrow viewports override the
    top edge below so phone and browser chrome cannot cover the controls. */
 .agentcli-window.agentcli-maximized {
@@ -2410,10 +2488,10 @@ hui-card { display: block; min-width: 0; }
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--phx-agentcli-text-size, 13px);
 }
 .agentcli-empty { color: var(--phx-text-2); text-align: center; margin-top: 24px; }
-.agentcli-working { display: flex; align-items: center; gap: 8px; color: var(--phx-text-2); font-size: 12px; padding: 2px 0; }
+.agentcli-working { display: flex; align-items: center; gap: 8px; color: var(--phx-text-2); font-size: 0.92em; padding: 2px 0; }
 .agentcli-spin {
   display: inline-block; width: 13px; height: 13px; border-radius: 50%;
   border: 2px solid var(--phx-border); border-top-color: var(--phx-accent);
@@ -2422,12 +2500,22 @@ hui-card { display: block; min-width: 0; }
 @keyframes agentcli-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .agentcli-spin { animation: none; } }
 .agentcli-msg { padding: 8px 10px; border-radius: var(--phx-radius-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
-.agentcli-msg-user { background: var(--phx-accent-lt); align-self: flex-end; max-width: 85%; }
-.agentcli-msg-assistant { background: var(--phx-surface-2); align-self: flex-start; max-width: 95%; }
+.agentcli-msg-user {
+  background: var(--phx-accent-lt);
+  align-self: flex-end;
+  max-width: 85%;
+  font-size: var(--phx-agentcli-text-size, 13px);
+}
+.agentcli-msg-assistant {
+  background: var(--phx-surface-2);
+  align-self: flex-start;
+  max-width: 95%;
+  font-size: var(--phx-agentcli-text-size, 13px);
+}
 /* Optional per-message time (gear toggle). Inherits the bubble's text color at
    reduced opacity so it reads on both bubble backgrounds without new vars. */
 .agentcli-ts { font-size: 10px; opacity: 0.6; margin-top: 3px; user-select: none; }
-.agentcli-thinking { font-size: 12px; color: var(--phx-text-2); margin-bottom: 6px; }
+.agentcli-thinking { font-size: 0.92em; color: var(--phx-text-2); margin-bottom: 6px; }
 .agentcli-thinking-body {
   margin: 4px 0 0;
   max-height: 220px; overflow-y: auto;
@@ -2442,10 +2530,17 @@ hui-card { display: block; min-width: 0; }
 .agentcli-md li { margin: 2px 0; }
 .agentcli-md h1, .agentcli-md h2, .agentcli-md h3,
 .agentcli-md h4, .agentcli-md h5, .agentcli-md h6 { margin: 10px 0 6px; font-size: 14px; line-height: 1.3; }
+.agentcli-msg-assistant .agentcli-md h1,
+.agentcli-msg-assistant .agentcli-md h2,
+.agentcli-msg-assistant .agentcli-md h3,
+.agentcli-msg-assistant .agentcli-md h4,
+.agentcli-msg-assistant .agentcli-md h5,
+.agentcli-msg-assistant .agentcli-md h6 { font-size: 1.08em; }
 .agentcli-md code {
   font-family: var(--phx-mono, "Roboto Mono", monospace); font-size: 12px;
   background: var(--phx-grey-tint); padding: 1px 4px; border-radius: 4px;
 }
+.agentcli-msg-assistant .agentcli-md code { font-size: 0.92em; }
 .agentcli-md pre {
   background: var(--phx-grey-tint); padding: 8px 10px; border-radius: var(--phx-radius-sm);
   overflow-x: auto; margin: 0 0 8px; max-height: 320px; overflow-y: auto;
@@ -2463,22 +2558,23 @@ hui-card { display: block; min-width: 0; }
    display (table-layout only applies there); overflow-wrap:anywhere is what
    actually breaks a token with no natural wrap point. */
 .agentcli-md table { table-layout: fixed; width: 100%; border-collapse: collapse; margin: 0 0 8px; font-size: 12px; }
+.agentcli-msg-assistant .agentcli-md table { font-size: 0.92em; }
 .agentcli-md th, .agentcli-md td {
   border: 1px solid var(--phx-border); padding: 3px 8px; text-align: left; overflow-wrap: anywhere;
 }
 .agentcli-md th { background: var(--phx-surface-2); font-weight: 600; }
-.agentcli-tool { font-size: 12px; color: var(--phx-text-2); }
-.agentcli-tool-result { font-size: 12px; color: var(--phx-text-2); overflow-wrap: anywhere; }
+.agentcli-tool { font-size: 0.92em; color: var(--phx-text-2); }
+.agentcli-tool-result { font-size: 0.92em; color: var(--phx-text-2); overflow-wrap: anywhere; }
 .agentcli-tool-result.is-error { color: var(--phx-error); }
 .agentcli-tool-image { align-self: flex-start; max-width: min(95%, 720px); margin: 8px 0; }
 .agentcli-tool-image img { display: block; max-width: 100%; height: auto; border-radius: var(--phx-radius-sm); border: 1px solid var(--phx-divider); }
-.agentcli-tool-image figcaption { margin-top: 4px; font-size: 11px; color: var(--phx-text-2); }
-.agentcli-tool-image-unavailable { padding: 10px; border: 1px dashed var(--phx-divider); border-radius: var(--phx-radius-sm); color: var(--phx-text-2); font-size: 12px; }
+.agentcli-tool-image figcaption { margin-top: 4px; font-size: 0.85em; color: var(--phx-text-2); }
+.agentcli-tool-image-unavailable { padding: 10px; border: 1px dashed var(--phx-divider); border-radius: var(--phx-radius-sm); color: var(--phx-text-2); font-size: 0.92em; }
 /* Live progress from a held tool (a firmware build). Visible regardless of the
    verbose toggle, since during a multi-minute call it is the only sign of life. */
 .agentcli-progress {
   display: flex; align-items: center; gap: 8px;
-  font-size: 12px; color: var(--phx-text-2); overflow-wrap: anywhere;
+  font-size: 0.92em; color: var(--phx-text-2); overflow-wrap: anywhere;
 }
 .agentcli-progress-dot {
   flex: none; width: 7px; height: 7px; border-radius: 50%;
@@ -2493,22 +2589,22 @@ hui-card { display: block; min-width: 0; }
   border-radius: var(--phx-radius-sm);
   padding: 8px 10px;
   background: var(--phx-accent-lt);
-  font-size: 13px;
+  font-size: var(--phx-agentcli-text-size, 13px);
 }
 .agentcli-approval-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .agentcli-focus-action { display: flex; justify-content: flex-start; margin: -2px 0 8px; }
-.agentcli-approval-status { margin-top: 4px; font-size: 12px; color: var(--phx-text-2); }
+.agentcli-approval-status { margin-top: 4px; font-size: inherit; color: var(--phx-text-2); }
 /* The admin's rejection reason or the executor's failure detail; selectable so
    it can be copied out of the transcript. */
 .agentcli-approval-reason { font-style: italic; user-select: text; overflow-wrap: break-word; }
-.agentcli-error { color: var(--phx-error); font-size: 13px; white-space: pre-line; }
+.agentcli-error { color: var(--phx-error); font-size: 1em; white-space: pre-line; }
 .agentcli-notice {
-  font-size: 12px; color: var(--phx-text-2); font-style: italic;
+  font-size: 0.92em; color: var(--phx-text-2); font-style: italic;
   border-left: 2px solid var(--phx-border); padding: 2px 0 2px 8px; white-space: pre-line;
 }
 .agentcli-gear-note { font-size: 12px; color: var(--phx-text-2); }
 .agentcli-unsafe {
-  font-size: 12px; color: var(--phx-warning); background: var(--phx-warning-bg); border: 1px solid var(--phx-warning);
+  font-size: 0.92em; color: var(--phx-warning); background: var(--phx-warning-bg); border: 1px solid var(--phx-warning);
   border-radius: var(--phx-radius-xs); padding: 4px 8px; margin-bottom: 6px;
 }
 
@@ -2540,7 +2636,10 @@ hui-card { display: block; min-width: 0; }
   flex: 1;
   resize: none;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--phx-agentcli-text-size, 13px);
+  line-height: 1.4;
+  min-height: calc(2.8em + 14px);
+  max-height: calc(8.4em + 14px);
   padding: 6px 8px;
   border: 1px solid var(--phx-border);
   border-radius: var(--phx-radius-sm);
@@ -2548,21 +2647,56 @@ hui-card { display: block; min-width: 0; }
   color: var(--phx-text);
 }
 
-/* Token-usage footer: a thin status line under the composer. flex: none is
+/* Footer for text-size controls and optional token usage. flex: none is
    load-bearing: overflow: hidden zeroes a flex item's automatic minimum size,
    so once the transcript overflows, the window's shrink phase would collapse
    this row to a sliver without it (live-observed). */
-.agentcli-usage {
+.agentcli-footer {
   flex: none;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 6px;
+  border-top: 1px solid var(--phx-border);
+}
+.agentcli-text-size-controls { display: flex; align-items: center; gap: 2px; }
+.agentcli-text-size-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--phx-radius-xs);
+  background: transparent;
+  color: var(--phx-text-2);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.agentcli-text-size-btn:hover { background: var(--phx-grey-tint); color: var(--phx-text); }
+.agentcli-text-size-btn:focus-visible { outline: 2px solid var(--phx-accent); outline-offset: 1px; }
+.agentcli-text-size-btn:disabled { opacity: 0.35; cursor: default; }
+.agentcli-text-size-btn:disabled:hover { background: transparent; color: var(--phx-text-2); }
+.agentcli-usage {
+  flex: 1;
+  min-width: 0;
   font-size: 11px;
   color: var(--phx-text-2);
-  padding: 3px 10px 5px;
-  border-top: 1px solid var(--phx-border);
+  padding: 0 4px;
   text-align: right;
   user-select: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (pointer: coarse) {
+  .agentcli-footer { min-height: 48px; padding: 2px 6px; }
+  .agentcli-text-size-controls { gap: 8px; }
+  .agentcli-text-size-btn { width: 44px; height: 44px; }
 }
 
 .agentcli-resize { position: absolute; z-index: 2; }

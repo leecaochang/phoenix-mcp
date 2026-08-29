@@ -4640,7 +4640,7 @@ def _approval_status_result(record: Any, *, resolved: bool) -> dict:
     confirm before this change gave them an inline wait at all.
 
     Only an APPROVED record with a stored `tool_result` qualifies. An
-    approved-but-execution-failed record transitions to rejected with the
+    approved-but-execution-failed record transitions to failed with the
     `execution_failed` slug, so it is not this branch, and a plain rejection has
     no stored result: neither is something the operator accepted.
 

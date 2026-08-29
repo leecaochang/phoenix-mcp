@@ -30,9 +30,21 @@ import {
   focusAgentCliPopup,
   type Turn,
 } from "../components/AgentCliWindow";
-import { getDurable, patchDurable, setSessionTurns, __resetAgentCliState } from "../utils/agentcli_state";
+import {
+  AGENTCLI_TEXT_SIZE_MAX_PT,
+  AGENTCLI_TEXT_SIZE_MIN_PT,
+  getDurable,
+  normalizeAgentCliTextSize,
+  patchDurable,
+  setSessionTurns,
+  __resetAgentCliState,
+} from "../utils/agentcli_state";
 import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/approval_reason_draft";
-import { notifyAgentChatReviewDecided } from "../utils/agentchat_review";
+import {
+  AGENTCHAT_REVIEW_OPENED_EVENT,
+  notifyAgentChatReviewClosed,
+  notifyAgentChatReviewDecided,
+} from "../utils/agentchat_review";
 import type { AgentCliInstance, TokenRecord } from "../types";
 import { setFormatLocale } from "../i18n";
 
@@ -48,6 +60,25 @@ const TOKENS = [
 const INSTANCES: AgentCliInstance[] = [
   { id: "i-claude", kind: "claude", name: "Claude", model: "claude-opus-4-8" },
 ];
+
+describe("Agent Chat text size bounds", () => {
+  it("clamps storage values and keeps the half-point scale anchored to the 13px default", () => {
+    expect(normalizeAgentCliTextSize(-100)).toBe(AGENTCLI_TEXT_SIZE_MIN_PT);
+    expect(normalizeAgentCliTextSize(100)).toBe(AGENTCLI_TEXT_SIZE_MAX_PT);
+    expect(normalizeAgentCliTextSize(10.3)).toBe(10.25);
+    expect(normalizeAgentCliTextSize("invalid")).toBe(9.75);
+  });
+
+  it("migrates the former token-usage visibility choice to footer visibility", () => {
+    localStorage.setItem("phx-agentcli", JSON.stringify({ showUsage: false }));
+    expect(getDurable().showFooter).toBe(false);
+    patchDurable({ open: true });
+    const persisted = JSON.parse(localStorage.getItem("phx-agentcli") || "{}") as Record<string, unknown>;
+    expect(persisted.showFooter).toBe(false);
+    expect(persisted).not.toHaveProperty("showUsage");
+    localStorage.removeItem("phx-agentcli");
+  });
+});
 
 function createPopupWindow(): { popup: Window; iframe: HTMLIFrameElement } {
   const iframe = document.createElement("iframe");
@@ -723,6 +754,36 @@ describe("AgentCliWindow streaming", () => {
     getAgentCliModels.mockResolvedValue({ models: ["claude-opus-4-8"] });
   });
 
+  it("resizes only chat text in half-point steps and remembers the selection", async () => {
+    const view = render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(getAgentCliModels).toHaveBeenCalled());
+
+    const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
+    const textarea = screen.getByLabelText("Message Agent Chat") as HTMLTextAreaElement;
+    expect(dialog.style.getPropertyValue("--phx-agentcli-text-size")).toBe("9.75pt");
+    expect(textarea.rows).toBe(2);
+    expect(Number.parseFloat(textarea.style.height)).toBeGreaterThan(0);
+
+    const textSizeControls = screen.getByRole("group", { name: "Text size" });
+    expect(within(textSizeControls).getAllByRole("button").map((button) => button.getAttribute("aria-label")))
+      .toEqual(["Decrease text size", "Increase text size"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Increase text size" }));
+    expect(dialog.style.getPropertyValue("--phx-agentcli-text-size")).toBe("10.25pt");
+    expect(getDurable().textSizePt).toBe(10.25);
+
+    view.unmount();
+    render(
+      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                      initialTokenId="t1" onClose={() => {}} />,
+    );
+    expect(screen.getByRole("dialog", { name: "Agent Chat" }).style
+      .getPropertyValue("--phx-agentcli-text-size")).toBe("10.25pt");
+  });
+
   it("streams a turn: user, assistant text, tool call/result, and approval flow", async () => {
     approveApproval.mockResolvedValue({});
     // Scripted event sequence delivered synchronously when a message is sent.
@@ -1047,11 +1108,14 @@ describe("AgentCliWindow streaming", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     await waitFor(() => expect(screen.getByText(/Session 0 tokens/)).toBeInTheDocument());
 
-    // The gear toggle hides the footer and persists the choice.
+    // The gear toggle hides the entire footer, including both text controls,
+    // and persists the choice.
     fireEvent.click(screen.getByLabelText("Options"));
-    fireEvent.click(screen.getByLabelText("Show token usage"));
+    fireEvent.click(screen.getByLabelText("Show footer"));
     expect(screen.queryByText(/Session 0 tokens/)).toBeNull();
-    expect(getDurable().showUsage).toBe(false);
+    expect(screen.queryByRole("button", { name: "Decrease text size" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Increase text size" })).toBeNull();
+    expect(getDurable().showFooter).toBe(false);
   });
 
   it("timestamps are off by default and appear on message bubbles via the gear toggle", async () => {
@@ -1301,6 +1365,7 @@ describe("AgentCliWindow streaming", () => {
 
   it("returns a mobile chat to its pre-review mode after the review succeeds", async () => {
     vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
+    patchDurable({ pillPos: { x: 120, y: 300 } });
     agentCliChat.mockImplementation(async (_body, onEvent: (n: string, p: unknown) => void) => {
       onEvent("approval_required", {
         approval_id: "ap-mobile",
@@ -1310,22 +1375,41 @@ describe("AgentCliWindow streaming", () => {
       onEvent("messages", { messages: [] });
       onEvent("done", { stop_reason: "tool_use" });
     });
-    render(
-      <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
-                      initialTokenId="t1" onClose={() => {}} />,
-    );
-    const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
-    expect(dialog).toHaveClass("agentcli-maximized");
-    const textarea = await screen.findByPlaceholderText(/Message Agent Chat/i);
-    fireEvent.change(textarea, { target: { value: "restart" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
+    const reviewOpened = vi.fn();
+    window.addEventListener(AGENTCHAT_REVIEW_OPENED_EVENT, reviewOpened);
+    try {
+      render(
+        <AgentCliWindow tokens={TOKENS} instances={INSTANCES} scrollbackLines={500}
+                        initialTokenId="t1" onClose={() => {}} />,
+      );
+      const dialog = screen.getByRole("dialog", { name: "Agent Chat" });
+      expect(dialog).toHaveClass("agentcli-maximized");
+      const textarea = await screen.findByPlaceholderText(/Message Agent Chat/i);
+      fireEvent.change(textarea, { target: { value: "restart" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
 
-    fireEvent.click(await screen.findByText("Review…"));
-    await waitFor(() => expect(dialog).toHaveClass("agentcli-minimized"));
+      fireEvent.click(await screen.findByText("Review…"));
+      await waitFor(() => expect(dialog).toHaveClass("agentcli-minimized"));
+      expect(dialog).toHaveClass("agentcli-reviewing");
+      expect(dialog.style.left).toBe(`${window.innerWidth - 44 - 8}px`);
+      expect(dialog.style.top).not.toBe("300px");
+      expect(reviewOpened).toHaveBeenCalledOnce();
 
-    notifyAgentChatReviewDecided("ap-mobile");
-    await waitFor(() => expect(dialog).toHaveClass("agentcli-maximized"));
-    expect(dialog).not.toHaveClass("agentcli-minimized");
+      // The global Agent Chat layer is hidden while the panel-owned review modal
+      // is open. Closing the modal reveals only the compact mobile restore pill,
+      // not the full titlebar that used to cover the approvals panel.
+      notifyAgentChatReviewClosed("ap-mobile");
+      await waitFor(() => expect(dialog).not.toHaveClass("agentcli-reviewing"));
+      expect(dialog).toHaveClass("agentcli-minimized");
+      expect(within(dialog).getByRole("button", { name: "Restore" }))
+        .toHaveClass("agentcli-mobile-pill");
+
+      notifyAgentChatReviewDecided("ap-mobile");
+      await waitFor(() => expect(dialog).toHaveClass("agentcli-maximized"));
+      expect(dialog).not.toHaveClass("agentcli-minimized");
+    } finally {
+      window.removeEventListener(AGENTCHAT_REVIEW_OPENED_EVENT, reviewOpened);
+    }
   });
 
   it("redirects swipes from fixed controls into the transcript", async () => {

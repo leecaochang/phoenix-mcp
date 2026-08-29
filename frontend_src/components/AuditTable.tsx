@@ -15,6 +15,13 @@ interface Props {
   tokenNames?: Record<string, string>;
 }
 
+function auditEntryKey(entry: AuditEntry): string {
+  // One approval request intentionally emits approved plus executed/failed
+  // lifecycle rows under the same request id. Timestamp and method distinguish
+  // those rows for React identity and keyboard detail navigation.
+  return `${entry.request_id}:${entry.timestamp}:${entry.method}`;
+}
+
 function formatTokenName(name: string): string {
   return name.replace(/^(admin):(.+)$/, "$1 ($2)");
 }
@@ -165,7 +172,7 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
     return 0;
   });
   const selectedIndex = selected
-    ? sorted.findIndex((entry) => entry.request_id === selected.request_id)
+    ? sorted.findIndex((entry) => auditEntryKey(entry) === auditEntryKey(selected))
     : -1;
 
   function th(label: string, key: SortKey) {
@@ -185,7 +192,7 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
     <div>
       {selected && (
         <EntryDetailModal
-          key={selected.request_id}
+          key={auditEntryKey(selected)}
           entry={selected}
           tokenName={displayName(selected)}
           onClose={() => setSelected(null)}
@@ -209,7 +216,7 @@ export function AuditTable({ entries, loading, tokenNames }: Props) {
         <tbody>
           {sorted.map((entry) => (
             <tr
-              key={entry.request_id}
+              key={auditEntryKey(entry)}
               className={`clickable${entry.pass_through ? " pass-through-row" : ""}`}
               onClick={() => setSelected(entry)}
             >

@@ -11,7 +11,10 @@ import { clearReasonDraft, getReasonDraft, setReasonDraft } from "../utils/appro
 import { localizedApprovalReason } from "../utils/approval_reason";
 import { friendlyApprovalSummary, rememberApprovalView, storedApprovalView, type ApprovalView } from "../utils/approval_summary";
 import { useLatestRequest } from "../utils/latest_request";
-import { notifyAgentChatReviewDecided } from "../utils/agentchat_review";
+import {
+  notifyAgentChatReviewClosed,
+  notifyAgentChatReviewDecided,
+} from "../utils/agentchat_review";
 import { hasMessage, t, tn } from "../i18n";
 
 interface Props {
@@ -39,10 +42,11 @@ interface Props {
 
 const POLL_INTERVAL_MS = 10_000;
 const HISTORY_PAGE = 50;
-const HISTORY_FILTERS: (ApprovalStatus | "all")[] = ["all", "approved", "rejected", "expired", "cancelled"];
+const HISTORY_FILTERS: (ApprovalStatus | "all")[] = ["all", "approved", "failed", "rejected", "expired", "cancelled"];
 const FILTER_LABEL_KEYS: Record<string, string> = {
   all: "approvals.filterAll",
   approved: "approvals.filterApproved",
+  failed: "approvals.reason.execution_failed",
   rejected: "approvals.filterRejected",
   expired: "approvals.filterExpired",
   cancelled: "approvals.filterCancelled",
@@ -314,11 +318,16 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       .then((rec) => {
         if (cancelled) return;
         if (rec.status !== "pending") {
+          notifyAgentChatReviewDecided(selected.id);
           closeRecord();
           onCountChange?.();
         }
       })
-      .catch(() => { if (!cancelled) closeRecord(); });  // gone/expired: close
+      .catch(() => {
+        if (cancelled) return;
+        notifyAgentChatReviewDecided(selected.id);
+        closeRecord();
+      });  // gone/expired: close
     return () => { cancelled = true; };
   }, [refreshSignal, selected, onCountChange]);
 
@@ -340,6 +349,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
       })
       .catch(() => {
         if (cancelled) return;
+        notifyAgentChatReviewClosed(openApprovalId);
         // A stale/unknown id cannot be opened, so it is safe to discard.
         consumedDeepLink.current = openApprovalId;
         onConsumedDeepLink?.();
@@ -365,6 +375,11 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
     setRecords((prev) => prev.filter((r) => r.id !== updated.id));
     if (tab === "pending") loadPending();
     onCountChange?.();
+  }
+
+  function dismissRecord() {
+    if (selected) notifyAgentChatReviewClosed(selected.id);
+    closeRecord();
   }
 
   function switchTopTab(next: "pending" | "history", tablist?: EventTarget & HTMLDivElement) {
@@ -602,7 +617,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
           record={selected}
           defaultView={defaultView}
           claimed={isClaimed(selected)}
-          onClose={closeRecord}
+          onClose={dismissRecord}
           onNavigatePrevious={selectedIndex > 0 ? () => navigateSelected(-1) : undefined}
           onNavigateNext={selectedIndex >= 0 && selectedIndex < shown.length - 1 ? () => navigateSelected(1) : undefined}
           onResolved={handleResolved}
@@ -616,7 +631,7 @@ export function ApprovalsView({ tab, onTabChange, onCountChange, refreshSignal =
               ? Math.max(0, pendingTotal - 1)
               : 0
           }
-          onReviewAll={closeRecord}
+          onReviewAll={dismissRecord}
         />
       )}
       </div>
@@ -641,6 +656,7 @@ function StatusBadge({ status }: { status: ApprovalStatus }) {
   const labelKeys: Record<ApprovalStatus, string> = {
     pending: "approvals.statusPending",
     approved: "approvals.statusApproved",
+    failed: "approvals.reason.execution_failed",
     rejected: "approvals.statusRejected",
     expired: "approvals.statusExpired",
     cancelled: "approvals.statusCancelled",
@@ -648,6 +664,7 @@ function StatusBadge({ status }: { status: ApprovalStatus }) {
   const cls: Record<ApprovalStatus, string> = {
     pending: "badge-amber",
     approved: "badge-green",
+    failed: "badge-red",
     rejected: "badge-red",
     expired: "badge-grey",
     cancelled: "badge-grey",
@@ -786,6 +803,11 @@ function approvalOutcome(record: ApprovalRecord): string {
     return record.rejected_reason
       ? t("approvalSummary.history.rejectedReason.body", { reason: boundedFriendlyDetail(friendlyReason(record)) })
       : t("approvalSummary.history.rejected.body");
+  }
+  if (record.status === "failed") {
+    return t("approvalSummary.history.failed.body", {
+      error: localizedResultErrorText(record.result) || friendlyReason(record),
+    });
   }
   if (record.status === "expired") return t("approvalSummary.history.expired.body");
   return record.rejected_reason
@@ -955,10 +977,10 @@ function ApprovalDetailModal({ record, defaultView, claimed, onClose, onResolved
                   </button>
                 )}
                 {!summaryRejectOpen && (
-                  <button className="btn btn-primary" onClick={approve} disabled={locked}>
-                    {busy === "approve" || claimed
-                      ? t("approvalSummary.action.approving")
-                      : t("approvalSummary.action.approve")}
+                  <button className="btn btn-primary approval-approve-btn" onClick={approve}
+                    disabled={locked} aria-busy={busy === "approve" || claimed}
+                    aria-label={busy === "approve" || claimed ? t("approvalSummary.action.approving") : undefined}>
+                    {t("approvalSummary.action.approve")}
                   </button>
                 )}
               </div>
@@ -1054,19 +1076,26 @@ function ApprovalDetailModal({ record, defaultView, claimed, onClose, onResolved
                   onChange={(e) => { setReason(e.target.value); setReasonDraft(record.id, e.target.value); }}
                   className="approval-reason-input" placeholder={t("approvals.reasonPlaceholder")} disabled={locked} />
               </div>
-              <div className="modal-actions">
-                <button className="btn btn-primary" onClick={approve} disabled={locked}>
-                  {busy === "approve" || claimed ? t("approvals.approving") : t("approvals.approve")}
+              <div className={`modal-actions approval-modal-actions${previewErrors.length === 0 ? " approval-modal-actions-compact" : ""}`}>
+                <button className="btn btn-primary approval-approve-btn" onClick={approve}
+                  disabled={locked} aria-busy={busy === "approve" || claimed}
+                  aria-label={busy === "approve" || claimed ? t("approvals.approving") : t("approvals.approve")}>
+                  <span className="btn-label-full approval-action-label">{t("approvals.approve")}</span>
+                  <span className="btn-label-short approval-action-label">{t("agentchat.approve")}</span>
                 </button>
-                <button className="btn" onClick={reject} disabled={locked}>
-                  {busy === "reject" ? t("approvals.rejecting") : t("approvals.reject")}
+                <button className="btn" onClick={reject} disabled={locked}
+                  aria-busy={busy === "reject"}
+                  aria-label={busy === "reject" ? t("approvals.rejecting") : t("approvals.reject")}>
+                  <span className="approval-action-label">{t("approvals.reject")}</span>
                 </button>
                 {previewErrors.length > 0 && (
                   <button className="btn btn-outline" onClick={rejectWithConfigErrors} disabled={locked} title={t("approvals.rejectWithErrorTitle")}>
                     {t("approvals.rejectWithError")}
                   </button>
                 )}
-                <button className="btn btn-text" onClick={onClose} disabled={busy !== null}>{t("common.close")}</button>
+                <button className="btn btn-text" onClick={onClose} disabled={busy !== null}>
+                  <span className="approval-action-label">{t("common.close")}</span>
+                </button>
               </div>
             </>
           )}

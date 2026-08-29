@@ -22,6 +22,7 @@ from custom_components.phoenix_mcp.admin_view import (
 from custom_components.phoenix_mcp.approvals import (
     STATUS_APPROVED,
     STATUS_CANCELLED,
+    STATUS_FAILED,
     STATUS_PENDING,
     STATUS_REJECTED,
 )
@@ -389,7 +390,12 @@ class TestApprovalApprove:
         async def _observing_executor(name, args, tok, hass, data):
             entry = next(r for r in store._pending if r["id"] == "appr_a")
             seen["marker"] = entry.get("execution_started_at")
+            seen["approved_at"] = entry.get("approved_at")
+            seen["approved_by_user_id"] = entry.get("approved_by_user_id")
             seen["status"] = entry["status"]
+            seen["audit_methods"] = [
+                call.kwargs["method"] for call in data.audit.record.call_args_list
+            ]
             return ({"content": [{"type": "text", "text": "{}"}]}, "allowed", "restart_ha")
 
         with patch("custom_components.phoenix_mcp.admin_view.require_admin", lambda f: f), \
@@ -401,6 +407,9 @@ class TestApprovalApprove:
         assert seen["marker"] is not None, (
             "execution_started_at was not persisted before the executor ran"
         )
+        assert seen["approved_at"] == seen["marker"]
+        assert seen["approved_by_user_id"] == "admin-user"
+        assert seen["audit_methods"] == ["approval/approved"]
         assert seen["status"] == STATUS_PENDING
         # Cleared once the outcome is recorded, so the history carries no
         # half-finished marker and a later startup has nothing to reconcile.
@@ -507,9 +516,11 @@ class TestApprovalApprove:
 
         assert resp.status == 409
         assert store._pending[0]["status"] == STATUS_REJECTED
-        data.audit.record.assert_called_once()
-        audit_kwargs = data.audit.record.call_args.kwargs
-        assert audit_kwargs["method"] == f"approval/{STATUS_APPROVED}"
+        assert [call.kwargs["method"] for call in data.audit.record.call_args_list] == [
+            "approval/approved",
+            "approval/executed",
+        ]
+        audit_kwargs = data.audit.record.call_args_list[-1].kwargs
         assert audit_kwargs["outcome"] == "allowed"
         assert audit_kwargs["payload"] == {
             "finalization": "conflict",
@@ -537,7 +548,7 @@ class TestApprovalApprove:
             resp = await view.post(request, approval_id="appr_a")
 
         out = json.loads(resp.text)
-        assert out["status"] == STATUS_REJECTED
+        assert out["status"] == STATUS_FAILED
         assert out["rejected_reason"] == "execution_failed"
 
     @pytest.mark.asyncio
@@ -576,7 +587,7 @@ class TestApprovalApprove:
 
         assert resp.status == 409
         rejected = next(r for r in store._pending if r["id"] == "appr_a")
-        assert rejected["status"] == STATUS_REJECTED
+        assert rejected["status"] == STATUS_FAILED
         assert rejected["rejected_reason"] == "capability_denied"
 
     @pytest.mark.asyncio
@@ -813,7 +824,7 @@ class TestApprovalClaimSignal:
 
         assert resp.status == 500
         stored = next(r for r in store._pending if r["id"] == "appr_a")
-        assert stored["status"] == STATUS_REJECTED
+        assert stored["status"] == STATUS_FAILED
         assert stored["rejected_reason"] == "execution_interrupted"
         # Not released back to pending, so no claimed=False and no notification
         # inviting a second attempt.
@@ -849,7 +860,7 @@ class TestApprovalClaimSignal:
         # idempotent (pre-existing behaviour), so it reports the stored outcome
         # rather than running anything.
         assert executor.await_count == 1
-        assert json.loads(second.text)["status"] == STATUS_REJECTED
+        assert json.loads(second.text)["status"] == STATUS_FAILED
         assert json.loads(second.text)["rejected_reason"] == "execution_interrupted"
 
     @pytest.mark.asyncio
@@ -920,7 +931,7 @@ class TestApprovalClaimSignal:
         # Ran once, and the record is closed rather than offered back.
         assert applied == ["side effect landed"]
         stored = next(r for r in store._pending if r["id"] == "appr_a")
-        assert stored["status"] == STATUS_REJECTED
+        assert stored["status"] == STATUS_FAILED
         assert stored["rejected_reason"] == "execution_interrupted"
         assert json.loads(second.text)["rejected_reason"] == "execution_interrupted"
 
@@ -958,7 +969,7 @@ class TestApprovalClaimSignal:
 
         assert applied == ["side effect landed"]
         stored = next(r for r in store._pending if r["id"] == "appr_a")
-        assert stored["status"] == STATUS_REJECTED
+        assert stored["status"] == STATUS_FAILED
         assert stored["rejected_reason"] == "execution_interrupted"
 
     @pytest.mark.asyncio

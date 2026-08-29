@@ -553,6 +553,24 @@ async def _async_setup_entry_impl(hass: HomeAssistant, entry: ConfigEntry) -> bo
         for approval in interrupted:
             dismiss_approval_notification(hass, approval.id)
             fire_approval_resolved_event(hass, approval)
+            audit.record(
+                request_id=approval.request_id,
+                token_id="admin",
+                token_name=f"admin:{approval.approved_by_user_id or 'unknown'}",
+                method="approval/failed",
+                resource=f"approval:{approval.tool_name}:{approval.id}",
+                outcome="denied",
+                client_ip="",
+                settings=store.get_settings(),
+                payload={
+                    "reason": approval.rejected_reason,
+                    "approved_at": (
+                        approval.approved_at.isoformat()
+                        if approval.approved_at else None
+                    ),
+                    "reconciled_at_startup": True,
+                },
+            )
 
     await _reconcile_interrupted_approvals()
     await _sweep_expired_approvals()

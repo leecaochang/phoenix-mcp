@@ -113,6 +113,31 @@ describe("approval Summary modal", () => {
     }
   });
 
+  it.each([
+    ["Summary", "Approve and execute", "Approving..."],
+    ["Details", "Approve and execute", "Approving..."],
+  ] as const)("keeps the %s approval button label and geometry stable while busy", async (viewName, label, busyLabel) => {
+    let finish!: (value: ApprovalRecord) => void;
+    vi.mocked(api.approveApproval).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const view = await open();
+    const dialog = within(view.getByRole("dialog"));
+    if (viewName === "Details") fireEvent.click(dialog.getByRole("button", { name: "Details" }));
+
+    const approve = dialog.getByRole("button", { name: label });
+    if (viewName === "Details") {
+      expect(approve.closest(".modal-actions")).toHaveClass("approval-modal-actions-compact");
+      expect(approve.querySelector(".btn-label-short")).toHaveTextContent("Approve");
+      expect(approve.closest(".modal-actions")?.children).toHaveLength(3);
+    }
+    fireEvent.click(approve);
+    await waitFor(() => expect(approve).toHaveAttribute("aria-busy", "true"));
+    expect(approve).toHaveTextContent(label);
+    expect(approve).toHaveAttribute("aria-label", busyLabel);
+
+    finish(record({ status: "approved", resolved_at: "2026-08-13T04:05:00Z" }));
+    await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
+  });
+
   it("persists only the toolbar default", async () => {
     vi.mocked(api.listApprovals).mockResolvedValue({ approvals: [record()], total: 1, limit: 50, offset: 0 });
     const view = render(<ApprovalsView tab="pending" onTabChange={() => {}} />);
@@ -165,8 +190,8 @@ describe("approval Summary modal", () => {
     ["rejected", "not now", null, "The request was rejected and was not run. Reason: not now"],
     ["expired", null, null, "The request expired and was not run."],
     ["cancelled", "admin_cancelled", null, "The request was cancelled and was not run. Reason: Cancelled by admin"],
-    ["cancelled", "execution_failed", { tool_result: { content: [{ type: "text", text: "Forbidden." }] } }, "The request was approved, but execution failed. Error: The action could not be completed. Open Details to review the executor error."],
-    ["cancelled", "execution_interrupted", null, "Execution was interrupted and the change may have been applied. Verify the current state before requesting it again."],
+    ["failed", "execution_failed", { tool_result: { content: [{ type: "text", text: "Forbidden." }] } }, "The request was approved, but execution failed. Error: The action could not be completed. Open Details to review the executor error."],
+    ["failed", "execution_interrupted", null, "Execution was interrupted and the change may have been applied. Verify the current state before requesting it again."],
   ] as const)("shows a friendly %s outcome", async (status, rejectedReason, result, expected) => {
     const resolved = record({ status, rejected_reason: rejectedReason, result, resolved_at: "2026-08-13T04:05:00Z" });
     const view = await open(resolved, "history");

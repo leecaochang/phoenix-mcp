@@ -13,6 +13,11 @@ import { AgentCliWindow, focusAgentCliPopup } from "../components/AgentCliWindow
 import type { AgentCliInstance, TokenRecord } from "../types";
 import { JS_BUILD } from "../version";
 import { patchDurable as patchAgentCliDurable } from "../utils/agentcli_state";
+import {
+  AGENTCHAT_REVIEW_CLOSED_EVENT,
+  AGENTCHAT_REVIEW_DECIDED_EVENT,
+  AGENTCHAT_REVIEW_OPENED_EVENT,
+} from "../utils/agentchat_review";
 import PANEL_CSS from "../phoenix-mcp-panel.css?inline";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -98,6 +103,46 @@ let root: Root | null = null;
 let themeObserver: MutationObserver | null = null;
 let activeTokenId = "";
 let summonVersion = 0;
+let reviewResumeFrame: number | null = null;
+
+function suspendForApprovalReview(): void {
+  if (reviewResumeFrame !== null) {
+    window.cancelAnimationFrame(reviewResumeFrame);
+    reviewResumeFrame = null;
+  }
+  // Do not merely hide the React window inside this full-viewport fixed host.
+  // iOS WebKit can retain a painted tile for that outer compositing layer while
+  // HA swaps panels, producing duplicate buttons and scrambled modal content.
+  // Detaching the host removes the layer while preserving the mounted React
+  // tree, conversation, stream, and event listeners.
+  host?.remove();
+}
+
+function resumeAfterApprovalReview(): void {
+  if (reviewResumeFrame !== null) window.cancelAnimationFrame(reviewResumeFrame);
+  // Let the panel close its modal and AgentCliWindow commit its pill/restored
+  // mode before recreating the global compositing layer on the next frame.
+  reviewResumeFrame = window.requestAnimationFrame(() => {
+    reviewResumeFrame = null;
+    if (host && !host.isConnected) document.body.appendChild(host);
+  });
+}
+
+function watchApprovalReview(): void {
+  window.addEventListener(AGENTCHAT_REVIEW_OPENED_EVENT, suspendForApprovalReview);
+  window.addEventListener(AGENTCHAT_REVIEW_CLOSED_EVENT, resumeAfterApprovalReview);
+  window.addEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, resumeAfterApprovalReview);
+}
+
+function unwatchApprovalReview(): void {
+  window.removeEventListener(AGENTCHAT_REVIEW_OPENED_EVENT, suspendForApprovalReview);
+  window.removeEventListener(AGENTCHAT_REVIEW_CLOSED_EVENT, resumeAfterApprovalReview);
+  window.removeEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, resumeAfterApprovalReview);
+  if (reviewResumeFrame !== null) {
+    window.cancelAnimationFrame(reviewResumeFrame);
+    reviewResumeFrame = null;
+  }
+}
 
 function paintAgentChat(): void {
   root?.render(
@@ -172,6 +217,7 @@ export function hideAgentChat(): void {
   // open:true stuck in storage, and a later reload reopened the window right
   // back up (the panel's own restore-on-mount reads that same flag).
   patchAgentCliDurable({ open: false });
+  unwatchApprovalReview();
   unwatchTheme();
   if (reloadStrings) {
     window.removeEventListener("phx-language-changed", reloadStrings);
@@ -214,6 +260,7 @@ export function showAgentChat(tokenId?: string): void {
   host.dataset.jsBuild = JS_BUILD;  // devtools-visible marker of the loaded chunk
   applyTheme();
   watchTheme();
+  watchApprovalReview();
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = PANEL_CSS + "\n.agentcli-window{pointer-events:auto;}";

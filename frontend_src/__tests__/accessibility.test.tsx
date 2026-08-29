@@ -92,6 +92,34 @@ describe("accessibility regressions", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("/api/newer");
   });
 
+  it("keeps approval lifecycle rows distinct when they share a request id", () => {
+    const approved: AuditEntry = {
+      request_id: "approve-request",
+      timestamp: "2026-08-29T07:00:00Z",
+      token_id: "admin",
+      token_name: "admin:user",
+      method: "approval/approved",
+      resource: "approval:restart_ha:appr-1",
+      outcome: "allowed",
+      client_ip: "",
+      pass_through: false,
+      payload: null,
+    };
+    const executed: AuditEntry = {
+      ...approved,
+      timestamp: "2026-08-29T07:00:01Z",
+      method: "approval/executed",
+    };
+    render(<AuditTable entries={[approved, executed]} />);
+
+    fireEvent.click(screen.getAllByRole("button", {
+      name: /Open audit entry Allowed for admin/,
+    })[0]);
+    expect(screen.getByRole("dialog")).toHaveTextContent("approval/executed");
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(screen.getByRole("dialog")).toHaveTextContent("approval/approved");
+  });
+
   it("wires the whole row as a single accessible click target, not one per cell", () => {
     // The row's mouse-clickable-anywhere behavior comes from a CSS overlay
     // (the button's ::after stretched via position:relative on the <tr>,

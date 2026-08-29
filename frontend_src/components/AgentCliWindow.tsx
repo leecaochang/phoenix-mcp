@@ -6,13 +6,17 @@ import {
   getDurable, patchDurable, getSessionTurns, setSessionTurns,
   getSessionDraft, setSessionDraft,
   getSessionUsage, setSessionUsage, type SessionUsage,
+  AGENTCLI_TEXT_SIZE_MIN_PT, AGENTCLI_TEXT_SIZE_MAX_PT, AGENTCLI_TEXT_SIZE_STEP_PT,
+  normalizeAgentCliTextSize,
 } from "../utils/agentcli_state";
 import { approvalStatusLabel, effortLevelLabel } from "../utils";
 import { clearReasonDraft, getReasonDraft } from "../utils/approval_reason_draft";
 import { localizedApprovalReason } from "../utils/approval_reason";
 import { subscribeApprovalEvents } from "../utils/approval_events";
 import {
+  AGENTCHAT_REVIEW_CLOSED_EVENT,
   AGENTCHAT_REVIEW_DECIDED_EVENT,
+  notifyAgentChatReviewOpened,
   reviewDecisionApprovalId,
 } from "../utils/agentchat_review";
 import PHOENIX_ICON from "../../custom_components/phoenix_mcp/brand/icon.png";
@@ -42,6 +46,31 @@ type ChatEntry =
   | { kind: "focus_declined"; prompt: string }
   | { kind: "error"; code: string; message: string; messageParams?: Record<string, string | number>;
       rateLimit?: ProviderRateLimit };
+
+const COMPOSER_MAX_ROWS = 6;
+
+/** Keep the composer at two visible rows, then grow with its content until six
+ *  rows. Past that point it scrolls internally instead of consuming the chat. */
+export function fitComposerTextarea(textarea: HTMLTextAreaElement): void {
+  const view = textarea.ownerDocument.defaultView;
+  const styles = view?.getComputedStyle(textarea);
+  const fontSize = Number.parseFloat(styles?.fontSize || "") || 13;
+  const rawLineHeight = styles?.lineHeight || "";
+  const parsedLineHeight = Number.parseFloat(rawLineHeight);
+  const lineHeight = Number.isFinite(parsedLineHeight)
+    ? rawLineHeight.endsWith("px") ? parsedLineHeight : fontSize * parsedLineHeight
+    : fontSize * 1.4;
+  const verticalChrome = (Number.parseFloat(styles?.paddingTop || "") || 0)
+    + (Number.parseFloat(styles?.paddingBottom || "") || 0)
+    + (Number.parseFloat(styles?.borderTopWidth || "") || 0)
+    + (Number.parseFloat(styles?.borderBottomWidth || "") || 0);
+  const minHeight = lineHeight * 2 + verticalChrome;
+  const maxHeight = lineHeight * COMPOSER_MAX_ROWS + verticalChrome;
+  textarea.style.height = "auto";
+  const contentHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
+  textarea.style.height = `${Math.ceil(contentHeight)}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+}
 
 interface ProviderRateLimit {
   tokens_minute_limit?: number;
@@ -460,9 +489,14 @@ function applyPopupTheme(popup: Window, hass: unknown): void {
 
 const RESIZE_MIN_W = 320, RESIZE_MIN_H = 280;
 const VIEWPORT_MARGIN = 8;
-// The minimized pill's footprint (CSS: 220px wide, ~44px tall titlebar), used to
-// keep a remembered pill position within the viewport.
+// The desktop minimized titlebar footprint, used to keep its remembered
+// position within the viewport. Mobile uses the compact icon-only pill below.
 const PILL_SIZE = { w: 220, h: 44 };
+const MOBILE_PILL_SIZE = { w: 44, h: 44 };
+
+function currentPillSize(): { w: number; h: number } {
+  return isNarrowViewport() ? MOBILE_PILL_SIZE : PILL_SIZE;
+}
 
 // The window is normal (windowed), minimized to a pill, or maximized full screen.
 type WinMode = "normal" | "min" | "max";
@@ -586,8 +620,9 @@ export function AgentCliWindow({
   const maximized = mode === "max";
   const [gearOpen, setGearOpen] = useState(false);
   const [options, setOptions] = useState<GenOptions>(saved.options);
-  const [showUsage, setShowUsage] = useState(saved.showUsage);
+  const [showFooter, setShowFooter] = useState(saved.showFooter);
   const [showTimestamps, setShowTimestamps] = useState(saved.showTimestamps);
+  const [textSizePt, setTextSizePt] = useState(() => normalizeAgentCliTextSize(saved.textSizePt));
   // Provider-reported token usage for this conversation (session lifecycle,
   // like the transcript). The stream's usage events carry TURN-cumulative
   // totals, so each event is added to the session base captured at send time.
@@ -608,9 +643,11 @@ export function AgentCliWindow({
     saved.pos.x >= 0 ? saved.pos : { x: Math.max(16, window.innerWidth - 480), y: 96 });
   const [pillPos, setPillPos] = useState(saved.pillPos);
   const [size, setSize] = useState(saved.size);
+  const [reviewingApprovalId, setReviewingApprovalId] = useState<string | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const popupRef = useRef<Window | null>(null);
   const closingPopupRef = useRef(false);
@@ -639,14 +676,25 @@ export function AgentCliWindow({
     const restoreReviewedChat = (event: Event) => {
       const approvalId = reviewDecisionApprovalId(event);
       const pending = reviewRestoreRef.current;
-      if (!approvalId || !pending || approvalId !== pending.approvalId) return;
+      if (!approvalId) return;
+      setReviewingApprovalId((current) => current === approvalId ? null : current);
+      if (!pending || approvalId !== pending.approvalId) return;
       reviewRestoreRef.current = null;
       // Do not override the operator if they already expanded the window while
       // reviewing; otherwise return to the exact mode Review minimized.
       setMode((current) => current === "min" ? pending.mode : current);
     };
+    const revealReviewedChatPill = (event: Event) => {
+      const approvalId = reviewDecisionApprovalId(event);
+      if (!approvalId) return;
+      setReviewingApprovalId((current) => current === approvalId ? null : current);
+    };
     window.addEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, restoreReviewedChat);
-    return () => window.removeEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, restoreReviewedChat);
+    window.addEventListener(AGENTCHAT_REVIEW_CLOSED_EVENT, revealReviewedChatPill);
+    return () => {
+      window.removeEventListener(AGENTCHAT_REVIEW_DECIDED_EVENT, restoreReviewedChat);
+      window.removeEventListener(AGENTCHAT_REVIEW_CLOSED_EVENT, revealReviewedChatPill);
+    };
   }, []);
 
   // A swipe that starts on the selectors, composer, or a transcript with no
@@ -662,7 +710,7 @@ export function AgentCliWindow({
     const ownsGesture = (target: EventTarget | null): boolean => {
       const element = target as { closest?: (selector: string) => Element | null } | null;
       if (typeof element?.closest !== "function") return false;
-      if (element.closest(".agentcli-controls, .agentcli-input, .agentcli-continue, .agentcli-gear")) {
+      if (element.closest(".agentcli-controls, .agentcli-input, .agentcli-continue, .agentcli-footer, .agentcli-gear")) {
         return true;
       }
       const transcript = bodyRef.current;
@@ -717,8 +765,9 @@ export function AgentCliWindow({
   useEffect(() => { patchDurable({ instanceId }); }, [instanceId]);
   useEffect(() => { patchDurable({ model }); }, [model]);
   useEffect(() => { patchDurable({ options }); }, [options]);
-  useEffect(() => { patchDurable({ showUsage }); }, [showUsage]);
+  useEffect(() => { patchDurable({ showFooter }); }, [showFooter]);
   useEffect(() => { patchDurable({ showTimestamps }); }, [showTimestamps]);
+  useEffect(() => { patchDurable({ textSizePt }); }, [textSizePt]);
   useEffect(() => { patchDurable({ minimized, maximized }); }, [minimized, maximized]);
   // The prefill is one-shot: consumed into the input above, then cleared so it
   // does not reappear on a later open.
@@ -731,6 +780,10 @@ export function AgentCliWindow({
   // last query.
   useEffect(() => { setSessionDraft(input); }, [input]);
 
+  useEffect(() => {
+    if (inputRef.current) fitComposerTextarea(inputRef.current);
+  }, [input, popupMount, textSizePt]);
+
   // The global Agent Chat button can be pressed while this live component is
   // already mounted as a minimized pill. Rehydrate the geometry that the button
   // just wrote to durable state, then unfold without remounting the component or
@@ -739,6 +792,7 @@ export function AgentCliWindow({
   useEffect(() => {
     if (summonVersion === undefined || summonVersion === lastSummonVersion.current) return;
     lastSummonVersion.current = summonVersion;
+    setReviewingApprovalId(null);
     if (mode !== "min") return;
     const latest = getDurable();
     setSize(latest.size);
@@ -1393,19 +1447,19 @@ export function AgentCliWindow({
   // Mode transitions. The pill and the restored window each remember their own
   // position, so each transition seeds or clamps only the geometry it enters.
   const minimize = useCallback(() => {
-    // The pill's own remembered spot wins; the first time, a narrow (mobile)
-    // viewport defaults to the very top-right corner (above the panel's Agent
-    // Chat button), desktop to the window's corner. Clamped into view either way.
-    const base = pillPos.x >= 0
-      ? pillPos
-      : isNarrowViewport()
-        ? {
-            x: window.innerWidth - PILL_SIZE.w - VIEWPORT_MARGIN,
-            y: VIEWPORT_MARGIN,
-          }
-        : pos;
+    // The mobile pill is not draggable, so a remembered desktop-width pill
+    // position has no useful meaning there and can strand the compact icon over
+    // the Phoenix title. Always dock the narrow pill at the top-right. Desktop
+    // retains the independent remembered pill position.
+    const pillSize = currentPillSize();
+    const base = isNarrowViewport()
+      ? {
+          x: window.innerWidth - pillSize.w - VIEWPORT_MARGIN,
+          y: VIEWPORT_MARGIN,
+        }
+      : pillPos.x >= 0 ? pillPos : pos;
     const np = clampPosToViewport(
-      base, PILL_SIZE, window.innerWidth, window.innerHeight,
+      base, pillSize, window.innerWidth, window.innerHeight,
       agentCliTopMargin(rootRef.current),
     );
     setPillPos(np);
@@ -1424,6 +1478,11 @@ export function AgentCliWindow({
         ? { approvalId, mode }
         : null;
       minimize();
+      setReviewingApprovalId(approvalId);
+      // The global window lives in a separate fixed shadow layer above the HA
+      // panel. Removing that entire layer during review avoids stale iOS WebKit
+      // compositor tiles from surviving over the panel modal after navigation.
+      notifyAgentChatReviewOpened(approvalId);
     } else {
       reviewRestoreRef.current = null;
     }
@@ -1450,8 +1509,9 @@ export function AgentCliWindow({
       const vw = window.innerWidth, vh = window.innerHeight, M = VIEWPORT_MARGIN;
       const topMargin = agentCliTopMargin(rootRef.current);
       if (mode === "min") {
+        const pillSize = currentPillSize();
         const base = pillPos.x >= 0 ? pillPos : pos;  // same fallback the pill renders at
-        const np = clampPosToViewport(base, PILL_SIZE, vw, vh, topMargin);
+        const np = clampPosToViewport(base, pillSize, vw, vh, topMargin);
         if (np.x !== pillPos.x || np.y !== pillPos.y) {
           setPillPos(np);
           patchDurable({ pillPos: np });
@@ -1575,18 +1635,31 @@ export function AgentCliWindow({
   const pillXY = pillPos.x >= 0 ? pillPos : pos;  // fall back before first seed
   const collapsed = minimized && !poppedOut;
   // Maximized geometry comes entirely from CSS (inset: 0); no inline style.
-  const style: React.CSSProperties = poppedOut || maximized
+  const geometryStyle: React.CSSProperties = poppedOut || maximized
     ? {}
     : collapsed
       ? { left: pillXY.x, top: pillXY.y }
       : { left: pos.x, top: pos.y, width: size.w, height: size.h };
+  const style = {
+    ...geometryStyle,
+    "--phx-agentcli-text-size": `${textSizePt}pt`,
+  } as React.CSSProperties;
+
+  const adjustTextSize = (delta: number) => {
+    setTextSizePt((current) => normalizeAgentCliTextSize(current + delta));
+  };
 
   const content = (
-    <div ref={rootRef} className={`agentcli-window${collapsed ? " agentcli-minimized" : ""}${maximized && !poppedOut ? " agentcli-maximized" : ""}${poppedOut ? " agentcli-popped-out" : ""}`} style={style} role="dialog" aria-label={agentChatTitle}>
+    <div ref={rootRef} className={`agentcli-window${collapsed ? " agentcli-minimized" : ""}${reviewingApprovalId ? " agentcli-reviewing" : ""}${maximized && !poppedOut ? " agentcli-maximized" : ""}${poppedOut ? " agentcli-popped-out" : ""}`} style={style} role="dialog" aria-label={agentChatTitle}>
       {/* Persistent polite announcer; mounted unconditionally so assistive
           tech reliably picks up updates (live regions must pre-exist). */}
       <div className="sr-only" role="status">{announcement}</div>
-      <div className="agentcli-titlebar" onPointerDown={startDrag}>
+      {collapsed && narrowViewport ? (
+        <button type="button" className="agentcli-mobile-pill" onClick={restore}
+                title={t("agentchat.restore")} aria-label={t("agentchat.restore")}>
+          <img src={PHOENIX_ICON} className="agentcli-title-icon" alt="" />
+        </button>
+      ) : <div className="agentcli-titlebar" onPointerDown={startDrag}>
         <span className="agentcli-title"><img src={PHOENIX_ICON} className="agentcli-title-icon" alt="" />{agentChatTitle}</span>
         <div className="agentcli-titlebar-actions">
           {(!narrowViewport || poppedOut) && (
@@ -1631,7 +1704,7 @@ export function AgentCliWindow({
           )}
           <button className="agentcli-icon-btn" title={t("common.close")} aria-label={t("common.close")} onClick={handleClose}>&times;</button>
         </div>
-      </div>
+      </div>}
 
       {popOutError && (
         <div className="agentcli-popout-error" role="alert">{popOutError}</div>
@@ -1667,11 +1740,11 @@ export function AgentCliWindow({
               <span className="toggle-switch-track" />
             </label>
           </div>
-          <div className="agentcli-gear-row" title={t("agentchat.showUsageHint")}>
-            <span>{t("agentchat.showUsage")}</span>
+          <div className="agentcli-gear-row" title={t("agentchat.showFooterHint")}>
+            <span>{t("agentchat.showFooter")}</span>
             <label className="toggle-switch">
-              <input type="checkbox" checked={showUsage} aria-label={t("agentchat.showUsage")}
-                     onChange={(e) => setShowUsage(e.target.checked)} />
+              <input type="checkbox" checked={showFooter} aria-label={t("agentchat.showFooter")}
+                     onChange={(e) => setShowFooter(e.target.checked)} />
               <span className="toggle-switch-track" />
             </label>
           </div>
@@ -1748,6 +1821,7 @@ export function AgentCliWindow({
 
           <div className="agentcli-input">
             <textarea
+              ref={inputRef}
               value={input}
               aria-label={t("agentchat.messageAria")}
               placeholder={noInstances ? t("agentchat.configureFirst") : t("agentchat.messagePlaceholder")}
@@ -1767,21 +1841,37 @@ export function AgentCliWindow({
             )}
           </div>
 
-          {showUsage && (
-            <div className="agentcli-usage"
+          {showFooter && (
+            <div className="agentcli-footer">
+              <div className="agentcli-text-size-controls" role="group" aria-label={t("agentchat.textSize")}>
+                <button type="button" className="agentcli-text-size-btn"
+                        aria-label={t("agentchat.decreaseTextSize")} title={t("agentchat.decreaseTextSize")}
+                        disabled={textSizePt <= AGENTCLI_TEXT_SIZE_MIN_PT}
+                        onClick={() => adjustTextSize(-AGENTCLI_TEXT_SIZE_STEP_PT)}>
+                  <span aria-hidden="true">−</span>
+                </button>
+                <button type="button" className="agentcli-text-size-btn"
+                        aria-label={t("agentchat.increaseTextSize")} title={t("agentchat.increaseTextSize")}
+                        disabled={textSizePt >= AGENTCLI_TEXT_SIZE_MAX_PT}
+                        onClick={() => adjustTextSize(AGENTCLI_TEXT_SIZE_STEP_PT)}>
+                  <span aria-hidden="true">+</span>
+                </button>
+              </div>
+              <div className="agentcli-usage"
                  title={usage.input + usage.output > 0
                    ? t("agentchat.usageTitle", { input: localeNumber(usage.input), output: localeNumber(usage.output) })
                    : t("agentchat.usageTitleEmpty")}>
-              {usage.input + usage.output > 0 ? (
-                <>
-                  {t("agentchat.usageSession", { tokens: fmtTokens(usage.input + usage.output) })}
-                  {usage.context > 0 ? t("agentchat.usageContext", { tokens: fmtTokens(usage.context) }) : ""}
-                </>
-              ) : usage.noData ? (
-                t("agentchat.usageNoData")
-              ) : (
-                t("agentchat.usageZero")
-              )}
+                {usage.input + usage.output > 0 ? (
+                  <>
+                    {t("agentchat.usageSession", { tokens: fmtTokens(usage.input + usage.output) })}
+                    {usage.context > 0 ? t("agentchat.usageContext", { tokens: fmtTokens(usage.context) }) : ""}
+                  </>
+                ) : usage.noData ? (
+                  t("agentchat.usageNoData")
+                ) : (
+                  t("agentchat.usageZero")
+                )}
+              </div>
             </div>
           )}
 

@@ -241,7 +241,7 @@ _ENTITY_TOOL_DEFS: list[dict] = [
         "description": (
             "Check a pending approval created by an earlier tool call, or list your own outstanding "
             "approvals. With approval_id: returns that approval's status (pending, approved, rejected, "
-            "expired, cancelled) and the result if approved. Without approval_id: returns all of this "
+            "failed, expired, cancelled) and any stored execution result. Without approval_id: returns all of this "
             "token's currently pending approvals (id, tool, created/expires), useful after a reconnect "
             "or to resume polling. Tokens only ever see approvals they themselves created."
         ),

@@ -345,6 +345,22 @@ class TestLoggingSettings:
         _record(log, outcome="allowed", settings=s)
         assert len(log) == 1
 
+    def test_approval_lifecycle_bypasses_allowed_and_denied_filters(self):
+        log = AuditLog()
+        s = _settings(log_allowed=False, log_denied=False)
+        _record(log, method="approval/approved", outcome="allowed", settings=s)
+        _record(log, method="approval/failed", outcome="denied", settings=s)
+        assert [entry.method for entry in log.query(limit=10)] == [
+            "approval/failed",
+            "approval/approved",
+        ]
+
+    def test_master_logging_switch_still_suppresses_approval_lifecycle(self):
+        log = AuditLog()
+        s = _settings(disable_all_logging=True)
+        _record(log, method="approval/approved", outcome="allowed", settings=s)
+        assert len(log) == 0
+
     def test_log_rate_limited_false_skips_rate_limited(self):
         log = AuditLog()
         s = _settings(log_rate_limited=False)

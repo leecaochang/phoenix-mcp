@@ -15,6 +15,7 @@ from custom_components.phoenix_mcp.approvals import (
     STATUS_APPROVED,
     STATUS_CANCELLED,
     STATUS_EXPIRED,
+    STATUS_FAILED,
     STATUS_PENDING,
     STATUS_REJECTED,
     async_cancel_approvals_for_token,
@@ -517,7 +518,13 @@ class TestRecordSerialization:
         assert roundtrip.diff == original.diff
 
     def test_is_terminal(self):
-        for status in (STATUS_APPROVED, STATUS_REJECTED, STATUS_EXPIRED, STATUS_CANCELLED):
+        for status in (
+            STATUS_APPROVED,
+            STATUS_REJECTED,
+            STATUS_FAILED,
+            STATUS_EXPIRED,
+            STATUS_CANCELLED,
+        ):
             r = PendingApproval(
                 id="x", token_id="t", token_name="n", tool_name="x",
                 cap_name="c", args={}, diff={}, status=status,
@@ -630,25 +637,31 @@ class TestInterruptedExecution:
     async def test_marker_is_written_before_the_executor_runs(self, store):
         approval_id = await self._pending(store)
 
-        await async_mark_execution_started(store, approval_id)
+        await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        )
 
         entry = store.get_pending_approvals()[0]
         # Still pending: the marker records that it MIGHT have applied, and the
         # record only becomes terminal once the executor actually reports.
         assert entry["status"] == STATUS_PENDING
+        assert entry["approved_by_user_id"] == "admin"
+        assert entry["approved_at"] == entry["execution_started_at"]
         assert entry["execution_started_at"] is not None
 
     @pytest.mark.asyncio
     async def test_a_restart_mid_execution_resolves_rather_than_re_offering(self, store):
         approval_id = await self._pending(store)
-        await async_mark_execution_started(store, approval_id)
+        await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        )
 
         # A new process reads the store back and reconciles.
         changed = await async_reconcile_interrupted_approvals(store)
 
         assert [a.id for a in changed] == [approval_id]
         entry = store.get_pending_approvals()[0]
-        assert entry["status"] == STATUS_REJECTED
+        assert entry["status"] == STATUS_FAILED
         assert entry["rejected_reason"] == REASON_EXECUTION_INTERRUPTED
         # Approving it again is the one unrecoverable outcome, so the record must
         # not be pending any more.
@@ -669,7 +682,9 @@ class TestInterruptedExecution:
     @pytest.mark.asyncio
     async def test_a_completed_execution_clears_the_marker(self, store):
         approval_id = await self._pending(store)
-        await async_mark_execution_started(store, approval_id)
+        await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        )
 
         await async_update_approval_status(
             store, approval_id, status=STATUS_APPROVED, approved_by_user_id="admin",
@@ -695,7 +710,9 @@ class TestInterruptedExecution:
         approval_id = await self._pending(store)
         store.async_save = AsyncMock(side_effect=OSError("disk full"))
 
-        assert await async_mark_execution_started(store, approval_id) is False
+        assert await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        ) is False
         # Still pending and still approvable once the disk is writable, with no
         # half-written marker left to be reconciled away at the next startup.
         assert get_approval(store, approval_id).status == STATUS_PENDING
@@ -704,7 +721,9 @@ class TestInterruptedExecution:
     @pytest.mark.asyncio
     async def test_a_durable_marker_reports_success(self, store):
         approval_id = await self._pending(store)
-        assert await async_mark_execution_started(store, approval_id) is True
+        assert await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        ) is True
 
     @pytest.mark.asyncio
     async def test_an_already_resolved_approval_reports_failure(self, store):
@@ -714,13 +733,17 @@ class TestInterruptedExecution:
         await async_update_approval_status(
             store, approval_id, status=STATUS_APPROVED, approved_by_user_id="admin")
 
-        assert await async_mark_execution_started(store, approval_id) is False
+        assert await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        ) is False
 
     @pytest.mark.asyncio
     async def test_the_marker_survives_a_store_round_trip(self, store):
         # It is only worth anything if it is still there in the NEXT process.
         approval_id = await self._pending(store)
-        await async_mark_execution_started(store, approval_id)
+        await async_mark_execution_started(
+            store, approval_id, approved_by_user_id="admin",
+        )
 
         reloaded = PendingApproval.from_dict(store.get_pending_approvals()[0])
 

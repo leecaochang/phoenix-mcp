@@ -580,6 +580,7 @@ export type ApprovalStatus =
   | "pending"
   | "approved"
   | "rejected"
+  | "failed"
   | "expired"
   | "cancelled";
 
@@ -635,6 +636,8 @@ export interface ApprovalRecord {
   expires_at: string;
   resolved_at: string | null;
   approved_by_user_id: string | null;
+  /** The durable approval decision time, written before execution starts. */
+  approved_at?: string | null;
   rejected_reason: string | null;
   result: unknown | null;
   request_id: string;

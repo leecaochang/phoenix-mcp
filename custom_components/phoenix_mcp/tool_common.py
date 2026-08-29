@@ -111,7 +111,7 @@ def _tool_inline_resolved(approval: Any) -> dict:
     (with any reason) and that it must not retry, rather than handing back a
     stale pending stub. isError is True because the action did not happen.
     An admin APPROVAL whose executor then failed lands here too (the approve
-    path stores the error result and flips the record to rejected with the
+    path stores the error result and resolves the record as failed with the
     "execution_failed" slug); that case must read as a failure to fix, never
     as a refusal, or the agent treats an approval as a refusal and loops
     retrying the same doomed call.
@@ -138,6 +138,17 @@ def _tool_inline_resolved(approval: Any) -> dict:
                 ),
             })
             return {"content": [{"type": "text", "text": body}], "isError": True}
+    if approval.status == "failed" and reason == "execution_interrupted":
+        body = json.dumps({
+            "status": "failed",
+            "approval_id": approval.id,
+            "message": (
+                "The operator APPROVED this action and execution started, but its "
+                "final outcome was interrupted. It may have partly applied. Check "
+                "the real-world result before proposing any retry."
+            ),
+        })
+        return {"content": [{"type": "text", "text": body}], "isError": True}
     # A rejection with a reason is the operator steering the next proposal, not
     # a stop signal (iterating through reject-with-reason rounds is the normal
     # card-building workflow; a stricter forbid-variations wording live-tested

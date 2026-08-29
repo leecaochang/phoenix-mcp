@@ -2829,7 +2829,7 @@ class PhoenixAdminApprovalBatchApproveView(PhoenixView):
             except ValueError:  # pragma: no cover - _ok/_err always emit JSON
                 parsed = {}
             # A 200 is not sufficient: an executor that returned isError finalizes
-            # the record as rejected/execution_failed and still answers 200, and
+            # the record as failed/execution_failed and still answers 200, and
             # treating that as applied would report a failed write as a success.
             if response.status == 200 and parsed.get("status") == "approved":
                 applied.append({"approval_id": approval_id, "tool_name": parsed.get("tool_name")})
@@ -2963,7 +2963,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
         REASON_TOKEN_INACTIVE,
         STATUS_APPROVED,
         STATUS_CANCELLED,
-        STATUS_REJECTED,
+        STATUS_FAILED,
         create_approval_notification,
         dismiss_approval_notification,
         fire_approval_claim_event,
@@ -2979,11 +2979,31 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
     rid = request["phoenix_mcp_rid"]
     data: PhoenixData = hass.data[DOMAIN]
     user = request[KEY_HASS_USER]
+    settings = data.store.get_settings()
 
     async with data.store.async_lock:
         record = get_approval(data.store, approval_id)
         if record is None:
             return _err("not_found", "Approval not found.", 404, rid, key="approvalNotFound")
+
+        def _record_admin_lifecycle(
+            method: str,
+            *,
+            outcome: Outcome,
+            reason: str | None = None,
+        ) -> None:
+            data.audit.record(
+                request_id=rid,
+                token_id="admin",
+                token_name=f"admin:{user.id}",
+                method=method,
+                resource=f"approval:{record.tool_name}:{approval_id}",
+                outcome=outcome,
+                client_ip="",
+                settings=settings,
+                payload={"reason": reason} if reason else None,
+            )
+
         if record.is_terminal():
             return _ok(record.to_dict(), request_id=rid)
 
@@ -2999,6 +3019,11 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             if updated:
                 dismiss_approval_notification(hass, approval_id)
                 fire_approval_resolved_event(hass, updated)
+                _record_admin_lifecycle(
+                    "approval/cancelled",
+                    outcome="denied",
+                    reason=REASON_TOKEN_INACTIVE,
+                )
             return _err(
                 "not_found", "Token no longer active.", 409, rid,
                 key="approvalTokenInactive",
@@ -3010,7 +3035,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
         if record.cap_name != MESA_CONFIRM_CAP and effective_cap(token, record.cap_name) == "deny":
             await async_update_approval_status(
                 data.store, approval_id,
-                status=STATUS_REJECTED,
+                status=STATUS_FAILED,
                 approved_by_user_id=user.id,
                 rejected_reason=REASON_CAPABILITY_DENIED,
             )
@@ -3018,12 +3043,16 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             if updated:
                 dismiss_approval_notification(hass, approval_id)
                 fire_approval_resolved_event(hass, updated)
+                _record_admin_lifecycle(
+                    "approval/failed",
+                    outcome="denied",
+                    reason=REASON_CAPABILITY_DENIED,
+                )
             return _err(
                 "forbidden", "Capability is now denied for this token.", 409, rid,
                 key="approvalCapabilityDenied",
             )
 
-        settings = data.store.get_settings()
         if settings.kill_switch:
             await async_update_approval_status(
                 data.store, approval_id,
@@ -3035,6 +3064,11 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             if updated:
                 dismiss_approval_notification(hass, approval_id)
                 fire_approval_resolved_event(hass, updated)
+                _record_admin_lifecycle(
+                    "approval/cancelled",
+                    outcome="denied",
+                    reason=REASON_KILL_SWITCH,
+                )
             return _err(
                 "service_unavailable", "Kill switch engaged.", 503, rid,
                 key="killSwitchEngaged",
@@ -3075,7 +3109,9 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 409, rid,
                 key="approvalExecutionInterrupted",
             )
-        if not await async_mark_execution_started(data.store, approval_id):
+        if not await async_mark_execution_started(
+            data.store, approval_id, approved_by_user_id=user.id,
+        ):
             data.approvals_in_progress.discard(approval_id)
             return _err(
                 "service_unavailable",
@@ -3083,6 +3119,11 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 503, rid,
                 key="approvalRecordFailed",
             )
+
+    # Persisting the execution marker above also persisted approved_at and the
+    # approving admin. Mirror that durable decision into the audit ring BEFORE
+    # dispatch, so the audit never says consent happened after the side effect.
+    _record_admin_lifecycle("approval/approved", outcome="allowed")
 
     # Tell every surface the claim landed, BEFORE the execution rather than after
     # it: the resolved event cannot fire until the tool finishes, and until then
@@ -3111,6 +3152,11 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
             # from the lookup failing, so a side effect that HAD begun was
             # re-offered as retryable.
             await async_clear_execution_marker(data.store, approval_id)
+            _record_admin_lifecycle(
+                "approval/failed",
+                outcome="denied",
+                reason="executor_missing",
+            )
             return _err(
                 "invalid_request", "No executor registered for this tool.", 400, rid,
                 key="approvalExecutorMissing",
@@ -3147,13 +3193,18 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 async with data.store.async_lock:
                     interrupted = await async_update_approval_status(
                         data.store, approval_id,
-                        status=STATUS_REJECTED,
+                        status=STATUS_FAILED,
                         approved_by_user_id=user.id,
                         rejected_reason=REASON_EXECUTION_INTERRUPTED,
                     )
                 resolved = True
                 if interrupted is not None:
                     fire_approval_resolved_event(hass, interrupted)
+                _record_admin_lifecycle(
+                    "approval/failed",
+                    outcome="denied",
+                    reason=REASON_EXECUTION_INTERRUPTED,
+                )
             except BaseException:  # noqa: BLE001 - the marker is the backstop
                 _LOGGER.exception(
                     "Could not resolve approval %s after a failed execution; the "
@@ -3178,7 +3229,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
 
         is_error = bool(tool_result.get("isError"))
         saved_result = {"tool_result": tool_result, "outcome": outcome}
-        final_status = STATUS_REJECTED if is_error else STATUS_APPROVED
+        final_status = STATUS_FAILED if is_error else STATUS_APPROVED
         auto_reason = "execution_failed" if is_error else None
         audit_outcome: Outcome = "allowed" if final_status == STATUS_APPROVED else "denied"
 
@@ -3187,7 +3238,7 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
                 request_id=rid,
                 token_id=record.token_id,
                 token_name=record.token_name,
-                method=f"approval/{final_status}",
+                method="approval/failed" if is_error else "approval/executed",
                 resource=f"approval:{record.tool_name}:{approval_id}",
                 outcome=audit_outcome,
                 client_ip="",
@@ -3227,11 +3278,11 @@ async def _approve_approval(hass: HomeAssistant, request: web.Request, approval_
     finally:
         data.approvals_in_progress.discard(approval_id)
         if not resolved:
-            # Execution failed or finalization conflicted, so the record is still
-            # pending and genuinely retryable. The surfaces were told to stop
-            # offering it, so they have to be told it is back; leaving them quiet
-            # would hide a live approval until the next reload. The notification
-            # is recreated for the same reason.
+            # A pre-dispatch failure can leave the record pending and genuinely
+            # retryable. The surfaces were told to stop offering it, so they have
+            # to be told it is back; leaving them quiet would hide a live approval
+            # until the next reload. The notification is recreated for the same
+            # reason.
             fire_approval_claim_event(hass, approval_id, claimed=False)
             still_pending = get_approval(data.store, approval_id)
             if still_pending is not None and not still_pending.is_terminal():

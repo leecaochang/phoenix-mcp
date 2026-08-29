@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { ApprovalsView } from "../views/ApprovalsView";
 import { api } from "../api";
+import { AGENTCHAT_REVIEW_CLOSED_EVENT } from "../utils/agentchat_review";
 import type { ApprovalRecord } from "../types";
 
 // A persistent notification links to ONE approval, so an operator who works from
@@ -91,14 +92,23 @@ describe("deep-link batch hint", () => {
   });
 
   it("Review all closes the modal and leaves the queue on screen", async () => {
+    const closed = vi.fn();
+    window.addEventListener(AGENTCHAT_REVIEW_CLOSED_EVENT, closed);
     const { findByText, queryByRole, getAllByText } = await renderDeepLink(
       [record("a"), record("b"), record("c")], "a",
     );
-    fireEvent.click(await findByText("Review all"));
-    await waitFor(() => expect(queryByRole("dialog")).toBeNull());
-    // The batch bar only renders from two selectable rows up, so its presence is
-    // the actual proof the operator has now met batching.
-    expect(getAllByText("Select all").length).toBeGreaterThan(0);
+    try {
+      fireEvent.click(await findByText("Review all"));
+      await waitFor(() => expect(queryByRole("dialog")).toBeNull());
+      expect(closed).toHaveBeenCalledOnce();
+      expect((closed.mock.calls[0][0] as CustomEvent).detail)
+        .toEqual({ approvalId: "a" });
+      // The batch bar only renders from two selectable rows up, so its presence
+      // is the actual proof the operator has now met batching.
+      expect(getAllByText("Select all").length).toBeGreaterThan(0);
+    } finally {
+      window.removeEventListener(AGENTCHAT_REVIEW_CLOSED_EVENT, closed);
+    }
   });
 
   it("stays quiet when the modal was opened from the list", async () => {

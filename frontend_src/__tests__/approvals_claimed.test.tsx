@@ -63,7 +63,7 @@ describe("an approval claimed for execution", () => {
     );
     fireEvent.click(await findByText("Restart Home Assistant"));
 
-    // The label itself flips, so the row is not merely greyed out: it says why.
+    // The accessible name reports why the stable visible button is locked.
     const approve = await findByRole("button", { name: "Approving..." });
     expect(approve).toBeDisabled();
     expect(await findByRole("button", { name: "Reject" })).toBeDisabled();

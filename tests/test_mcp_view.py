@@ -3742,7 +3742,7 @@ def test_inline_resolved_reports_execution_failure_with_executor_error():
     from custom_components.phoenix_mcp.tool_common import _tool_inline_resolved
 
     approval = SimpleNamespace(
-        id="appr-1", status="rejected", rejected_reason="execution_failed",
+        id="appr-1", status="failed", rejected_reason="execution_failed",
         result={"tool_result": {"isError": True, "content": [{"type": "text", "text": (
             "This configuration changed since you last read it (expected_hash no "
             "longer matches). Re-read it and reapply your change."
@@ -4097,7 +4097,7 @@ async def test_wait_for_many_keeps_a_failed_execution_readable(hass):
 
     reason = "Content hash mismatch: automations.yaml changed since you read it. Re-read and retry."
     bad = _approval_record(
-        "rejected", result={"tool_result": _authoring_result(is_error=True, text=reason)},
+        "failed", result={"tool_result": _authoring_result(is_error=True, text=reason)},
         rejected_reason="execution_failed")
     bad["id"] = "appr-1"
     good = _approval_record("approved", result={"tool_result": _authoring_result()})

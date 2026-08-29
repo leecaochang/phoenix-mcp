@@ -29,13 +29,34 @@ export interface AgentCliDurable {
   // One-shot text seeded into the message box on the next window mount (used by
   // the onboarding wizard's test prompt); the window clears it after reading.
   prefill: string;
-  // Token-usage footer visibility (gear toggle). Default on.
-  showUsage: boolean;
+  // Footer visibility (gear toggle). The footer owns both text-size controls
+  // and provider-reported token usage. Default on.
+  showFooter: boolean;
   // Per-message timestamps in the transcript (gear toggle). Default off.
   showTimestamps: boolean;
+  // Composer and transcript-bubble text size, in points. The rest of the Agent
+  // Chat interface deliberately remains at its fixed design-system sizes.
+  textSizePt: number;
 }
 
 const LS_KEY = "phx-agentcli";
+
+export const AGENTCLI_TEXT_SIZE_DEFAULT_PT = 9.75;
+export const AGENTCLI_TEXT_SIZE_MIN_PT = 8.25;
+export const AGENTCLI_TEXT_SIZE_MAX_PT = 19.75;
+export const AGENTCLI_TEXT_SIZE_STEP_PT = 0.5;
+
+/** Keep persisted or user-adjusted text sizes on the supported half-point
+ *  scale. Anchoring the scale at 9.75pt preserves the old 13px default. */
+export function normalizeAgentCliTextSize(value: unknown): number {
+  const candidate = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : AGENTCLI_TEXT_SIZE_DEFAULT_PT;
+  const stepped = AGENTCLI_TEXT_SIZE_DEFAULT_PT
+    + Math.round((candidate - AGENTCLI_TEXT_SIZE_DEFAULT_PT) / AGENTCLI_TEXT_SIZE_STEP_PT)
+      * AGENTCLI_TEXT_SIZE_STEP_PT;
+  return Math.min(AGENTCLI_TEXT_SIZE_MAX_PT, Math.max(AGENTCLI_TEXT_SIZE_MIN_PT, stepped));
+}
 
 export function defaultDurable(): AgentCliDurable {
   return {
@@ -50,8 +71,9 @@ export function defaultDurable(): AgentCliDurable {
     model: "",
     options: { thinking: true, effort: "high", temperature: "", verbose: false },
     prefill: "",
-    showUsage: true,
+    showFooter: true,
     showTimestamps: false,
+    textSizePt: AGENTCLI_TEXT_SIZE_DEFAULT_PT,
   };
 }
 
@@ -59,14 +81,23 @@ export function getDurable(): AgentCliDurable {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return defaultDurable();
-    const p = JSON.parse(raw) as Partial<AgentCliDurable>;
+    const p = JSON.parse(raw) as Partial<AgentCliDurable> & { showUsage?: unknown };
+    // showUsage was the pre-1.0.163 name, when the setting hid only the token
+    // count. Preserve that browser choice while removing the stale key from
+    // the next persisted object.
+    const { showUsage: legacyShowUsage, ...persisted } = p;
     const d = defaultDurable();
+    const showFooter = typeof p.showFooter === "boolean"
+      ? p.showFooter
+      : typeof legacyShowUsage === "boolean" ? legacyShowUsage : d.showFooter;
     return {
-      ...d, ...p,
+      ...d, ...persisted,
       pos: { ...d.pos, ...(p.pos || {}) },
       pillPos: { ...d.pillPos, ...(p.pillPos || {}) },
       size: { ...d.size, ...(p.size || {}) },
       options: { ...d.options, ...(p.options || {}) },
+      showFooter,
+      textSizePt: normalizeAgentCliTextSize(p.textSizePt),
     };
   } catch {
     return defaultDurable();

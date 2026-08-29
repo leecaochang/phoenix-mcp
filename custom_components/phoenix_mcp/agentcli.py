@@ -45,6 +45,7 @@ from .approvals import (
     REASON_AGENT_CHAT_ENDED,
     STATUS_APPROVED,
     STATUS_CANCELLED,
+    STATUS_FAILED,
     STATUS_PENDING,
     STATUS_REJECTED,
     dismiss_approval_notification,
@@ -2420,8 +2421,8 @@ def _parse_pending(result: dict) -> dict | None:
 
 def execution_failure_text(approval: Any) -> str | None:
     """The executor's own error text when an admin APPROVED an action but its
-    execution failed (the approve path stores the error result and flips the
-    record to rejected with the "execution_failed" slug). None for a real
+    execution failed (the approve path stores the error result and resolves the
+    record as failed with the "execution_failed" slug). None for a real
     admin rejection or any other state. Reporting that case as a bare "rejected"
     makes an agent treat an approval as a refusal and loop retrying the same
     doomed call instead of fixing the reported cause."""
@@ -2451,6 +2452,35 @@ def _resolved_result(status: str, applied_result: dict | None, approval: Any = N
         from .tool_common import _operator_accepted_result  # noqa: PLC0415
 
         return _operator_accepted_result(applied_result)
+    if status == STATUS_FAILED:
+        failure = execution_failure_text(approval)
+        reason = getattr(approval, "rejected_reason", None)
+        if failure is not None:
+            message = (
+                f"The operator APPROVED this action, but executing it failed: {failure} "
+                "Do not retry the same call unchanged; fix the reported cause first "
+                "(for example, if it reports a stale expected_hash, re-read the "
+                "resource for the current content_hash)."
+            )
+            response_status = "execution_failed"
+        elif reason == "execution_interrupted":
+            message = (
+                "The operator APPROVED this action and execution started, but its "
+                "final outcome was interrupted. It may have partly applied. Check "
+                "the real-world result before proposing any retry."
+            )
+            response_status = STATUS_FAILED
+        else:
+            detail = f" Reason: {reason}." if reason else ""
+            message = (
+                f"The operator approved this action, but it could not complete.{detail} "
+                "Do not treat this as an operator rejection or retry it unchanged."
+            )
+            response_status = STATUS_FAILED
+        return {"content": [{"type": "text", "text": json.dumps({
+            "status": response_status,
+            "message": message,
+        })}], "isError": True}
     if status in (STATUS_REJECTED, STATUS_CANCELLED):
         failure = execution_failure_text(approval)
         if failure is not None:
@@ -3111,7 +3141,7 @@ async def _run_tool_batch(
                 "status": status,
                 "reason": _clip_display(reason) if reason else None,
             })
-            if status in (STATUS_APPROVED, STATUS_REJECTED, "execution_failed"):
+            if status in (STATUS_APPROVED, STATUS_REJECTED, STATUS_FAILED, "execution_failed"):
                 human_resolved = True
         is_error = bool(result.get("isError"))
         content = result.get("content", [])
@@ -3796,7 +3826,7 @@ def _status_of(result: dict) -> str:
                 continue
             if isinstance(parsed, dict) and parsed.get("status"):
                 return parsed["status"]
-    return STATUS_APPROVED if not result.get("isError") else STATUS_REJECTED
+    return STATUS_APPROVED if not result.get("isError") else STATUS_FAILED
 
 
 def _zero_inline_wait(token: TokenRecord) -> TokenRecord:

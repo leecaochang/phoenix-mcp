@@ -27,12 +27,14 @@ _LOGGER = logging.getLogger(__name__)
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
+STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
 STATUS_CANCELLED = "cancelled"
 
 TERMINAL_STATUSES = frozenset({
     STATUS_APPROVED,
     STATUS_REJECTED,
+    STATUS_FAILED,
     STATUS_EXPIRED,
     STATUS_CANCELLED,
 })
@@ -46,7 +48,7 @@ REASON_TOKEN_EXPIRED = "token_expired"
 REASON_WIPED = "phoenix_mcp_data_wiped"
 # The approval's executor started and Home Assistant stopped before its outcome
 # was persisted, so whether the side effect landed is genuinely UNKNOWN. See
-# async_reconcile_interrupted_approvals for why that resolves to a rejection.
+# async_reconcile_interrupted_approvals for why that resolves as failed.
 REASON_EXECUTION_INTERRUPTED = "execution_interrupted"
 REASON_AGENT_CHAT_ENDED = "agent_chat_ended"
 # There is deliberately no constant for target_out_of_scope / target_missing /
@@ -81,6 +83,7 @@ class PendingApproval:
     client_ip: str | None = None
     resolved_at: datetime | None = None
     approved_by_user_id: str | None = None
+    approved_at: datetime | None = None
     rejected_reason: str | None = None
     result: Any = None
     # Set on disk immediately BEFORE the executor runs and cleared when its
@@ -125,6 +128,7 @@ class PendingApproval:
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
             "approved_by_user_id": self.approved_by_user_id,
+            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
             "rejected_reason": self.rejected_reason,
             "result": self.result,
             "request_id": self.request_id,
@@ -149,6 +153,10 @@ class PendingApproval:
             expires_at=parse_datetime(data["expires_at"]) or utcnow(),
             resolved_at=parse_datetime(data["resolved_at"]) if data.get("resolved_at") else None,
             approved_by_user_id=data.get("approved_by_user_id"),
+            approved_at=(
+                parse_datetime(data["approved_at"])
+                if data.get("approved_at") else None
+            ),
             rejected_reason=data.get("rejected_reason"),
             result=data.get("result"),
             request_id=data.get("request_id", ""),
@@ -288,8 +296,10 @@ async def async_update_approval_status(
 async def async_mark_execution_started(
     store: TokenStore,
     approval_id: str,
+    *,
+    approved_by_user_id: str,
 ) -> bool:
-    """Record on DISK that this approval's executor is about to run.
+    """Record on DISK that the admin approved and execution is about to run.
 
     The in-memory claim in data.approvals_in_progress answers "is another request
     already running this?" and is enough for a double-click, but it dies with the
@@ -317,7 +327,10 @@ async def async_mark_execution_started(
             continue
         if entry.get("status") != STATUS_PENDING:
             return False
-        entry["execution_started_at"] = utcnow().isoformat()
+        approved_at = utcnow().isoformat()
+        entry["approved_by_user_id"] = approved_by_user_id
+        entry["approved_at"] = approved_at
+        entry["execution_started_at"] = approved_at
         store.set_pending_approvals(raw)
         try:
             await store.async_save()
@@ -329,6 +342,8 @@ async def async_mark_execution_started(
                 approval_id,
             )
             entry.pop("execution_started_at", None)
+            entry.pop("approved_at", None)
+            entry.pop("approved_by_user_id", None)
             store.set_pending_approvals(raw)
             return False
         return True
@@ -358,6 +373,8 @@ async def async_clear_execution_marker(
                 continue
             if not entry.pop("execution_started_at", None):
                 return
+            entry.pop("approved_at", None)
+            entry.pop("approved_by_user_id", None)
             store.set_pending_approvals(raw)
             try:
                 await store.async_save()
@@ -378,10 +395,10 @@ async def async_reconcile_interrupted_approvals(
     execution_started_at is one whose side effect was begun by a process that is
     now gone, so whether it landed is genuinely unknown.
 
-    It resolves to REJECTED rather than being left pending, and the asymmetry is
+    It resolves to FAILED rather than being left pending, and the asymmetry is
     the whole point: leaving it pending offers the admin a button that may apply a
     service call, a restart or a configuration write for the SECOND time, whereas
-    rejecting it means at worst an action the agent can request again and the
+    failing it means at worst an action the agent can request again and the
     admin can approve again, with the reason naming exactly what is uncertain.
     Duplicating an unknown side effect silently is the one outcome with no
     recovery.
@@ -396,7 +413,7 @@ async def async_reconcile_interrupted_approvals(
             continue
         if not entry.get("execution_started_at"):
             continue
-        entry["status"] = STATUS_REJECTED
+        entry["status"] = STATUS_FAILED
         entry["resolved_at"] = utcnow().isoformat()
         entry["rejected_reason"] = REASON_EXECUTION_INTERRUPTED
         entry.pop("execution_started_at", None)
@@ -410,7 +427,7 @@ async def async_reconcile_interrupted_approvals(
         _LOGGER.warning(
             "Phoenix MCP: %d approval(s) were being executed when Home Assistant "
             "stopped; whether they applied is unknown, so they were resolved as "
-            "rejected rather than left approvable again", len(changed),
+            "failed rather than left approvable again", len(changed),
         )
     return changed
 

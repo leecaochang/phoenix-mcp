@@ -143,18 +143,28 @@ class AuditLog:
         if settings.disable_all_logging:
             return
 
-        if outcome == "allowed" and not settings.log_allowed:
+        # Normalize the client-derived scalars before inspecting them too. A
+        # malformed JSON-RPC request can supply a list here, and lifecycle
+        # detection must be just as poison-safe as storage and querying.
+        method = _bounded_field(method)
+        resource = _bounded_field(resource)
+
+        # Approval lifecycle rows are the authorization trail itself. They are
+        # never suppressible by the ordinary allowed/denied filters, just like
+        # pending_approval, or an operator can see the request that waited for
+        # consent but no durable account of the decision that released it.
+        approval_lifecycle = method.startswith("approval/")
+
+        if outcome == "allowed" and not settings.log_allowed and not approval_lifecycle:
             return
-        if outcome in ("denied", "not_found", "not_implemented", "invalid_request") and not settings.log_denied:
+        if (
+            outcome in ("denied", "not_found", "not_implemented", "invalid_request")
+            and not settings.log_denied
+            and not approval_lifecycle
+        ):
             return
         if outcome == "rate_limited" and not settings.log_rate_limited:
             return
-
-        # Normalize the client-derived scalars: coerce to str and cap length so a
-        # non-string (e.g. a list-valued JSON-RPC params.uri) or an oversized value
-        # can neither crash a consumer nor bloat the persisted ring buffer.
-        method = _bounded_field(method)
-        resource = _bounded_field(resource)
 
         logged_resource = resource if settings.log_entity_names else _REDACTED
         logged_ip = client_ip if settings.log_client_ip else _REDACTED

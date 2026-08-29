@@ -41,6 +41,7 @@ export function friendlyResource(resource: string): string {
 const APPROVAL_STATUS_KEYS: Record<string, string> = {
   pending: "approvals.statusPending",
   approved: "approvals.statusApproved",
+  failed: "approvals.reason.execution_failed",
   rejected: "approvals.statusRejected",
   expired: "approvals.statusExpired",
   cancelled: "approvals.statusCancelled",

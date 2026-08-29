@@ -19,7 +19,12 @@ from custom_components.phoenix_mcp.agentcli import (
     _parse_pending,
     async_run_agent_turn,
 )
-from custom_components.phoenix_mcp.approvals import STATUS_APPROVED, STATUS_PENDING, STATUS_REJECTED
+from custom_components.phoenix_mcp.approvals import (
+    STATUS_APPROVED,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_REJECTED,
+)
 from custom_components.phoenix_mcp.const import AGENTCLI_DEEPSEEK_MAX_TOKENS, AGENTCLI_PROVIDERS
 from custom_components.phoenix_mcp.token_store import GlobalSettings
 
@@ -1311,7 +1316,7 @@ def test_parse_pending_strict():
 
 def test_resolved_result_reports_execution_failure_with_the_executor_error():
     # An admin APPROVED the action but the executor failed (the approve path
-    # stores the error and flips the record to rejected/"execution_failed").
+    # stores the error and resolves the record as failed/"execution_failed").
     # Live-found loop: reporting that as a bare "rejected" made the agent treat
     # an approval as a refusal and retry the same doomed call forever. The
     # feedback must say approved-but-failed and carry the executor's error.
@@ -1323,13 +1328,28 @@ def test_resolved_result_reports_execution_failure_with_the_executor_error():
             "longer matches). Re-read it and reapply your change."
         )}]}, "outcome": "invalid_request"},
     )
-    out = agentcli._resolved_result("rejected", None, approval)
+    out = agentcli._resolved_result(STATUS_FAILED, None, approval)
     assert out["isError"] is True
     body = json.loads(out["content"][0]["text"])
     assert body["status"] == "execution_failed"
     assert "APPROVED" in body["message"]
     assert "expected_hash no longer matches" in body["message"]
     assert "re-read" in body["message"].lower()
+
+
+def test_resolved_result_reports_interrupted_execution_as_uncertain_not_rejected():
+    from types import SimpleNamespace
+
+    approval = SimpleNamespace(
+        rejected_reason="execution_interrupted",
+        result=None,
+    )
+    out = agentcli._resolved_result(STATUS_FAILED, None, approval)
+    body = json.loads(out["content"][0]["text"])
+    assert body["status"] == STATUS_FAILED
+    assert "APPROVED" in body["message"]
+    assert "may have partly applied" in body["message"]
+    assert "rejected" not in body["message"].lower()
 
 
 def test_resolved_result_admin_rejection_keeps_reason_and_status():
