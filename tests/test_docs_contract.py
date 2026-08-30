@@ -146,6 +146,30 @@ def test_native_target_any_of_is_described_as_required() -> None:
     assert gaps == [], "\n".join(gaps)
 
 
+def test_shared_volume_article_attributes_each_target_contract() -> None:
+    """The two volume tools share prose but accept different target selectors."""
+    articles = _tools_articles()
+    by_name = {tool["name"]: tool for tool in _NATIVE_TOOL_DEFS}
+    for tool_name in (
+        _NATIVE_TOOL_NAMES["HassSetVolume"],
+        _NATIVE_TOOL_NAMES["HassSetVolumeRelative"],
+    ):
+        schema = by_name[tool_name]["inputSchema"]
+        expected = {
+            name
+            for option in schema["anyOf"]
+            for name in option.get("required", [])
+        }
+        match = re.search(
+            rf"<code>{re.escape(tool_name)}</code> requires at least one of (.*?)\.",
+            articles[tool_name],
+            re.DOTALL,
+        )
+        assert match is not None, f"{tool_name}: target requirement is not attributed"
+        documented = set(re.findall(r"<code>(\w+)</code>", match.group(1)))
+        assert documented == expected
+
+
 # (tool, parameter) pairs whose enum values are deliberately not spelled out in
 # the docs, each with the reason. An exemption is a claim that listing the values
 # would make the page WORSE, which is a higher bar than "it would be tedious".

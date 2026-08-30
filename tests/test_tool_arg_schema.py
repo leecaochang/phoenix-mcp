@@ -88,6 +88,12 @@ UNPUBLISHED_ARGS = {
         "`automation_id`: an agent holding the automation's entity id has the "
         "harder value to convert, and both resolve to the same automation."
     ),
+    ("native.py", "target_levels"): (
+        "INTERNAL exact-action payload stored only in a MESA approval for numeric "
+        "HassSetVolumeRelative. The public tool accepts selectors plus volume_step; "
+        "its registered executor replays this frozen entity-to-level map so approval "
+        "cannot actuate a later, recomputed target state."
+    ),
 }
 
 # Catalog v2 handlers normalize structured public inputs to the mature executor

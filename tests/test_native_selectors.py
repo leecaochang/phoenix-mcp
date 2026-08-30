@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +29,7 @@ from homeassistant.util.dt import utcnow
 
 from custom_components.phoenix_mcp.const import CAP_ALLOW, CAP_DENY
 from custom_components.phoenix_mcp.mcp_view import _call_tool
-from custom_components.phoenix_mcp.policy_engine import normalize_intent_selectors
+from custom_components.phoenix_mcp.policy_engine import Permission, normalize_intent_selectors
 from custom_components.phoenix_mcp.token_store import PermissionTree, TokenRecord
 from custom_components.phoenix_mcp.tools.native import (
     _NO_SELECTOR_MESSAGE,
@@ -74,7 +75,7 @@ _TARGETED_NATIVE_ACTIONS = (
     (_tool_hass_climate_set_temperature, {"temperature": 21}, False),
     (_tool_hass_set_position, {"position": 50}, True),
     (_tool_hass_set_volume, {"volume_level": 50}, False),
-    (_tool_hass_set_volume_relative, {"volume_step": "up"}, False),
+    (_tool_hass_set_volume_relative, {"volume_step": "up"}, True),
     (_tool_hass_media_pause, {}, False),
     (_tool_hass_media_unpause, {}, False),
     (_tool_hass_media_next, {}, False),
@@ -248,7 +249,7 @@ async def test_public_dispatcher_rejects_wrong_fixed_domain_before_resolution(
         (_tool_hass_climate_set_temperature, {"name": "Thermostat"}, False, "temperature"),
         (_tool_hass_set_position, {"name": "Blind"}, True, "position"),
         (_tool_hass_set_volume, {"name": "Speaker"}, False, "volume_level"),
-        (_tool_hass_set_volume_relative, {"name": "Speaker"}, False, "volume_step"),
+        (_tool_hass_set_volume_relative, {"name": "Speaker"}, True, "volume_step"),
         (_tool_hass_media_search_and_play, {"name": "Speaker"}, False, "search_query"),
     ],
 )
@@ -299,21 +300,21 @@ async def test_numeric_relative_volume_preserves_magnitude_and_clamps(step, expe
     hass.states.get.side_effect = lambda entity_id: MagicMock(
         attributes={"volume_level": levels[entity_id]}
     )
-    action = AsyncMock(
-        side_effect=lambda _tool, _domain, _service, _data, grouped, *_a, **_k:
-        _action_result(grouped)
-    )
+    hass.services.async_call = AsyncMock(return_value=None)
+    data = SimpleNamespace(mesa=None, mesa_setup_failed=False)
     with patch(f"{NATIVE}.resolve_intent_entities", return_value=entities), \
-            patch(f"{NATIVE}._tool_intent_action", action):
+            patch(f"{NATIVE}.resolve", return_value=Permission.WRITE):
         _response, outcome, _resource = await _tool_hass_set_volume_relative(
-            {"name": "Speakers", "volume_step": step}, _token(), hass,
+            {"name": "Speakers", "volume_step": step}, _token(), hass, data,
         )
     assert outcome == "allowed"
     assert [
-        (call.args[3]["volume_level"], call.args[4])
-        for call in action.await_args_list
+        (call.args[2]["volume_level"], call.args[2]["entity_id"])
+        for call in hass.services.async_call.await_args_list
     ] == expected
-    assert {call.args[2] for call in action.await_args_list} == {"volume_set"}
+    assert {call.args[:2] for call in hass.services.async_call.await_args_list} == {
+        ("media_player", "volume_set")
+    }
 
 
 # ---------------------------------------------------------------------------

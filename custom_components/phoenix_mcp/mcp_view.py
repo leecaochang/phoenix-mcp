@@ -142,6 +142,7 @@ from .tools.native import (
     _UNTRUSTED_DATA_BOUNDARY,
     _build_live_context,
     _execute_hass_set_position,
+    _execute_hass_set_volume_relative,
     _execute_hass_stop_moving,
     _execute_hass_turn_off,
     _execute_hass_turn_on,
@@ -9075,6 +9076,7 @@ _register_executor("create_zigbee_group", _execute_create_zigbee_group)
 _register_executor("set_zigbee_group_members", _execute_set_zigbee_group_members)
 _register_executor("remove_zigbee_group", _execute_remove_zigbee_group)
 _register_executor("HassSetPosition", _execute_hass_set_position)
+_register_executor("HassSetVolumeRelative", _execute_hass_set_volume_relative)
 _register_executor("HassStopMoving", _execute_hass_stop_moving)
 _register_executor("HassTurnOn", _execute_hass_turn_on)
 _register_executor("HassTurnOff", _execute_hass_turn_off)

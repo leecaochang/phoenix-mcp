@@ -583,7 +583,7 @@
           <article class="tool" data-cap="control" data-search="media_player__HassSetVolume media_player__HassSetVolumeRelative media player volume">
             <div class="tool-head"><span class="tool-name">media_player__HassSetVolume</span><span class="tool-name">media_player__HassSetVolumeRelative</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Set or adjust media player volume. <code>media_player__HassSetVolume</code> takes <code>volume_level</code> (0-100); <code>media_player__HassSetVolumeRelative</code> takes <code>volume_step</code> (<code>"up"</code>, <code>"down"</code>, or a signed percentage).</p>
-            <dl><dt>params</dt><dd>The volume value is required. Both tools also require at least one target from <code>area</code>, <code>floor</code>, or <code>name</code>. <code>media_player__HassSetVolume</code> also accepts <code>domain</code> (fixed to <code>["media_player"]</code>) and <code>device_class</code> as targets.</dd></dl>
+            <dl><dt>params</dt><dd>The volume value is required. <code>media_player__HassSetVolume</code> requires at least one of <code>area</code>, <code>floor</code>, <code>name</code>, <code>domain</code> (fixed to <code>["media_player"]</code>), or <code>device_class</code>. <code>media_player__HassSetVolumeRelative</code> requires at least one of <code>area</code>, <code>floor</code>, or <code>name</code>.</dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="vacuum__HassVacuumStart vacuum__HassVacuumReturnToBase vacuum clean dock">

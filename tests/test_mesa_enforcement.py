@@ -8,7 +8,7 @@ enforcement_mode override, and confirm-approved folding.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -168,6 +168,86 @@ async def test_diff_includes_mesa_block(hass: HomeAssistant):
     assert diff["kind"] == "service_preview"
     assert diff["preview"]["mesa"]["confirm_entities"] == ["light.gate"]
     assert diff["preview"]["resolved_entity_ids"] == ["light.gate", "light.ok"]
+
+
+def test_each_entity_is_evaluated_against_its_exact_service_data():
+    allowed = SimpleNamespace(allowed=True, warnings=[])
+    enforcer = SimpleNamespace(evaluate=MagicMock(return_value=allowed))
+    runtime = SimpleNamespace(enforcer=enforcer)
+    verdict = evaluate_service_entities(
+        runtime,
+        "enforced",
+        _token(),
+        ["media_player.one", "media_player.two"],
+        domain="media_player",
+        service="volume_set",
+        service_data={},
+        service_data_by_entity={
+            "media_player.one": {"volume_level": 0.45},
+            "media_player.two": {"volume_level": 1.0},
+        },
+        session_id="sid",
+    )
+    assert verdict.allowed == ["media_player.one", "media_player.two"]
+    assert [call.kwargs["service_params"] for call in enforcer.evaluate.call_args_list] == [
+        {"volume_level": 0.45, "entity_id": "media_player.one"},
+        {"volume_level": 1.0, "entity_id": "media_player.two"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_one_mesa_approval_preserves_every_entity_specific_value(
+    hass: HomeAssistant, monkeypatch
+):
+    runtime = await async_setup_mesa(hass, "enforced")
+    _set_profile(runtime, "media_player.one", "confirm")
+    _set_profile(runtime, "media_player.two", "autonomous")
+    create = AsyncMock(return_value=SimpleNamespace(id="approval"))
+    monkeypatch.setattr(mesa_module, "async_create_mesa_approval", create)
+    data = SimpleNamespace(
+        mesa=runtime,
+        mesa_setup_failed=False,
+        store=SimpleNamespace(get_settings=lambda: GlobalSettings(mesa_mode="enforced")),
+    )
+    plan = {
+        "target_levels": [
+            {"entity_id": "media_player.one", "volume_level": 0.45},
+            {"entity_id": "media_player.two", "volume_level": 1.0},
+        ],
+        "volume_step": 25,
+    }
+    mapping = {
+        "media_player.one": {"volume_level": 0.45},
+        "media_player.two": {"volume_level": 1.0},
+    }
+    outcome = await async_apply_mesa_to_call(
+        hass,
+        data,
+        _token(),
+        domain="media_player",
+        service="volume_set",
+        service_data={},
+        service_data_by_entity=mapping,
+        entities=["media_player.one", "media_player.two"],
+        request_id="rid",
+        client_ip=None,
+        session_id="sid",
+        approval_tool_name="HassSetVolumeRelative",
+        approval_args=plan,
+        require_all=True,
+    )
+    assert outcome.decision == "pending"
+    create.assert_awaited_once()
+    kwargs = create.await_args.kwargs
+    assert kwargs["tool_name"] == "HassSetVolumeRelative"
+    assert kwargs["args"] == plan
+    assert kwargs["diff"]["preview"]["service_data_by_entity"] == mapping
+    assert kwargs["diff"]["preview"]["mesa"] == {
+        "confirm_entities": ["media_player.one"],
+        "allowed_entities": ["media_player.two"],
+        "blocked": [],
+        "warnings": [],
+    }
 
 
 @pytest.mark.asyncio

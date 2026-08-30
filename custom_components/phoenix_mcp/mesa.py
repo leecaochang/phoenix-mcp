@@ -872,6 +872,7 @@ def evaluate_service_entities(
     service_data: dict[str, Any],
     session_id: str,
     confirm_approved: bool = False,
+    service_data_by_entity: dict[str, dict[str, Any]] | None = None,
 ) -> MesaVerdict:
     """Evaluate every flattened entity through the MesaEnforcer.
 
@@ -886,6 +887,11 @@ def evaluate_service_entities(
     service_str = f"{domain}.{service}"
     now = dt_util.now()
     for entity_id in entities:
+        entity_service_data = (
+            service_data_by_entity[entity_id]
+            if service_data_by_entity is not None
+            else service_data
+        )
         result = runtime.enforcer.evaluate(
             entity_id=entity_id,
             service=service_str,
@@ -897,7 +903,7 @@ def evaluate_service_entities(
             # they are absent from the outgoing call too, which is why nothing
             # here needs withholding. The resolved entity goes last so no caller
             # value can displace it.
-            service_params={**service_data, "entity_id": entity_id},
+            service_params={**entity_service_data, "entity_id": entity_id},
             caller_context=caller,
             current_time=now,
         )
@@ -1005,27 +1011,34 @@ def build_mesa_service_diff(
     service: str,
     service_data: dict[str, Any],
     verdict: MesaVerdict,
+    service_data_by_entity: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a service_preview diff for a MESA-gated approval (admin review UI)."""
+    preview: dict[str, Any] = {
+        "domain": domain,
+        "service": service,
+        "resolved_entity_ids": list(verdict.confirm + verdict.allowed),
+        "service_data": dict(service_data),
+        "mesa": {
+            "confirm_entities": list(verdict.confirm),
+            "allowed_entities": list(verdict.allowed),
+            "blocked": [
+                {"entity_id": e, "rule": r, "reason": reason}
+                for e, r, reason in verdict.blocked
+            ],
+            "warnings": list(verdict.warnings),
+        },
+    }
+    if service_data_by_entity is not None:
+        preview["service_data_by_entity"] = {
+            entity_id: dict(service_data_by_entity[entity_id])
+            for entity_id in verdict.confirm + verdict.allowed
+        }
     return {
         "kind": "service_preview",
         **diff_summary_fields("mesa_service", domain=domain, service=service),
         "target": {"type": "service", "id": f"{domain}.{service}", "label": f"{domain}.{service}"},
-        "preview": {
-            "domain": domain,
-            "service": service,
-            "resolved_entity_ids": list(verdict.confirm + verdict.allowed),
-            "service_data": dict(service_data),
-            "mesa": {
-                "confirm_entities": list(verdict.confirm),
-                "allowed_entities": list(verdict.allowed),
-                "blocked": [
-                    {"entity_id": e, "rule": r, "reason": reason}
-                    for e, r, reason in verdict.blocked
-                ],
-                "warnings": list(verdict.warnings),
-            },
-        },
+        "preview": preview,
     }
 
 
@@ -1076,6 +1089,7 @@ async def async_apply_mesa_to_call(
     approval_args: dict[str, Any] | None = None,
     approval_diff: dict[str, Any] | None = None,
     require_all: bool = False,
+    service_data_by_entity: dict[str, dict[str, Any]] | None = None,
 ) -> MesaGateOutcome:
     """Apply MESA enforcement to an already-flattened, Phoenix-permitted entity list.
 
@@ -1088,6 +1102,8 @@ async def async_apply_mesa_to_call(
     fails closed while advisory or enforced mode remains configured. The
     optional approval fields let another exact-action executor reuse this gate;
     ``require_all`` turns the normal safe subset behavior into all-or-nothing.
+    ``service_data_by_entity`` describes one logical operation whose exact
+    service parameters differ per target.
     """
     runtime = data.mesa
     settings = data.store.get_settings()
@@ -1122,6 +1138,7 @@ async def async_apply_mesa_to_call(
             service_data=service_data,
             session_id=session_id,
             confirm_approved=confirm_approved,
+            service_data_by_entity=service_data_by_entity,
         )
 
     if require_all and verdict.blocked:
@@ -1130,7 +1147,13 @@ async def async_apply_mesa_to_call(
         )
 
     if verdict.confirm and not confirm_approved:
-        mesa_diff = build_mesa_service_diff(domain, service, service_data, verdict)
+        mesa_diff = build_mesa_service_diff(
+            domain,
+            service,
+            service_data,
+            verdict,
+            service_data_by_entity=service_data_by_entity,
+        )
         if approval_diff is None:
             diff = mesa_diff
         else:

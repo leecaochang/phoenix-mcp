@@ -326,6 +326,14 @@ async def _mesa_gate_native(
     entities: list[str],
     hass: HomeAssistant,
     token: TokenRecord,
+    *,
+    data: PhoenixData | None = None,
+    request_id: str = "",
+    client_ip: str | None = None,
+    approval_tool_name: str | None = None,
+    approval_args: dict[str, Any] | None = None,
+    require_all: bool = False,
+    service_data_by_entity: dict[str, dict[str, Any]] | None = None,
 ) -> _MesaGate:
     """Run MESA over an already-flattened list for a native tool.
 
@@ -342,20 +350,29 @@ async def _mesa_gate_native(
     shared gate distinguishes an explicit off mode from a failed production
     runtime.
     """
-    data = hass.data.get(DOMAIN)
+    if data is None:
+        data = hass.data.get(DOMAIN)
     if data is None:
         return _MesaGate(None, list(entities), [])
     if getattr(data, "mesa", None) is None and getattr(
         data, "mesa_setup_failed", False
     ) is not True:
         return _MesaGate(None, list(entities), [])
-    request_id = generate_request_id()
+    request_id = request_id or generate_request_id()
+    mesa_kwargs: dict[str, Any] = {}
+    if approval_tool_name is not None:
+        mesa_kwargs["approval_tool_name"] = approval_tool_name
+    if approval_args is not None:
+        mesa_kwargs["approval_args"] = approval_args
     outcome = await async_apply_mesa_to_call(
         hass, data, token,
         domain=service_domain, service=service_name, service_data=service_data,
-        entities=entities, request_id=request_id, client_ip=None,
+        entities=entities, request_id=request_id, client_ip=client_ip,
         session_id=request_id,
         confirm_approved=_approved_exec_ctx.get(),
+        require_all=require_all,
+        service_data_by_entity=service_data_by_entity,
+        **mesa_kwargs,
     )
     if outcome.blocked:
         fire_mesa_blocked_event(hass, token, outcome.blocked)
@@ -991,8 +1008,211 @@ async def _tool_hass_set_volume(
     return await _tool_intent_action("HassSetVolume", "media_player", "volume_set", service_data, entities, hass, token, args=args)
 
 
+def _relative_volume_plan(
+    entities: list[str], step: int, hass: HomeAssistant
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Freeze each selected player's exact post-adjustment volume level."""
+    targets: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for entity_id in entities:
+        state = hass.states.get(entity_id)
+        current = state.attributes.get("volume_level") if state is not None else None
+        if (
+            not isinstance(current, (int, float))
+            or isinstance(current, bool)
+            or not math.isfinite(current)
+        ):
+            missing.append(entity_id)
+            continue
+        targets.append({
+            "entity_id": entity_id,
+            "volume_level": max(0.0, min(1.0, float(current) + step / 100)),
+        })
+    return targets, missing
+
+
+def _validated_relative_volume_plan(
+    args: dict,
+) -> list[tuple[str, float]] | None:
+    """Validate the private exact-action payload stored in an approval."""
+    raw = args.get("target_levels")
+    if not isinstance(raw, list) or not raw:
+        return None
+    result: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"entity_id", "volume_level"}:
+            return None
+        entity_id = item["entity_id"]
+        level = item["volume_level"]
+        if (
+            not isinstance(entity_id, str)
+            or not entity_id.startswith("media_player.")
+            or entity_id in seen
+            or not isinstance(level, (int, float))
+            or isinstance(level, bool)
+            or not math.isfinite(level)
+            or level < 0
+            or level > 1
+        ):
+            return None
+        seen.add(entity_id)
+        result.append((entity_id, float(level)))
+    return result
+
+
+def _native_entity_entry(entity_id: str, hass: HomeAssistant) -> dict[str, str]:
+    """Build one native action result row for an already-visible entity."""
+    state = hass.states.get(entity_id)
+    name = state.attributes.get("friendly_name", entity_id) if state else entity_id
+    return {"name": name, "type": "entity", "id": entity_id}
+
+
+async def _execute_hass_set_volume_relative(
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
+) -> tuple[dict, str, str]:
+    """Authorize and execute one frozen multi-player relative-volume plan."""
+    plan = _validated_relative_volume_plan(args)
+    if plan is None:
+        return (
+            _tool_error("Input validation error: invalid relative-volume target plan"),
+            "invalid_request",
+            "HassSetVolumeRelative",
+        )
+    entities = [entity_id for entity_id, _level in plan]
+    if any(resolve(entity_id, token, hass) != Permission.WRITE for entity_id in entities):
+        return (
+            _tool_error("No accessible entities matched your request."),
+            "denied",
+            "HassSetVolumeRelative",
+        )
+    service_data_by_entity = {
+        entity_id: {"volume_level": level}
+        for entity_id, level in plan
+    }
+    gate = await _mesa_gate_native(
+        "HassSetVolumeRelative",
+        "media_player",
+        "volume_set",
+        {},
+        entities,
+        hass,
+        token,
+        data=data,
+        request_id=request_id,
+        client_ip=client_ip,
+        approval_tool_name="HassSetVolumeRelative",
+        approval_args=args,
+        require_all=True,
+        service_data_by_entity=service_data_by_entity,
+    )
+    if gate.response is not None:
+        return gate.response
+    if set(gate.entities) != set(entities):
+        return (
+            _tool_error("No accessible entities matched your request."),
+            "denied",
+            "HassSetVolumeRelative",
+        )
+
+    grouped: dict[float, list[str]] = {}
+    for entity_id, level in plan:
+        grouped.setdefault(level, []).append(entity_id)
+    grouped_items = list(grouped.items())
+    call_results = await asyncio.gather(*(
+        asyncio.wait_for(
+            hass.services.async_call(
+                "media_player",
+                "volume_set",
+                {"volume_level": level, "entity_id": grouped_entities},
+                blocking=True,
+                return_response=False,
+            ),
+            timeout=PROXY_TIMEOUT_SECONDS,
+        )
+        for level, grouped_entities in grouped_items
+    ), return_exceptions=True)
+
+    succeeded: list[str] = []
+    failed: list[dict[str, str]] = []
+    dispatched_unknown = False
+    failures: list[tuple[str, list[str], str]] = []
+    for (_level, grouped_entities), call_result in zip(grouped_items, call_results):
+        if call_result is None:
+            succeeded.extend(grouped_entities)
+            continue
+        if isinstance(call_result, asyncio.CancelledError):
+            raise call_result
+        if isinstance(call_result, asyncio.TimeoutError):
+            status = "timeout"
+            message = "Action dispatch timed out; completion is unknown."
+        elif isinstance(call_result, ServiceNotFound):
+            status = "denied"
+            message = "Service call failed."
+        elif isinstance(call_result, (ServiceValidationError, vol.Invalid)):
+            status = "invalid_request"
+            message = _validation_error_message(call_result)
+        elif isinstance(call_result, HomeAssistantError):
+            status = "denied"
+            message = "Service call failed."
+        elif isinstance(call_result, BaseException):
+            _LOGGER.error(
+                "Unexpected failure in a relative-volume service subgroup",
+                exc_info=(type(call_result), call_result, call_result.__traceback__),
+            )
+            status = "invalid_request"
+            message = "Service call failed."
+        else:
+            succeeded.extend(grouped_entities)
+            continue
+        failures.append((status, grouped_entities, message))
+        if status == "timeout":
+            dispatched_unknown = True
+        for entity_id in grouped_entities:
+            failed.append({
+                **_native_entity_entry(entity_id, hass),
+                "reason": status,
+                "message": message,
+            })
+
+    if not succeeded and not dispatched_unknown:
+        first_status, _entities, first_message = failures[0]
+        outcome = "invalid_request" if first_status == "invalid_request" else "denied"
+        return _tool_error(first_message), outcome, "HassSetVolumeRelative"
+
+    success = _build_target_context(args, hass) if succeeded else []
+    success.extend(_native_entity_entry(entity_id, hass) for entity_id in succeeded)
+    speech = (
+        {"plain": {"speech": " ".join(gate.warnings), "extra_data": None}}
+        if gate.warnings
+        else {}
+    )
+    payload: dict[str, Any] = {
+        "speech": speech,
+        "response_type": "action_done",
+        "data": {"success": success, "failed": failed},
+    }
+    if failed:
+        payload["partial"] = True
+    return (
+        _tool_success(json.dumps(payload)),
+        "allowed",
+        "HassSetVolumeRelative",
+    )
+
+
 async def _tool_hass_set_volume_relative(
-    args: dict, token: TokenRecord, hass: HomeAssistant
+    args: dict,
+    token: TokenRecord,
+    hass: HomeAssistant,
+    data: PhoenixData,
+    request_id: str = "",
+    client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
     refusal = _no_selector_refusal(args, "HassSetVolumeRelative", _BASIC_TARGET_SELECTORS)
     if refusal is not None:
@@ -1035,32 +1255,37 @@ async def _tool_hass_set_volume_relative(
             "HassSetVolumeRelative",
         )
 
-    # HA's 2026.8 intent handler converts a numeric percentage to a fraction,
-    # adds it to each entity's current volume, clamps to 0..1, and sets that
-    # exact level. Group equal results so this keeps one service call whenever
-    # the selected players start at the same volume without discarding the
-    # caller's magnitude.
-    target_groups: dict[float, list[str]] = {}
-    for entity_id in entities:
-        state = hass.states.get(entity_id)
-        current = state.attributes.get("volume_level") if state is not None else None
-        if (
-            not isinstance(current, (int, float))
-            or isinstance(current, bool)
-            or not math.isfinite(current)
-        ):
-            continue
-        target = max(0.0, min(1.0, float(current) + step / 100))
-        target_groups.setdefault(target, []).append(entity_id)
-    return await _merge_action_calls(
-        "HassSetVolumeRelative",
-        [
-            ("media_player", "volume_set", {"volume_level": level}, grouped)
-            for level, grouped in target_groups.items()
-        ],
-        args,
-        hass,
+    if not entities:
+        return (
+            _tool_error("No accessible entities matched your request."),
+            "denied",
+            "HassSetVolumeRelative",
+        )
+    targets, missing = _relative_volume_plan(entities, step, hass)
+    if missing:
+        return (
+            _tool_error(
+                "Input validation error: current volume is unavailable for one or more "
+                "selected media players"
+            ),
+            "invalid_request",
+            "HassSetVolumeRelative",
+        )
+    plan_args: dict[str, Any] = {
+        "target_levels": targets,
+        "volume_step": step,
+    }
+    if isinstance(args.get("area"), str):
+        plan_args["area"] = args["area"]
+    if isinstance(args.get("floor"), str):
+        plan_args["floor"] = args["floor"]
+    return await _execute_hass_set_volume_relative(
+        plan_args,
         token,
+        hass,
+        data,
+        request_id=request_id,
+        client_ip=client_ip,
     )
 
 
