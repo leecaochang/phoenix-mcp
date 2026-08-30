@@ -27,13 +27,30 @@ import pytest
 from homeassistant.util.dt import utcnow
 
 from custom_components.phoenix_mcp.const import CAP_ALLOW, CAP_DENY
+from custom_components.phoenix_mcp.mcp_view import _call_tool
 from custom_components.phoenix_mcp.policy_engine import normalize_intent_selectors
 from custom_components.phoenix_mcp.token_store import PermissionTree, TokenRecord
 from custom_components.phoenix_mcp.tools.native import (
     _NO_SELECTOR_MESSAGE,
     _with_declined_targets,
+    _tool_hass_climate_set_temperature,
+    _tool_hass_fan_set_speed,
+    _tool_hass_light_set,
+    _tool_hass_media_next,
+    _tool_hass_media_pause,
+    _tool_hass_media_player_mute,
+    _tool_hass_media_player_unmute,
+    _tool_hass_media_previous,
+    _tool_hass_media_search_and_play,
+    _tool_hass_media_unpause,
+    _tool_hass_set_position,
+    _tool_hass_set_volume,
+    _tool_hass_set_volume_relative,
+    _tool_hass_stop_moving,
     _tool_hass_turn_off,
     _tool_hass_turn_on,
+    _tool_hass_vacuum_return_to_base,
+    _tool_hass_vacuum_start,
 )
 
 NATIVE = "custom_components.phoenix_mcp.tools.native"
@@ -51,6 +68,33 @@ def _text(response: dict) -> str:
     return response["content"][0]["text"]
 
 
+_TARGETED_NATIVE_ACTIONS = (
+    (_tool_hass_light_set, {"brightness": 50}, False),
+    (_tool_hass_fan_set_speed, {"percentage": 50}, False),
+    (_tool_hass_climate_set_temperature, {"temperature": 21}, False),
+    (_tool_hass_set_position, {"position": 50}, True),
+    (_tool_hass_set_volume, {"volume_level": 50}, False),
+    (_tool_hass_set_volume_relative, {"volume_step": "up"}, False),
+    (_tool_hass_media_pause, {}, False),
+    (_tool_hass_media_unpause, {}, False),
+    (_tool_hass_media_next, {}, False),
+    (_tool_hass_media_previous, {}, False),
+    (_tool_hass_media_search_and_play, {"search_query": "News"}, False),
+    (_tool_hass_media_player_mute, {}, False),
+    (_tool_hass_media_player_unmute, {}, False),
+    (_tool_hass_vacuum_start, {}, False),
+    (_tool_hass_vacuum_return_to_base, {}, False),
+    (_tool_hass_stop_moving, {}, True),
+)
+
+
+async def _call_targeted_action(handler, args: dict, needs_data: bool):
+    call_args = (args, _token(), MagicMock())
+    if needs_data:
+        call_args += (MagicMock(),)
+    return await handler(*call_args)
+
+
 # ---------------------------------------------------------------------------
 # The shared normaliser
 # ---------------------------------------------------------------------------
@@ -62,7 +106,8 @@ def _text(response: dict) -> str:
         {},
         {"name": ["Front Door Lock", "Rear door lock"]},  # the observed shape
         {"name": True, "area": 3, "floor": {"a": 1}},
-        {"domain": "not-a-list-but-accepted-as-one"},     # counter-case, see below
+        {"domain": "not-an-array"},
+        {"domain": ["light", 7]},
     ],
 )
 def test_normalizer_reports_whether_anything_usable_survived(args):
@@ -70,10 +115,7 @@ def test_normalizer_reports_whether_anything_usable_survived(args):
         name=args.get("name"), area=args.get("area"), floor=args.get("floor"),
         domains=args.get("domain"), device_classes=args.get("device_class"),
     )
-    # A bare string domain is a shape a model plainly meant, so it is accepted as
-    # a one-element list and IS usable; everything else above degrades to absent.
-    expected_usable = "domain" in args
-    assert selectors.none_usable is not expected_usable
+    assert selectors.none_usable
 
 
 def test_normalizer_never_stringifies_a_wrong_shape():
@@ -131,6 +173,147 @@ async def test_one_real_selector_is_enough_to_proceed(handler):
             patch(f"{NATIVE}._tool_intent_action", action):
         await handler({"domain": ["light"]}, _token(), MagicMock(), MagicMock())
     assert action.await_count == 1
+
+
+@pytest.mark.parametrize(("handler", "operation", "needs_data"), _TARGETED_NATIVE_ACTIONS)
+@pytest.mark.parametrize(
+    "bad_selector",
+    [
+        {},
+        {"name": ["Kitchen", "Hall"]},
+        {"entity_id": "light.kitchen"},
+        {"domain": "light"},
+        {"domain": ["light", 7]},
+    ],
+)
+async def test_every_targeted_native_action_refuses_an_unusable_selector(
+    handler, operation, needs_data, bad_selector,
+):
+    resolver = MagicMock(return_value=["light.kitchen"])
+    action = AsyncMock(return_value=({}, "allowed", "x"))
+    gate = AsyncMock(return_value=None)
+    with patch(f"{NATIVE}.resolve_intent_entities", resolver), \
+            patch(f"{NATIVE}._tool_intent_action", action), \
+            patch(f"{NATIVE}._gate", gate):
+        response, outcome, _resource = await _call_targeted_action(
+            handler, {**operation, **bad_selector}, needs_data,
+        )
+    assert outcome == "invalid_request"
+    assert "No usable targeting parameter" in _text(response)
+    resolver.assert_not_called()
+    action.assert_not_awaited()
+    gate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "operation"),
+    [
+        ("fan__HassFanSetSpeed", {"percentage": 50}),
+        ("media_player__HassSetVolume", {"volume_level": 50}),
+        ("media_player__HassMediaPause", {}),
+        ("media_player__HassMediaUnpause", {}),
+        ("media_player__HassMediaNext", {}),
+        ("media_player__HassMediaPrevious", {}),
+        ("media_player__HassMediaPlayerMute", {}),
+        ("media_player__HassMediaPlayerUnmute", {}),
+        ("vacuum__HassVacuumStart", {}),
+        ("vacuum__HassVacuumReturnToBase", {}),
+    ],
+)
+async def test_public_dispatcher_rejects_wrong_fixed_domain_before_resolution(
+    tool_name, operation,
+):
+    resolver = MagicMock(return_value=["fan.one", "fan.two"])
+    action = AsyncMock(return_value=({}, "allowed", tool_name))
+    with patch(f"{NATIVE}.resolve_intent_entities", resolver), \
+            patch(f"{NATIVE}._tool_intent_action", action):
+        response, outcome, _resource = await _call_tool(
+            tool_name,
+            {"domain": ["light"], **operation},
+            _token(),
+            MagicMock(),
+            MagicMock(),
+        )
+    assert outcome == "invalid_request"
+    assert "domain must contain only" in _text(response)
+    resolver.assert_not_called()
+    action.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("handler", "args", "needs_data", "argument"),
+    [
+        (_tool_hass_light_set, {"name": "Lamp"}, False, "brightness, color or temperature"),
+        (_tool_hass_fan_set_speed, {"name": "Fan"}, False, "percentage"),
+        (_tool_hass_climate_set_temperature, {"name": "Thermostat"}, False, "temperature"),
+        (_tool_hass_set_position, {"name": "Blind"}, True, "position"),
+        (_tool_hass_set_volume, {"name": "Speaker"}, False, "volume_level"),
+        (_tool_hass_set_volume_relative, {"name": "Speaker"}, False, "volume_step"),
+        (_tool_hass_media_search_and_play, {"name": "Speaker"}, False, "search_query"),
+    ],
+)
+async def test_required_operation_arguments_are_checked_before_dispatch(
+    handler, args, needs_data, argument,
+):
+    resolver = MagicMock(return_value=["light.kitchen"])
+    action = AsyncMock(return_value=({}, "allowed", "x"))
+    gate = AsyncMock(return_value=None)
+    with patch(f"{NATIVE}.resolve_intent_entities", resolver), \
+            patch(f"{NATIVE}._tool_intent_action", action), \
+            patch(f"{NATIVE}._gate", gate):
+        response, outcome, _resource = await _call_targeted_action(handler, args, needs_data)
+    assert outcome == "invalid_request"
+    assert argument in _text(response)
+    resolver.assert_not_called()
+    action.assert_not_awaited()
+    gate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("position", [None, -1, 101, True, "50"])
+async def test_invalid_position_is_refused_before_the_confirmation_gate(position):
+    args = {"name": "Blind"}
+    if position is not None:
+        args["position"] = position
+    gate = AsyncMock(return_value=None)
+    with patch(f"{NATIVE}._gate", gate):
+        response, outcome, _resource = await _tool_hass_set_position(
+            args, _token(), MagicMock(), MagicMock(),
+        )
+    assert outcome == "invalid_request"
+    assert _text(response)
+    gate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("step", "expected"),
+    [
+        (25, [(0.45, ["media_player.one"]), (1.0, ["media_player.two"])]),
+        (-25, [(0.0, ["media_player.one"]), (0.65, ["media_player.two"])]),
+        (0, [(0.2, ["media_player.one"]), (0.9, ["media_player.two"])]),
+    ],
+)
+async def test_numeric_relative_volume_preserves_magnitude_and_clamps(step, expected):
+    entities = ["media_player.one", "media_player.two"]
+    levels = {"media_player.one": 0.2, "media_player.two": 0.9}
+    hass = MagicMock()
+    hass.states.get.side_effect = lambda entity_id: MagicMock(
+        attributes={"volume_level": levels[entity_id]}
+    )
+    action = AsyncMock(
+        side_effect=lambda _tool, _domain, _service, _data, grouped, *_a, **_k:
+        _action_result(grouped)
+    )
+    with patch(f"{NATIVE}.resolve_intent_entities", return_value=entities), \
+            patch(f"{NATIVE}._tool_intent_action", action):
+        _response, outcome, _resource = await _tool_hass_set_volume_relative(
+            {"name": "Speakers", "volume_step": step}, _token(), hass,
+        )
+    assert outcome == "allowed"
+    assert [
+        (call.args[3]["volume_level"], call.args[4])
+        for call in action.await_args_list
+    ] == expected
+    assert {call.args[2] for call in action.await_args_list} == {"volume_set"}
 
 
 # ---------------------------------------------------------------------------

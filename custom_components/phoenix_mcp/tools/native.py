@@ -461,25 +461,40 @@ def _resolve_turn_entities(args: dict, token: TokenRecord, hass: HomeAssistant) 
     )
 
 
-# What an agent gets when it supplied nothing a selector could be made of. It
-# names the parameters and their shapes because the commonest way to land here is
-# a shape error, not an omission: a `name` sent as a list is coerced to absent,
-# and if it was the only selector the call arrives with none.
-_NO_SELECTOR_MESSAGE = (
-    "No usable targeting parameter was given. Provide at least one of name, area, "
-    "floor, domain or device_class. name, area and floor must each be a single "
-    "string; domain and device_class must be arrays of strings."
-)
+_BASIC_TARGET_SELECTORS = ("name", "area", "floor")
+_DOMAIN_TARGET_SELECTORS = (*_BASIC_TARGET_SELECTORS, "domain")
+_ALL_TARGET_SELECTORS = (*_DOMAIN_TARGET_SELECTORS, "device_class")
 
 
-def _no_selector_refusal(args: dict, tool_name: str) -> tuple[dict, str, str] | None:
+def _selector_refusal_message(selector_names: tuple[str, ...]) -> str:
+    """Describe the targeting fields one native tool actually accepts."""
+    joined = ", ".join(selector_names[:-1]) + f" or {selector_names[-1]}"
+    scalar = [name for name in selector_names if name in _BASIC_TARGET_SELECTORS]
+    arrays = [name for name in selector_names if name not in _BASIC_TARGET_SELECTORS]
+    shapes: list[str] = []
+    if scalar:
+        shapes.append(f"{', '.join(scalar)} must each be a single string")
+    if arrays:
+        shapes.append(f"{', '.join(arrays)} must each be an array of strings")
+    return (
+        f"No usable targeting parameter was given. Provide at least one of {joined}. "
+        + "; ".join(shapes) + "."
+    )
+
+
+_NO_SELECTOR_MESSAGE = _selector_refusal_message(_ALL_TARGET_SELECTORS)
+
+
+def _no_selector_refusal(
+    args: dict,
+    tool_name: str,
+    selector_names: tuple[str, ...] = _ALL_TARGET_SELECTORS,
+) -> tuple[dict, str, str] | None:
     """Refuse a native action that carries no usable selector, or None to proceed.
 
-    HassTurnOn and HassTurnOff are the only tools that can reach this: every
-    other native tool defaults its domains, so something always survives
-    coercion. Without this the call resolves to an empty list and returns the
-    same refusal a DENIED call returns, and an agent reads its own malformed
-    argument as a permission problem and retries it unchanged.
+    Caller-provided selectors are checked before a tool adds its fixed domain.
+    Otherwise an omitted, malformed, or unsupported selector can be replaced by
+    that domain and expand to every writable entity in it.
 
     Safe to distinguish because it is decided entirely from the caller's own
     arguments, before any resolution: no entity, area or permission is consulted,
@@ -487,14 +502,58 @@ def _no_selector_refusal(args: dict, tool_name: str) -> tuple[dict, str, str] | 
     nothing" and "denied", stay byte-identical.
     """
     selectors = normalize_intent_selectors(
-        name=args.get("name"),
-        area=args.get("area"),
-        floor=args.get("floor"),
-        domains=args.get("domain"),
-        device_classes=args.get("device_class"),
+        name=args.get("name") if "name" in selector_names else None,
+        area=args.get("area") if "area" in selector_names else None,
+        floor=args.get("floor") if "floor" in selector_names else None,
+        domains=args.get("domain") if "domain" in selector_names else None,
+        device_classes=(
+            args.get("device_class") if "device_class" in selector_names else None
+        ),
     )
     if selectors.none_usable:
-        return _tool_error(_NO_SELECTOR_MESSAGE), "invalid_request", tool_name
+        return (
+            _tool_error(_selector_refusal_message(selector_names)),
+            "invalid_request",
+            tool_name,
+        )
+    return None
+
+
+def _fixed_domain_refusal(
+    args: dict,
+    tool_name: str,
+    fixed_domain: str,
+    selector_names: tuple[str, ...] = _ALL_TARGET_SELECTORS,
+) -> tuple[dict, str, str] | None:
+    """Validate targeting for a tool that always acts in one domain.
+
+    The caller's domain is a constraint, not a hint that may be discarded. A
+    well-shaped but different domain must fail before the handler substitutes
+    its fixed domain, or the wrong value becomes a whole-domain action.
+    """
+    refusal = _no_selector_refusal(args, tool_name, selector_names)
+    if refusal is not None:
+        return refusal
+    if "domain" not in args:
+        return None
+    domains = args["domain"]
+    if not isinstance(domains, list) or not domains or any(
+        domain != fixed_domain for domain in domains
+    ):
+        return (
+            _tool_error(
+                f"Input validation error: domain must contain only '{fixed_domain}'."
+            ),
+            "invalid_request",
+            tool_name,
+        )
+    return None
+
+
+def _missing_required_argument(args: dict, name: str) -> str | None:
+    """Return an error message when a required native value is absent."""
+    if name not in args or args[name] is None:
+        return f"Missing required argument: {name}"
     return None
 
 
@@ -574,6 +633,9 @@ def _turn_service_groups(service: str, entities: list[str]) -> list[tuple[str, s
 async def _hass_turn_execute(
     tool_name: str, service: str, args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, tool_name)
+    if refusal is not None:
+        return refusal
     entities = _resolve_turn_entities(args, token, hass)
     # Drop physical entities only when cap_physical_control is deny. Under allow
     # (direct) or confirm (reached here only after admin approval) they are kept.
@@ -634,26 +696,21 @@ def _with_declined_targets(
     return _tool_success(json.dumps(payload)), outcome, resource
 
 
-async def _merge_action_groups(
+async def _merge_action_calls(
     tool_name: str,
-    groups: list[tuple[str, str, list[str]]],
+    calls: list[tuple[str, str, dict[str, Any], list[str]]],
     args: dict,
     hass: HomeAssistant,
     token: TokenRecord,
-    service_data: dict[str, Any] | None = None,
 ) -> tuple[dict, str, str]:
-    """Run a mixed-domain native action as one service call per domain and merge
-    the action_done responses (HassTurnOn/Off across lock/cover/vacuum/valve,
-    HassSetPosition across cover/valve). A pending approval from any group is
-    surfaced immediately; denied/empty groups contribute nothing to the merged
-    success."""
+    """Run native service calls and merge their action_done responses."""
     success: list[dict] = []
     seen: set[tuple] = set()
     speech_parts: list[str] = []
     any_ok = False
-    for domain, svc, ents in groups:
+    for domain, svc, service_data, ents in calls:
         resp, outcome, resource = await _tool_intent_action(
-            tool_name, domain, svc, dict(service_data or {}), ents, hass, token, args=args
+            tool_name, domain, svc, service_data, ents, hass, token, args=args
         )
         if outcome == "pending_approval":
             return resp, outcome, resource
@@ -677,6 +734,31 @@ async def _merge_action_groups(
         "response_type": "action_done",
         "data": {"success": success, "failed": []},
     })), "allowed", tool_name
+
+
+async def _merge_action_groups(
+    tool_name: str,
+    groups: list[tuple[str, str, list[str]]],
+    args: dict,
+    hass: HomeAssistant,
+    token: TokenRecord,
+    service_data: dict[str, Any] | None = None,
+) -> tuple[dict, str, str]:
+    """Run a mixed-domain action as one service call per domain.
+
+    Used by HassTurnOn/Off across lock/cover/vacuum/valve and by
+    HassSetPosition across cover/valve.
+    """
+    return await _merge_action_calls(
+        tool_name,
+        [
+            (domain, service, dict(service_data or {}), entities)
+            for domain, service, entities in groups
+        ],
+        args,
+        hass,
+        token,
+    )
 
 
 async def _tool_hass_turn_on(
@@ -716,6 +798,15 @@ async def _execute_hass_turn_off(
 async def _tool_hass_light_set(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, "HassLightSet", _DOMAIN_TARGET_SELECTORS)
+    if refusal is not None:
+        return refusal
+    if not any(args.get(name) is not None for name in ("brightness", "color", "temperature")):
+        return (
+            _tool_error("Missing required argument: brightness, color or temperature"),
+            "invalid_request",
+            "HassLightSet",
+        )
     if "brightness" in args and args["brightness"] is not None:
         error = _validate_integer_range("brightness", args["brightness"], 0, 100)
         if error:
@@ -746,6 +837,13 @@ async def _tool_hass_light_set(
 async def _tool_hass_fan_set_speed(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(
+        args, "HassFanSetSpeed", "fan", _DOMAIN_TARGET_SELECTORS
+    )
+    if refusal is not None:
+        return refusal
+    if error := _missing_required_argument(args, "percentage"):
+        return _tool_error(error), "invalid_request", "HassFanSetSpeed"
     if "percentage" in args and args["percentage"] is not None:
         error = _validate_integer_range("percentage", args["percentage"], 0, 100)
         if error:
@@ -767,6 +865,11 @@ async def _tool_hass_fan_set_speed(
 async def _tool_hass_climate_set_temperature(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, "HassClimateSetTemperature", _BASIC_TARGET_SELECTORS)
+    if refusal is not None:
+        return refusal
+    if error := _missing_required_argument(args, "temperature"):
+        return _tool_error(error), "invalid_request", "HassClimateSetTemperature"
     if "temperature" in args and args["temperature"] is not None:
         error = _validate_number_range("temperature", args["temperature"], None, None)
         if error:
@@ -793,6 +896,9 @@ async def _tool_hass_set_position(
     request_id: str = "",
     client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
+    refusal = _validate_hass_set_position_args(args)
+    if refusal is not None:
+        return refusal
     blocked = await _gate(
         "cap_physical_control", token, hass, data,
         tool_name="HassSetPosition", args=args, request_id=request_id,
@@ -815,13 +921,25 @@ _POSITION_DOMAIN_SERVICES: dict[str, tuple[str, str]] = {
 }
 
 
+def _validate_hass_set_position_args(args: dict) -> tuple[dict, str, str] | None:
+    """Validate target and position before approval or execution."""
+    refusal = _no_selector_refusal(args, "HassSetPosition")
+    if refusal is not None:
+        return refusal
+    if error := _missing_required_argument(args, "position"):
+        return _tool_error(error), "invalid_request", "HassSetPosition"
+    error = _validate_integer_range("position", args["position"], 0, 100)
+    if error:
+        return _tool_error(error), "invalid_request", "HassSetPosition"
+    return None
+
+
 async def _execute_hass_set_position(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
-    if "position" in args and args["position"] is not None:
-        error = _validate_integer_range("position", args["position"], 0, 100)
-        if error:
-            return _tool_error(error), "invalid_request", "HassSetPosition"
+    refusal = _validate_hass_set_position_args(args)
+    if refusal is not None:
+        return refusal
 
     entities = resolve_intent_entities(
         hass, token,
@@ -831,9 +949,7 @@ async def _execute_hass_set_position(
         area=args.get("area"),
         floor=args.get("floor"),
     )
-    service_data: dict[str, Any] = {}
-    if "position" in args and args["position"] is not None:
-        service_data["position"] = args["position"]
+    service_data: dict[str, Any] = {"position": args["position"]}
 
     grouped: dict[tuple[str, str], list[str]] = {}
     for entity_id in entities:
@@ -851,6 +967,11 @@ async def _execute_hass_set_position(
 async def _tool_hass_set_volume(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassSetVolume", "media_player")
+    if refusal is not None:
+        return refusal
+    if error := _missing_required_argument(args, "volume_level"):
+        return _tool_error(error), "invalid_request", "HassSetVolume"
     if "volume_level" in args and args["volume_level"] is not None:
         error = _validate_integer_range("volume_level", args["volume_level"], 0, 100)
         if error:
@@ -873,6 +994,11 @@ async def _tool_hass_set_volume(
 async def _tool_hass_set_volume_relative(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, "HassSetVolumeRelative", _BASIC_TARGET_SELECTORS)
+    if refusal is not None:
+        return refusal
+    if error := _missing_required_argument(args, "volume_step"):
+        return _tool_error(error), "invalid_request", "HassSetVolumeRelative"
     if "volume_step" in args and args["volume_step"] is not None:
         step = args["volume_step"]
         if isinstance(step, str):
@@ -893,20 +1019,57 @@ async def _tool_hass_set_volume_relative(
         area=args.get("area"),
         floor=args.get("floor"),
     )
-    # Integer step values use sign for direction only; magnitude is discarded.
-    # This mirrors native HA's HassSetVolumeRelative intent handler, which calls
-    # volume_up/volume_down (fixed-increment services, not adjustable-step).
     step = args.get("volume_step")
-    if step == "down" or (isinstance(step, int) and step < 0):
-        svc = "volume_down"
-    else:
-        svc = "volume_up"
-    return await _tool_intent_action("HassSetVolumeRelative", "media_player", svc, {}, entities, hass, token, args=args)
+    if isinstance(step, str):
+        service = "volume_down" if step == "down" else "volume_up"
+        return await _tool_intent_action(
+            "HassSetVolumeRelative", "media_player", service, {},
+            entities, hass, token, args=args,
+        )
+    if not isinstance(step, int) or isinstance(step, bool):
+        return (
+            _tool_error(
+                f"Input validation error: '{step}' is not of type 'string' or 'integer'"
+            ),
+            "invalid_request",
+            "HassSetVolumeRelative",
+        )
+
+    # HA's 2026.8 intent handler converts a numeric percentage to a fraction,
+    # adds it to each entity's current volume, clamps to 0..1, and sets that
+    # exact level. Group equal results so this keeps one service call whenever
+    # the selected players start at the same volume without discarding the
+    # caller's magnitude.
+    target_groups: dict[float, list[str]] = {}
+    for entity_id in entities:
+        state = hass.states.get(entity_id)
+        current = state.attributes.get("volume_level") if state is not None else None
+        if (
+            not isinstance(current, (int, float))
+            or isinstance(current, bool)
+            or not math.isfinite(current)
+        ):
+            continue
+        target = max(0.0, min(1.0, float(current) + step / 100))
+        target_groups.setdefault(target, []).append(entity_id)
+    return await _merge_action_calls(
+        "HassSetVolumeRelative",
+        [
+            ("media_player", "volume_set", {"volume_level": level}, grouped)
+            for level, grouped in target_groups.items()
+        ],
+        args,
+        hass,
+        token,
+    )
 
 
 async def _tool_hass_media_pause(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassMediaPause", "media_player")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -922,6 +1085,9 @@ async def _tool_hass_media_pause(
 async def _tool_hass_media_unpause(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassMediaUnpause", "media_player")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -937,6 +1103,9 @@ async def _tool_hass_media_unpause(
 async def _tool_hass_media_next(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassMediaNext", "media_player")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -952,6 +1121,9 @@ async def _tool_hass_media_next(
 async def _tool_hass_media_previous(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassMediaPrevious", "media_player")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -967,6 +1139,16 @@ async def _tool_hass_media_previous(
 async def _tool_hass_media_search_and_play(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, "HassMediaSearchAndPlay", _BASIC_TARGET_SELECTORS)
+    if refusal is not None:
+        return refusal
+    search_query = str_arg(args.get("search_query"))
+    if not search_query:
+        return (
+            _tool_error("Missing required argument: search_query"),
+            "invalid_request",
+            "HassMediaSearchAndPlay",
+        )
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -974,7 +1156,6 @@ async def _tool_hass_media_search_and_play(
         area=args.get("area"),
         floor=args.get("floor"),
     )
-    search_query = args.get("search_query", "")
     media_class = args.get("media_class") or "music"
     service_data: dict[str, Any] = {
         "media_content_id": search_query,
@@ -986,6 +1167,9 @@ async def _tool_hass_media_search_and_play(
 async def _tool_hass_media_player_mute(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassMediaPlayerMute", "media_player")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -1000,6 +1184,9 @@ async def _tool_hass_media_player_mute(
 async def _tool_hass_media_player_unmute(
     args: dict, token: TokenRecord, hass: HomeAssistant
 ) -> tuple[dict, str, str]:
+    refusal = _fixed_domain_refusal(args, "HassMediaPlayerUnmute", "media_player")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["media_player"],
@@ -1061,6 +1248,9 @@ async def _tool_hass_stop_moving(
     request_id: str = "",
     client_ip: str | None = None,
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, "HassStopMoving")
+    if refusal is not None:
+        return refusal
     blocked = await _gate(
         "cap_physical_control", token, hass, data,
         tool_name="HassStopMoving", args=args, request_id=request_id,
@@ -1074,6 +1264,9 @@ async def _tool_hass_stop_moving(
 async def _execute_hass_stop_moving(
     args: dict, token: TokenRecord, hass: HomeAssistant, data: PhoenixData
 ) -> tuple[dict, str, str]:
+    refusal = _no_selector_refusal(args, "HassStopMoving")
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=args.get("domain") or ["cover"],
@@ -1117,6 +1310,11 @@ async def _vacuum_action(
     would resolve every writable entity in that area and call a vacuum service on
     all of them.
     """
+    refusal = _fixed_domain_refusal(
+        args, tool_name, "vacuum", _DOMAIN_TARGET_SELECTORS
+    )
+    if refusal is not None:
+        return refusal
     entities = resolve_intent_entities(
         hass, token,
         domains=["vacuum"],

@@ -111,10 +111,11 @@ async def test_vacuum_action_pins_domain_and_filters_by_feature(handler, service
     action = AsyncMock(return_value=({}, "allowed", "x"))
     with patch(f"{NATIVE}.resolve_intent_entities", resolve), \
             patch(f"{NATIVE}._tool_intent_action", action):
-        await handler({"area": "Kitchen", "domain": ["light"]}, _token(), hass)
+        await handler({"area": "Kitchen"}, _token(), hass)
 
-    # domains is pinned to vacuum and NOT taken from the caller: an area-only call
-    # must not resolve every writable entity in that area.
+    # An area-only call is pinned to vacuum and must not resolve every writable
+    # entity in that area. Wrong explicit domains are covered at the public
+    # dispatcher boundary in test_native_selectors.py.
     assert resolve.call_args.kwargs["domains"] == ["vacuum"]
     assert resolve.call_args.kwargs["area"] == "Kitchen"
     called_domain, called_service, service_data, entities = action.call_args.args[1:5]

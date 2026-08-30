@@ -199,15 +199,15 @@ def test_catalog_payload_metrics_cover_representative_profiles_and_provider_wire
         },
         "write_capable": {
             "tool_count": 94,
-            "canonical_bytes": 89523,
-            "claude_bytes": 79830,
-            "openai_bytes": 82556,
+            "canonical_bytes": 91810,
+            "claude_bytes": 82117,
+            "openai_bytes": 84843,
         },
         "announce_all": {
             "tool_count": 154,
-            "canonical_bytes": 149879,
-            "claude_bytes": 133985,
-            "openai_bytes": 138451,
+            "canonical_bytes": 152166,
+            "claude_bytes": 136272,
+            "openai_bytes": 140738,
         },
     }
     assert metrics["announce_all"]["tool_count"] == len(_static_defs()) == 154
@@ -388,6 +388,58 @@ _NOT_A_TARGETING_SELECTOR = {
     (_NATIVE_TOOL_NAMES["HassVacuumCleanArea"], "area"),
     (_NATIVE_TOOL_NAMES["HassVacuumCleanArea"], "name"),
 }
+
+_NATIVE_TARGET_REQUIREMENTS = {
+    _NATIVE_TOOL_NAMES["HassTurnOn"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassTurnOff"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassLightSet"]: {"name", "area", "floor", "domain"},
+    _NATIVE_TOOL_NAMES["HassFanSetSpeed"]: {"name", "area", "floor", "domain"},
+    _NATIVE_TOOL_NAMES["HassClimateSetTemperature"]: {"name", "area", "floor"},
+    _NATIVE_TOOL_NAMES["HassSetPosition"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassSetVolume"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassSetVolumeRelative"]: {"name", "area", "floor"},
+    _NATIVE_TOOL_NAMES["HassMediaPause"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassMediaUnpause"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassMediaNext"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassMediaPrevious"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassMediaSearchAndPlay"]: {"name", "area", "floor"},
+    _NATIVE_TOOL_NAMES["HassMediaPlayerMute"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassMediaPlayerUnmute"]: {"name", "area", "floor", "domain", "device_class"},
+    _NATIVE_TOOL_NAMES["HassVacuumStart"]: {"name", "area", "floor", "domain"},
+    _NATIVE_TOOL_NAMES["HassVacuumReturnToBase"]: {"name", "area", "floor", "domain"},
+    _NATIVE_TOOL_NAMES["HassStopMoving"]: {"name", "area", "floor", "domain", "device_class"},
+}
+
+
+def _required_any_of_sets(schema: dict) -> list[set[str]]:
+    clauses = [schema, *schema.get("allOf", [])]
+    return [
+        {required for option in clause.get("anyOf", []) for required in option.get("required", [])}
+        for clause in clauses
+        if "anyOf" in clause
+    ]
+
+
+def test_every_targeted_native_action_schema_requires_a_caller_target():
+    by_name = {tool["name"]: tool for tool in mcp_view._NATIVE_TOOL_DEFS}
+    for tool_name, selectors in _NATIVE_TARGET_REQUIREMENTS.items():
+        assert selectors in _required_any_of_sets(by_name[tool_name]["inputSchema"])
+
+
+def test_native_action_schemas_require_their_operation_values():
+    by_name = {tool["name"]: tool for tool in mcp_view._NATIVE_TOOL_DEFS}
+    required = {
+        _NATIVE_TOOL_NAMES["HassFanSetSpeed"]: "percentage",
+        _NATIVE_TOOL_NAMES["HassClimateSetTemperature"]: "temperature",
+        _NATIVE_TOOL_NAMES["HassSetPosition"]: "position",
+        _NATIVE_TOOL_NAMES["HassSetVolume"]: "volume_level",
+        _NATIVE_TOOL_NAMES["HassSetVolumeRelative"]: "volume_step",
+        _NATIVE_TOOL_NAMES["HassMediaSearchAndPlay"]: "search_query",
+    }
+    for tool_name, argument in required.items():
+        assert argument in by_name[tool_name]["inputSchema"].get("required", [])
+    light_schema = by_name[_NATIVE_TOOL_NAMES["HassLightSet"]]["inputSchema"]
+    assert {"brightness", "color", "temperature"} in _required_any_of_sets(light_schema)
 
 
 def test_native_targeting_params_are_documented():

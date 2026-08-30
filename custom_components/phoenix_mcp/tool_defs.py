@@ -3071,6 +3071,11 @@ _CLEAN_AREA_NAME = (
 )
 
 
+def _requires_one(*names: str) -> list[dict[str, list[str]]]:
+    """Build a JSON Schema clause requiring at least one named property."""
+    return [{"required": [name]} for name in names]
+
+
 _NATIVE_TOOL_DEFS: list[dict] = [
     {
         "name": _NATIVE_TOOL_NAMES["GetLiveContext"],
@@ -3099,6 +3104,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DOMAIN},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3113,6 +3119,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DOMAIN},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3129,6 +3136,10 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "color": {"type": "string", "description": "Requested light color in a Home Assistant-supported color form."},
                 "temperature": {"type": "integer", "minimum": 0, "description": "Requested light color temperature."},
             },
+            "allOf": [
+                {"anyOf": _requires_one("name", "area", "floor", "domain")},
+                {"anyOf": _requires_one("brightness", "color", "temperature")},
+            ],
         },
     },
     {
@@ -3144,6 +3155,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "percentage": {"type": "integer", "minimum": 0, "maximum": 100, "description": "The speed percentage of the fan"},
             },
             "required": ["percentage"],
+            "anyOf": _requires_one("name", "area", "floor", "domain"),
         },
     },
     {
@@ -3158,6 +3170,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "temperature": {"type": "number", "description": "Target temperature in the entity's configured unit."},
             },
             "required": ["temperature"],
+            "anyOf": _requires_one("name", "area", "floor"),
         },
     },
     {
@@ -3173,6 +3186,8 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
                 "position": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Target position from 0 to 100 percent."},
             },
+            "required": ["position"],
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3188,6 +3203,8 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
                 "volume_level": {"type": "integer", "minimum": 0, "maximum": 100, "description": "The volume percentage of the media player"},
             },
+            "required": ["volume_level"],
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3201,6 +3218,8 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
                 "volume_step": {"anyOf": [{"type": "string", "enum": ["up", "down"]}, {"type": "integer", "minimum": -100, "maximum": 100}], "description": "Relative volume direction or signed percentage step."},
             },
+            "required": ["volume_step"],
+            "anyOf": _requires_one("name", "area", "floor"),
         },
     },
     {
@@ -3215,6 +3234,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["media_player"]}, "description": _TARGET_DOMAIN_ENUM},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3229,6 +3249,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["media_player"]}, "description": _TARGET_DOMAIN_ENUM},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3243,6 +3264,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["media_player"]}, "description": _TARGET_DOMAIN_ENUM},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3257,6 +3279,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["media_player"]}, "description": _TARGET_DOMAIN_ENUM},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3271,6 +3294,8 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "search_query": {"type": "string", "description": "Media title, artist, channel, URL, or other search text."},
                 "media_class": {"type": "string", "enum": ["album", "app", "artist", "channel", "composer", "contributing_artist", "directory", "episode", "game", "genre", "image", "movie", "music", "playlist", "podcast", "season", "track", "tv_show", "url", "video"], "description": "Kind of media to search for."},
             },
+            "required": ["search_query"],
+            "anyOf": _requires_one("name", "area", "floor"),
         },
     },
     {
@@ -3285,6 +3310,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["media_player"]}, "description": _TARGET_DOMAIN_ENUM},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3299,6 +3325,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["media_player"]}, "description": _TARGET_DOMAIN_ENUM},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
     {
@@ -3322,6 +3349,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["vacuum"]}, "description": _TARGET_DOMAIN_ENUM},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain"),
         },
     },
     {
@@ -3335,6 +3363,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "floor": {"type": "string", "description": _TARGET_FLOOR},
                 "domain": {"type": "array", "items": {"type": "string", "enum": ["vacuum"]}, "description": _TARGET_DOMAIN_ENUM},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain"),
         },
     },
     {
@@ -3361,6 +3390,7 @@ _NATIVE_TOOL_DEFS: list[dict] = [
                 "domain": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DOMAIN},
                 "device_class": {"type": "array", "items": {"type": "string"}, "description": _TARGET_DEVICE_CLASS},
             },
+            "anyOf": _requires_one("name", "area", "floor", "domain", "device_class"),
         },
     },
 ]

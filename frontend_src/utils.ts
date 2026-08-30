@@ -86,8 +86,7 @@ export function tokenStatus(token: TokenRecord): string {
   return "Active";
 }
 
-/** Display labels for tokenStatus()'s values, which stay English internally
- *  because class names, sorting, and search all key off them. */
+/** Display labels for tokenStatus()'s stable internal values. */
 // The resolver's Permission verdict, for display. The raw value is what the
 // audit payload and the REST API carry; these are the labels beside it.
 export const PERMISSION_LABEL_KEYS: Record<string, string> = {

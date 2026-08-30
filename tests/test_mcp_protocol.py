@@ -12,6 +12,7 @@ assert what is deliberately ABSENT as well as what is present.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import json
 import textwrap
@@ -216,6 +217,42 @@ class TestProtocolVersions:
 
 
 class TestModernProtocolEra:
+    @pytest.mark.parametrize(
+        "body,headers",
+        [
+            (
+                {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}},
+                {
+                    "MCP-Protocol-Version": "2026-07-28",
+                    "Mcp-Method": "tools/call",
+                    "Mcp-Name": "ping",
+                },
+            ),
+            (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"ok": True},
+                    "params": {
+                        "_meta": {
+                            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        },
+                    },
+                },
+                {},
+            ),
+        ],
+    )
+    async def test_client_response_object_is_rejected_before_modern_header_validation(
+        self, body, headers
+    ):
+        """A client response cannot bypass required modern metadata mirrors."""
+        _token, raw, _data, hass = _strict_env()
+        resp = await _view(hass).post(_make_request(
+            body, "application/json", raw, headers))
+        assert resp.status == 400
+        assert json.loads(resp.text)["error"]["code"] == -32600
+
     async def test_modern_result_has_discriminator_identity_and_private_cache_hints(self):
         _token, raw, _data, hass = _strict_env()
         resp = await _view(hass).post(_make_request(
@@ -290,6 +327,138 @@ class TestModernProtocolEra:
         ))
         assert resp.status == 404
         assert json.loads(resp.text)["error"]["code"] == -32601
+
+
+class TestRequestCorrelation:
+    @pytest.mark.parametrize(
+        ("body", "headers", "status", "code"),
+        [
+            (
+                {"jsonrpc": "2.0", "id": 1, "method": []},
+                {},
+                200,
+                -32600,
+            ),
+            (
+                {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}},
+                {"MCP-Protocol-Version": "2026-07-28"},
+                400,
+                -32600,
+            ),
+            (
+                _modern_body("ping"),
+                {"MCP-Protocol-Version": "1900-01-01", "Mcp-Method": "ping"},
+                400,
+                -32020,
+            ),
+            (
+                {
+                    **_modern_body("ping"),
+                    "params": {
+                        "_meta": {
+                            "io.modelcontextprotocol/protocolVersion": "1900-01-01",
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                        },
+                    },
+                },
+                {"MCP-Protocol-Version": "1900-01-01", "Mcp-Method": "ping"},
+                400,
+                -32022,
+            ),
+            (
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                {},
+                400,
+                -32000,
+            ),
+        ],
+    )
+    async def test_authenticated_protocol_failures_are_audited_with_response_id(
+        self, body, headers, status, code,
+    ):
+        _token, raw, _data, hass = _strict_env()
+        with patch.object(mcp_view, "_log") as logged:
+            resp = await _view(hass).post(_make_request(
+                body, "application/json", raw, headers))
+        assert resp.status == status
+        assert json.loads(resp.text)["error"]["code"] == code
+        logged.assert_called_once()
+        assert logged.call_args.kwargs["request_id"] == resp.headers[
+            "X-Phoenix-Request-ID"
+        ]
+        assert logged.call_args.kwargs["outcome"] == "invalid_request"
+
+    async def test_json_audit_row_uses_the_http_request_id(self):
+        _token, raw, _data, hass = _env()
+        with patch.object(mcp_view, "_log") as logged:
+            resp = await _view(hass).post(_make_request(
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                "application/json",
+                raw,
+            ))
+        request_id = resp.headers["X-Phoenix-Request-ID"]
+        assert [call.kwargs["request_id"] for call in logged.call_args_list] == [
+            request_id
+        ]
+
+    async def test_sse_audit_row_uses_the_http_request_id(self):
+        _token, raw, _data, hass = _env()
+        hass.loop = asyncio.get_running_loop()
+        stream = _FakeStream()
+        with _stream_patch(stream), patch.object(mcp_view, "_log") as logged:
+            await _view(hass).post(_make_request(
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                "text/event-stream",
+                raw,
+            ))
+        request_id = stream.headers["X-Phoenix-Request-ID"]
+        assert [call.kwargs["request_id"] for call in logged.call_args_list] == [
+            request_id
+        ]
+
+    async def test_notification_audit_row_uses_the_http_request_id(self):
+        _token, raw, _data, hass = _env()
+        with patch.object(mcp_view, "_log") as logged:
+            resp = await _view(hass).post(_make_request(
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                "application/json",
+                raw,
+            ))
+        request_id = resp.headers["X-Phoenix-Request-ID"]
+        assert resp.status == 202
+        assert [call.kwargs["request_id"] for call in logged.call_args_list] == [
+            request_id
+        ]
+
+    async def test_era_rejected_method_audit_row_uses_the_http_request_id(self):
+        _token, raw, _data, hass = _strict_env()
+        with patch.object(mcp_view, "_log") as logged:
+            resp = await _view(hass).post(_make_request(
+                _modern_body("initialize"),
+                "application/json",
+                raw,
+                _modern_headers("initialize"),
+            ))
+        request_id = resp.headers["X-Phoenix-Request-ID"]
+        assert resp.status == 404
+        assert [call.kwargs["request_id"] for call in logged.call_args_list] == [
+            request_id
+        ]
+
+    async def test_legacy_batch_audit_rows_share_the_parent_http_request_id(self):
+        _token, raw, _data, hass = _env()
+        body = [
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+        ]
+        with patch.object(mcp_view, "_log") as logged:
+            resp = await _view(hass).post(_make_request(
+                body, "application/json", raw))
+        request_id = resp.headers["X-Phoenix-Request-ID"]
+        assert [call.kwargs["request_id"] for call in logged.call_args_list] == [
+            request_id,
+            request_id,
+        ]
 
 
 class TestLegacyProtocolEra:

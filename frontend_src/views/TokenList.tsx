@@ -5,7 +5,7 @@ import { ArchivedTokenTable } from "../components/ArchivedTokenTable";
 import { api } from "../api";
 import { Loading, ErrorMsg, RefreshIcon } from "../index";
 import { formatDate, tokenStatus, tokenStatusLabel } from "../utils";
-import { localeDateTime, t } from "../i18n";
+import { compareStrings, localeDateTime, t } from "../i18n";
 
 const MAX_ACTIVE_TOKENS_WARNING = 50;
 
@@ -79,7 +79,9 @@ export function TokenListView({ tokens, loading, error, onRefresh, onOpenDetail,
   const filtered = tokens.filter((t) => {
     const q = filter.toLowerCase();
     if (!q) return true;
-    return t.name.toLowerCase().includes(q) || tokenStatus(t).toLowerCase().includes(q);
+    const status = tokenStatus(t);
+    return [t.name, status, tokenStatusLabel(status)]
+      .some((value) => value.toLowerCase().includes(q));
   });
 
   const sorted = [...filtered].sort((a, b) => {
@@ -88,15 +90,16 @@ export function TokenListView({ tokens, loading, error, onRefresh, onOpenDetail,
     switch (sortKey) {
       case "name":     va = a.name.toLowerCase();   vb = b.name.toLowerCase(); break;
       case "mode":     va = a.pass_through ? "1" : "0"; vb = b.pass_through ? "1" : "0"; break;
-      case "status":   va = tokenStatus(a);          vb = tokenStatus(b); break;
+      case "status":   va = tokenStatusLabel(tokenStatus(a)); vb = tokenStatusLabel(tokenStatus(b)); break;
       case "created":  va = a.created_at ?? "";      vb = b.created_at ?? ""; break;
       case "updated":  va = a.updated_at ?? "";      vb = b.updated_at ?? ""; break;
       case "expires":  va = a.expires_at ?? "9999";  vb = b.expires_at ?? "9999"; break;
       case "last_used": va = a.last_used_at ?? "";   vb = b.last_used_at ?? ""; break;
     }
-    if (va < vb) return sortDir === "asc" ? -1 : 1;
-    if (va > vb) return sortDir === "asc" ? 1 : -1;
-    return 0;
+    const comparison = sortKey === "status"
+      ? compareStrings(String(va), String(vb))
+      : va < vb ? -1 : va > vb ? 1 : 0;
+    return sortDir === "asc" ? comparison : -comparison;
   });
 
   function handleCreated(record: TokenRecord) {

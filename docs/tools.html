@@ -531,7 +531,7 @@
         <!-- ===== Native control tools ===== -->
         <section class="tool-group" data-cap="control">
           <div class="tool-group-head"><h2>Native control tools</h2>
-          <p>These match the native Home Assistant MCP tools, including the domain-prefixed names introduced in Home Assistant 2026.9, parameters, and <code>action_done</code> responses. Phoenix advertises only the canonical prefixed names. Older unprefixed names remain callable for compatibility but are not listed. Targets resolve to explicit entities and are then filtered to WRITE access. <code>area</code>, <code>floor</code>, and <code>name</code> are strings; <code>domain</code> and <code>device_class</code> are string arrays. Each schema explains its expected shape and requires at least one target. No match returns "No accessible entities matched your request." without revealing why.</p></div>
+          <p>These match the native Home Assistant MCP tools, including the domain-prefixed names introduced in Home Assistant 2026.9, parameters, and <code>action_done</code> responses. Phoenix advertises only the canonical prefixed names. Older unprefixed names remain callable for compatibility but are not listed. Targets resolve to explicit entities and are then filtered to WRITE access. <code>area</code>, <code>floor</code>, and <code>name</code> are strings; <code>domain</code> and <code>device_class</code> are string arrays. Every target-based action schema explains its expected shape and requires at least one caller-supplied target. No match returns "No accessible entities matched your request." without revealing why.</p></div>
 
           <article class="tool" data-cap="control" data-search="assist_satellite__HassBroadcast announcement assist satellite">
             <div class="tool-head"><span class="tool-name">assist_satellite__HassBroadcast</span><span class="badge badge-cap">Broadcast</span></div>
@@ -547,49 +547,49 @@
           <article class="tool" data-cap="control" data-search="climate__HassClimateSetTemperature target temperature">
             <div class="tool-head"><span class="tool-name">climate__HassClimateSetTemperature</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Set a climate device's target temperature.</p>
-            <dl><dt>params</dt><dd><code>temperature</code> (required), plus <code>area</code> / <code>floor</code> / <code>name</code></dd></dl>
+            <dl><dt>params</dt><dd><code>temperature</code> (required), plus at least one of <code>area</code>, <code>floor</code>, or <code>name</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="fan__HassFanSetSpeed percentage">
             <div class="tool-head"><span class="tool-name">fan__HassFanSetSpeed</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Set fan speed by percentage.</p>
-            <dl><dt>params</dt><dd><code>percentage</code> (0-100, required), plus optional <code>area</code>, <code>floor</code>, <code>name</code>, and <code>domain</code> (fixed to <code>["fan"]</code>) selectors</dd></dl>
+            <dl><dt>params</dt><dd><code>percentage</code> (0-100, required), plus at least one of <code>area</code>, <code>floor</code>, <code>name</code>, or <code>domain</code> (fixed to <code>["fan"]</code>)</dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="light__HassLightSet brightness color temperature">
             <div class="tool-head"><span class="tool-name">light__HassLightSet</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Set brightness, color, or color temperature of accessible lights.</p>
-            <dl><dt>params</dt><dd><code>area</code>, <code>floor</code>, <code>name</code>, <code>domain</code> (string array), <code>brightness</code> (0-100), <code>color</code>, <code>temperature</code> (kelvin)</dd></dl>
+            <dl><dt>params</dt><dd>At least one target from <code>area</code>, <code>floor</code>, <code>name</code>, or <code>domain</code> (string array), plus at least one change from <code>brightness</code> (0-100), <code>color</code>, or <code>temperature</code> (kelvin)</dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="media_player__HassMediaPause media_player__HassMediaUnpause media_player__HassMediaNext media_player__HassMediaPrevious mute unmute playback">
             <div class="tool-head"><span class="tool-name">media_player__HassMediaPause</span><span class="tool-name">media_player__HassMediaUnpause</span><span class="tool-name">media_player__HassMediaNext</span><span class="tool-name">media_player__HassMediaPrevious</span><span class="tool-name">media_player__HassMediaPlayerMute</span><span class="tool-name">media_player__HassMediaPlayerUnmute</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Control playback on an accessible media player. Each tool gates on the player's current state before calling the service.</p>
-            <dl><dt>params</dt><dd>Optional <code>area</code>, <code>floor</code>, <code>name</code>, <code>domain</code> (fixed to <code>["media_player"]</code>), and <code>device_class</code> selectors</dd></dl>
+            <dl><dt>params</dt><dd>At least one of <code>area</code>, <code>floor</code>, <code>name</code>, <code>domain</code> (fixed to <code>["media_player"]</code>), or <code>device_class</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="media_player__HassMediaSearchAndPlay search play media">
             <div class="tool-head"><span class="tool-name">media_player__HassMediaSearchAndPlay</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Search and play media on a player.</p>
-            <dl><dt>params</dt><dd><code>search_query</code>, <code>media_class</code>, plus optional <code>area</code>, <code>floor</code>, and <code>name</code> selectors</dd></dl>
+            <dl><dt>params</dt><dd><code>search_query</code> (required), optional <code>media_class</code>, plus at least one of <code>area</code>, <code>floor</code>, or <code>name</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="intent__HassSetPosition cover blinds valve position">
             <div class="tool-head"><span class="tool-name">intent__HassSetPosition</span><span class="badge badge-cap">Physical control</span></div>
             <p class="tool-desc">Set the position of covers, blinds, or valves (0-100); each target is routed to its own domain service. Needs the physical-control capability.</p>
-            <dl><dt>params</dt><dd><code>position</code> (0-100), plus optional <code>area</code>, <code>floor</code>, <code>name</code>, <code>domain</code>, and <code>device_class</code> selectors</dd></dl>
+            <dl><dt>params</dt><dd><code>position</code> (0-100, required), plus at least one of <code>area</code>, <code>floor</code>, <code>name</code>, <code>domain</code>, or <code>device_class</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="media_player__HassSetVolume media_player__HassSetVolumeRelative media player volume">
             <div class="tool-head"><span class="tool-name">media_player__HassSetVolume</span><span class="tool-name">media_player__HassSetVolumeRelative</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Set or adjust media player volume. <code>media_player__HassSetVolume</code> takes <code>volume_level</code> (0-100); <code>media_player__HassSetVolumeRelative</code> takes <code>volume_step</code> (<code>"up"</code>, <code>"down"</code>, or a signed percentage).</p>
-            <dl><dt>params</dt><dd>Both accept optional <code>area</code>, <code>floor</code>, and <code>name</code>. <code>media_player__HassSetVolume</code> also exposes <code>domain</code> (fixed to <code>["media_player"]</code>) and <code>device_class</code>.</dd></dl>
+            <dl><dt>params</dt><dd>The volume value is required. Both tools also require at least one target from <code>area</code>, <code>floor</code>, or <code>name</code>. <code>media_player__HassSetVolume</code> also accepts <code>domain</code> (fixed to <code>["media_player"]</code>) and <code>device_class</code> as targets.</dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="vacuum__HassVacuumStart vacuum__HassVacuumReturnToBase vacuum clean dock">
             <div class="tool-head"><span class="tool-name">vacuum__HassVacuumStart</span><span class="tool-name">vacuum__HassVacuumReturnToBase</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Start a vacuum, or send it back to its dock. Targeted by <code>name</code>, <code>area</code>, or <code>floor</code>; only vacuums that report supporting the operation are targeted, so a vacuum that cannot dock is left out rather than asked and failing.</p>
-            <dl><dt>params</dt><dd>Optional <code>name</code>, <code>area</code>, <code>floor</code>, and <code>domain</code> (fixed to <code>["vacuum"]</code>) selectors</dd></dl>
+            <dl><dt>params</dt><dd>At least one of <code>name</code>, <code>area</code>, <code>floor</code>, or <code>domain</code> (fixed to <code>["vacuum"]</code>)</dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="vacuum__HassVacuumCleanArea vacuum clean room area">
@@ -600,13 +600,13 @@
           <article class="tool" data-cap="control" data-search="intent__HassStopMoving stop cover">
             <div class="tool-head"><span class="tool-name">intent__HassStopMoving</span><span class="badge badge-cap">Physical control</span></div>
             <p class="tool-desc">Stop a moving cover or similar device.</p>
-            <dl><dt>params</dt><dd>Optional <code>name</code>, <code>area</code>, <code>floor</code>, <code>domain</code>, and <code>device_class</code> selectors</dd></dl>
+            <dl><dt>params</dt><dd>At least one of <code>name</code>, <code>area</code>, <code>floor</code>, <code>domain</code>, or <code>device_class</code></dd></dl>
           </article>
 
           <article class="tool" data-cap="control" data-search="intent__HassTurnOn intent__HassTurnOff on off">
             <div class="tool-head"><span class="tool-name">intent__HassTurnOn</span><span class="tool-name">intent__HassTurnOff</span><span class="badge badge-neutral">tree-scoped</span></div>
             <p class="tool-desc">Turn entities on or off by area, name, floor, or domain.</p>
-            <dl><dt>params</dt><dd><code>area</code>, <code>floor</code>, <code>name</code> (strings), <code>domain</code>, <code>device_class</code> (string arrays), all optional</dd></dl>
+            <dl><dt>params</dt><dd>At least one of <code>area</code>, <code>floor</code>, <code>name</code> (strings), <code>domain</code>, or <code>device_class</code> (string arrays)</dd></dl>
           </article>
         </section>
 

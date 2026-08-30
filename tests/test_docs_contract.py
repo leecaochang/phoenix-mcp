@@ -120,6 +120,32 @@ def test_required_params_are_marked_required_in_single_tool_articles() -> None:
     assert gaps == [], "\n".join(gaps)
 
 
+def test_native_target_any_of_is_described_as_required() -> None:
+    """Detailed native articles must not call schema-required targets optional."""
+    target_fields = {"name", "area", "floor", "domain", "device_class"}
+    articles = _tools_articles()
+    gaps: list[str] = []
+    for tool in _NATIVE_TOOL_DEFS:
+        schema = tool.get("inputSchema") or {}
+        clauses = [schema, *schema.get("allOf", [])]
+        has_target_requirement = any(
+            {
+                name
+                for option in clause.get("anyOf", [])
+                for name in option.get("required", [])
+            }
+            and {
+                name
+                for option in clause.get("anyOf", [])
+                for name in option.get("required", [])
+            }.issubset(target_fields)
+            for clause in clauses
+        )
+        if has_target_requirement and "at least one" not in articles[tool["name"]].lower():
+            gaps.append(f"{tool['name']}: target anyOf is not described as required")
+    assert gaps == [], "\n".join(gaps)
+
+
 # (tool, parameter) pairs whose enum values are deliberately not spelled out in
 # the docs, each with the reason. An exemption is a claim that listing the values
 # would make the page WORSE, which is a higher bar than "it would be tedious".

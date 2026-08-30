@@ -518,6 +518,29 @@ def _protocol_error_response(
     )
 
 
+def _audit_mcp_transport(
+    data: PhoenixData,
+    token: TokenRecord,
+    request_id: str,
+    client_ip: str,
+    *,
+    body: Any = None,
+    outcome: Outcome = "invalid_request",
+    resource: str = "/api/phoenix-mcp",
+) -> None:
+    """Audit an authenticated MCP message that does not reach dispatch."""
+    method = body.get("method") if isinstance(body, dict) else None
+    _log(
+        data,
+        token,
+        request_id=request_id,
+        method=method if isinstance(method, str) and method else "POST",
+        resource=resource,
+        outcome=outcome,
+        client_ip=client_ip,
+    )
+
+
 def _request_meta(params: Any) -> dict | None:
     if not isinstance(params, dict):
         return None
@@ -645,10 +668,11 @@ def _classify_jsonrpc_message(body: dict) -> tuple[str, Any]:
     This gate runs before dispatch in BOTH the single-request and batch paths so
     the shape is validated once. Returns one of:
       ("dispatch", (method, params)) - a well-formed request to hand to _dispatch_mcp.
-      ("accepted", None)             - a JSON-RPC response/notification object (no
-                                       method, carries result/error): accept with no
-                                       reply (HTTP 202 / no batch entry), per the MCP
-                                       Streamable HTTP transport.
+      ("accepted", None)             - a JSON-RPC response object (no method,
+                                       carries result/error): retain the legacy
+                                       transport's accept-without-reply behavior.
+                                       The modern transport rejects these before
+                                       this classification can be honored.
       ("unsupported", (code, message)) - a STRUCTURALLY VALID request Phoenix MCP cannot
                                        dispatch (positional/array params). A caller
                                        must error a real request but STAY SILENT for
@@ -657,8 +681,10 @@ def _classify_jsonrpc_message(body: dict) -> tuple[str, Any]:
                                        JSON-RPC error with the message's own id.
     """
     method = body.get("method")
-    # A response/notification object carries result/error and no method: the MCP
-    # transport says accept these (no reply), rather than answering "method not found".
+    # A response object carries result/error and no method. The legacy transport
+    # accepted these without a reply; post() rejects them when a modern protocol
+    # signal is present because modern clients may only POST requests or
+    # notifications.
     if method is None and ("result" in body or "error" in body):
         return "accepted", None
     if not isinstance(method, str) or not method:
@@ -7680,13 +7706,14 @@ async def _dispatch_mcp(
     data: PhoenixData,
     client_ip: str,
     base_url: str,
+    request_id: str | None = None,
 ) -> tuple[dict | None, str, str, str]:
     """Dispatch one MCP method call.
 
     Returns (response_msg, log_method, log_resource, outcome).
     response_msg is None for notifications that require no response.
     """
-    request_id = generate_request_id()
+    request_id = request_id or generate_request_id()
 
     if method == "server/discover":
         # The stateless-era replacement for initialize: identity, versions and
@@ -7928,6 +7955,9 @@ async def _handle_streamable_batch(
     Returns 202 when all items are notifications; 200 with a results array otherwise.
     """
     if not items:
+        _audit_mcp_transport(
+            data, token, request_id, client_ip, body=items, resource="mcp:batch"
+        )
         return web.Response(
             status=200,
             content_type="application/json",
@@ -7944,6 +7974,9 @@ async def _handle_streamable_batch(
     # run up to MAX_BATCH_ITEMS side-effecting tools concurrently and interleave
     # writes; order is preserved and one item's failure stays isolated.
     if len(items) > MAX_BATCH_ITEMS:
+        _audit_mcp_transport(
+            data, token, request_id, client_ip, body=items, resource="mcp:batch"
+        )
         return web.Response(
             status=400,
             content_type="application/json",
@@ -7952,7 +7985,9 @@ async def _handle_streamable_batch(
         )
 
     responses = await _dispatch_streamable_batch(
-        items, token, hass, data, client_ip, base_url=base_url)
+        items, token, hass, data, client_ip, base_url=base_url,
+        request_id=request_id,
+    )
 
     if not responses:
         return web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id})
@@ -7996,6 +8031,7 @@ async def _dispatch_streamable_batch(
     client_ip: str,
     *,
     base_url: str,
+    request_id: str | None = None,
 ) -> list[dict]:
     """Dispatch each batch item in order, returning only the entries that reply.
 
@@ -8007,14 +8043,26 @@ async def _dispatch_streamable_batch(
 
     async def _dispatch_one(item: Any) -> dict | None:
         if not isinstance(item, dict) or item.get("jsonrpc") != "2.0":
+            _audit_mcp_transport(
+                data, token, request_id or generate_request_id(), client_ip,
+                body=item, resource="mcp:batch",
+            )
             msg_id = _sanitize_jsonrpc_id(item.get("id")) if isinstance(item, dict) else None
             return _jsonrpc_error(msg_id, -32600, "Invalid Request.")
         msg_id = _sanitize_jsonrpc_id(item.get("id"))
         kind, payload = _classify_jsonrpc_message(item)
         is_notification = "id" not in item
         if kind == "accepted":
+            _audit_mcp_transport(
+                data, token, request_id or generate_request_id(), client_ip,
+                body=item, outcome="allowed", resource="mcp:response",
+            )
             return None  # response/notification object: no reply entry
         if kind in ("error", "unsupported"):
+            _audit_mcp_transport(
+                data, token, request_id or generate_request_id(), client_ip,
+                body=item, resource="mcp:batch",
+            )
             # A structurally valid but undispatchable item (positional params) with
             # no id is a valid notification: no entry. A malformed item is an
             # Invalid Request (id null) and still gets an error entry.
@@ -8030,6 +8078,7 @@ async def _dispatch_streamable_batch(
             response_msg, _, _, _ = await _dispatch_mcp(
                 method, msg_id, params, token, hass, data, client_ip,
                 base_url=base_url,
+                request_id=request_id,
             )
         finally:
             if bus is not None:
@@ -8060,11 +8109,13 @@ async def _dispatch_mcp_result(
     client_ip: str,
     *,
     base_url: str,
+    request_id: str | None = None,
 ) -> dict | None:
     """_dispatch_mcp reduced to just the response message, for the SSE writer."""
     response_msg, _method, _resource, _outcome = await _dispatch_mcp(
         method, msg_id, params, token, hass, data, client_ip,
         base_url=base_url,
+        request_id=request_id,
     )
     return response_msg
 
@@ -8079,10 +8130,12 @@ async def _dispatch_modern_mcp_result(
     client_ip: str,
     *,
     base_url: str,
+    request_id: str | None = None,
 ) -> dict | None:
     """Dispatch and apply the 2026-07-28 wire shape for an SSE response."""
     response_msg = await _dispatch_mcp_result(
-        method, msg_id, params, token, hass, data, client_ip, base_url=base_url
+        method, msg_id, params, token, hass, data, client_ip,
+        base_url=base_url, request_id=request_id,
     )
     return _modernize_response(response_msg, method)
 
@@ -8411,9 +8464,24 @@ class PhoenixMcpView(PhoenixView):
             return result
         token, rl_result = result
 
+        def audited_transport_response(
+            response: web.Response,
+            *,
+            body: Any = None,
+            outcome: Outcome = "invalid_request",
+            resource: str = "/api/phoenix-mcp",
+        ) -> web.Response:
+            _audit_mcp_transport(
+                data, token, request_id, client_ip,
+                body=body, outcome=outcome, resource=resource,
+            )
+            return response
+
         from .const import MAX_REQUEST_BODY_BYTES as _MAX_BODY
         if request.content_length is not None and request.content_length > _MAX_BODY:
-            return _error("request_too_large", "Request body too large.", 413, request_id)
+            return audited_transport_response(
+                _error("request_too_large", "Request body too large.", 413, request_id)
+            )
         # aiohttp's StreamReader.read(n) is a SHORT read: it returns as soon as
         # the buffer has ANY data, up to n bytes, not once n bytes have
         # arrived. A single read(_MAX_BODY + 1) call could therefore silently
@@ -8430,20 +8498,24 @@ class PhoenixMcpView(PhoenixView):
                 chunks.append(chunk)
                 total += len(chunk)
                 if total > _MAX_BODY:
-                    return _error("request_too_large", "Request body too large.", 413, request_id)
+                    return audited_transport_response(
+                        _error("request_too_large", "Request body too large.", 413, request_id)
+                    )
                 at_eof = getattr(request.content, "at_eof", None)
                 if callable(at_eof) and at_eof():
                     break
         except Exception:
-            return _error("invalid_request", "Failed to read request body.", 400, request_id)
+            return audited_transport_response(
+                _error("invalid_request", "Failed to read request body.", 400, request_id)
+            )
         body_bytes = b"".join(chunks)
         if not body_bytes:
-            return web.Response(
+            return audited_transport_response(web.Response(
                 status=200,
                 content_type="application/json",
                 text=json.dumps(_jsonrpc_error(None, -32700, "Parse error.")),
                 headers={"X-Phoenix-Request-ID": request_id},
-            )
+            ))
         try:
             parsed = json.loads(body_bytes, parse_constant=_reject_non_finite)
         except ValueError:  # JSONDecodeError, or non-finite rejected above
@@ -8451,18 +8523,19 @@ class PhoenixMcpView(PhoenixView):
                 "MCP POST: invalid JSON body (%d bytes read, Content-Length %s) rid=%s",
                 len(body_bytes), request.content_length, request_id,
             )
-            return web.Response(
+            return audited_transport_response(web.Response(
                 status=200,
                 content_type="application/json",
                 text=json.dumps(_jsonrpc_error(None, -32700, "Parse error.")),
                 headers={"X-Phoenix-Request-ID": request_id},
-            )
+            ))
 
         # Response framing, not a session: an SSE-capable client gets the SAME
         # single JSON-RPC response, delivered as one `message` event, with
         # keepalive frames while the work runs. Per the Streamable HTTP spec
-        # clients advertise both types, so this is the normal path for real MCP
-        # clients; a client asking only for JSON keeps byte-identical behavior.
+        # conforming clients for the supported revisions advertise both types,
+        # so this is their normal path; a custom JSON-only caller keeps
+        # byte-identical behavior.
         wants_sse = "text/event-stream" in request.headers.get("Accept", "")
         base_url = str(request.url.origin())
         rl_headers = _rate_limit_headers(token, rl_result)
@@ -8479,29 +8552,33 @@ class PhoenixMcpView(PhoenixView):
                     header_version == _MCP_MODERN_VERSION
                     or carries_modern_meta
                 ):
-                    return _protocol_error_response(
+                    return audited_transport_response(_protocol_error_response(
                         None,
                         -32600,
                         "Invalid Request: JSON-RPC batches are not supported by this protocol version.",
                         request_id,
-                    )
+                    ), body=parsed, resource="mcp:batch")
                 if any(
                     isinstance(item, dict) and item.get("method") == "initialize"
                     for item in parsed
                 ):
-                    return _protocol_error_response(
+                    return audited_transport_response(_protocol_error_response(
                         None,
                         -32600,
                         "Invalid Request: initialize must not be sent in a batch.",
                         request_id,
-                    )
+                    ), body=parsed, resource="mcp:batch")
                 session = _legacy_session(data, request, token)
                 if session is None:
-                    return _legacy_session_error_response(request, None, request_id)
-                if not session.get("initialized"):
-                    return _protocol_error_response(
-                        None, -32000, "Legacy MCP initialization is not complete.", request_id
+                    return audited_transport_response(
+                        _legacy_session_error_response(request, None, request_id),
+                        body=parsed,
+                        resource="mcp:batch",
                     )
+                if not session.get("initialized"):
+                    return audited_transport_response(_protocol_error_response(
+                        None, -32000, "Legacy MCP initialization is not complete.", request_id
+                    ), body=parsed, resource="mcp:batch")
             # A batch is ONE HTTP request carrying up to MAX_BATCH_ITEMS calls,
             # and the auth check above charged it as one, so a token on the
             # default 60/min could issue 3,000 tool calls a minute by batching.
@@ -8537,27 +8614,29 @@ class PhoenixMcpView(PhoenixView):
                 return cast(web.Response, await _mcp_sse_response(
                     request, hass, request_id, rl_headers, bus,
                     _dispatch_streamable_batch(
-                        parsed, token, hass, data, client_ip, base_url=base_url),
+                        parsed, token, hass, data, client_ip, base_url=base_url,
+                        request_id=request_id,
+                    ),
                     cancel_on_disconnect=False,
                 ))
             return await _handle_streamable_batch(parsed, token, batch_rl, hass, data, request_id, client_ip, base_url=base_url)
 
         if not isinstance(parsed, dict):
-            return web.Response(
+            return audited_transport_response(web.Response(
                 status=200,
                 content_type="application/json",
                 text=json.dumps(_jsonrpc_error(None, -32600, "Invalid Request.")),
                 headers={"X-Phoenix-Request-ID": request_id},
-            )
+            ), body=parsed)
 
         body = parsed
         if body.get("jsonrpc") != "2.0":
-            return web.Response(
+            return audited_transport_response(web.Response(
                 status=200,
                 content_type="application/json",
                 text=json.dumps(_jsonrpc_error(_sanitize_jsonrpc_id(body.get("id")), -32600, "Invalid Request.")),
                 headers={"X-Phoenix-Request-ID": request_id},
-            )
+            ), body=body)
 
         msg_id = _sanitize_jsonrpc_id(body.get("id"))
         # A JSON-RPC notification is a VALID request that omits `id`; it must
@@ -8569,20 +8648,35 @@ class PhoenixMcpView(PhoenixView):
         kind, payload = _classify_jsonrpc_message(body)
         is_notification = "id" not in body
         if kind == "accepted":
-            return web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id})
+            if data.enforce_mcp_lifecycle and _is_modern_request(body, request):
+                return audited_transport_response(_protocol_error_response(
+                    msg_id,
+                    -32600,
+                    "Invalid Request: clients must not send JSON-RPC responses for this protocol version.",
+                    request_id,
+                ), body=body)
+            return audited_transport_response(
+                web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id}),
+                body=body,
+                outcome="allowed",
+                resource="mcp:response",
+            )
         if kind in ("error", "unsupported"):
             # A structurally valid but undispatchable request (positional params)
             # is still a valid notification when it has no id, so it gets no reply;
             # a malformed envelope always gets an error (id null for a no-id body).
             if kind == "unsupported" and is_notification:
-                return web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id})
+                return audited_transport_response(
+                    web.Response(status=202, headers={"X-Phoenix-Request-ID": request_id}),
+                    body=body,
+                )
             code, message = payload
-            return web.Response(
+            return audited_transport_response(web.Response(
                 status=200,
                 content_type="application/json",
                 text=json.dumps(_jsonrpc_error(msg_id, code, message)),
                 headers={"X-Phoenix-Request-ID": request_id},
-            )
+            ), body=body)
         method, params = payload
 
         modern = False
@@ -8592,37 +8686,40 @@ class PhoenixMcpView(PhoenixView):
             if modern:
                 validation_error = _validate_modern_request(body, request, request_id)
                 if validation_error is not None:
-                    return validation_error
+                    return audited_transport_response(validation_error, body=body)
                 known_methods = _MCP_MODERN_METHODS
             else:
                 known_methods = _MCP_LEGACY_METHODS
                 if method == "initialize":
                     if request.headers.get("Mcp-Session-Id"):
-                        return _protocol_error_response(
+                        return audited_transport_response(_protocol_error_response(
                             msg_id,
                             -32600,
                             "Invalid Request: initialize must start a new session.",
                             request_id,
-                        )
+                        ), body=body)
                     invalid_initialize = _validate_legacy_initialize(params)
                     if invalid_initialize is not None:
-                        return _protocol_error_response(
+                        return audited_transport_response(_protocol_error_response(
                             msg_id, *invalid_initialize, request_id
-                        )
+                        ), body=body)
                     legacy_session_id = _open_legacy_session(data, token)
                 else:
                     session = _legacy_session(data, request, token)
                     if session is None:
-                        return _legacy_session_error_response(request, msg_id, request_id)
+                        return audited_transport_response(
+                            _legacy_session_error_response(request, msg_id, request_id),
+                            body=body,
+                        )
                     if method in ("notifications/initialized", "initialized"):
                         session["initialized"] = True
                     elif method != "ping" and not session.get("initialized"):
-                        return _protocol_error_response(
+                        return audited_transport_response(_protocol_error_response(
                             msg_id,
                             -32000,
                             "Legacy MCP initialization is not complete.",
                             request_id,
-                        )
+                        ), body=body)
         else:
             known_methods = _MCP_METHODS
 
@@ -8637,7 +8734,7 @@ class PhoenixMcpView(PhoenixView):
                 _log(
                     data,
                     token,
-                    request_id=generate_request_id(),
+                    request_id=request_id,
                     method=method,
                     resource="/api/phoenix-mcp",
                     outcome="not_implemented",
@@ -8648,6 +8745,7 @@ class PhoenixMcpView(PhoenixView):
                 response_msg, _m, _r, _o = await _dispatch_mcp(
                     method, msg_id, params, token, hass, data, client_ip,
                     base_url=base_url,
+                    request_id=request_id,
                 )
             if modern:
                 response_msg = _modernize_response(response_msg, method)
@@ -8670,11 +8768,13 @@ class PhoenixMcpView(PhoenixView):
                 _dispatch_modern_mcp_result(
                     method, msg_id, params, token, hass, data, client_ip,
                     base_url=base_url,
+                    request_id=request_id,
                 )
                 if modern
                 else _dispatch_mcp_result(
                     method, msg_id, params, token, hass, data, client_ip,
                     base_url=base_url,
+                    request_id=request_id,
                 )
             )
             return cast(web.Response, await _mcp_sse_response(
@@ -8686,6 +8786,7 @@ class PhoenixMcpView(PhoenixView):
         response_msg, _log_method, _log_resource, _outcome = await _dispatch_mcp(
             method, msg_id, params, token, hass, data, client_ip,
             base_url=base_url,
+            request_id=request_id,
         )
         if modern:
             response_msg = _modernize_response(response_msg, method)

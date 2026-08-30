@@ -929,12 +929,11 @@ def parse_relative_time(value: str) -> datetime:
 
 
 def _selector_list(value: object) -> list[str] | None:
-    """A list-valued intent selector, coerced. None means "not provided"."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple)):
-        cleaned = [v for v in value if isinstance(v, str)]
-        return cleaned or None
+    """Validate a list-valued intent selector. None means "not provided"."""
+    if isinstance(value, list) and value and all(
+        isinstance(item, str) and item for item in value
+    ):
+        return value
     return None
 
 
