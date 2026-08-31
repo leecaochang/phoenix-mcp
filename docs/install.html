@@ -25,12 +25,12 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Getting started / Installation</p>
           <h1>Installation</h1>
-          <p class="lede">Phoenix MCP runs entirely inside Home Assistant. There is no extra process and no cloud dependency, so installation is the same as any other custom integration: add the files, restart, add the integration.</p>
+          <p class="lede">Install Phoenix MCP through HACS, restart Home Assistant, then add the integration. It runs inside Home Assistant and needs no separate service.</p>
         </header>
 
         <h2>Requirements</h2>
         <dl class="kv">
-          <div class="kv-row"><dt>Home Assistant</dt><dd>2025.2.0 or later. HACS reads this minimum from <code>hacs.json</code>; it is not enforced at runtime or pinned in the integration manifest, so an older install will accept the files and then fail to start. The test suite runs against current Home Assistant (2026.x at the time of writing), which is the version continuously verified. The 2025.2 floor is the oldest release carrying every API the base integration and the dashboard tools need, and it is not re-tested each release. Some features need newer: the Assist tool provider 2025.2, the in-context profile control 2025.5, AI Task 2025.7, and semantic moments 2026.7. Each of those is disabled in the panel on a version that cannot run it.</dd></div>
+          <div class="kv-row"><dt>Home Assistant</dt><dd><strong>2025.2.0 or later.</strong> Optional feature minimums: in-context profile control 2025.5, AI Task 2025.7, and semantic moments 2026.7. The panel disables a feature when your version cannot run it.</dd></div>
           <div class="kv-row"><dt>Instances</dt><dd>One Phoenix MCP instance per Home Assistant. The config flow will not let you add a second.</dd></div>
           <div class="kv-row"><dt>Dependencies</dt><dd>None beyond what Home Assistant already ships. No Python packages to install.</dd></div>
         </dl>
@@ -57,6 +57,9 @@
           </div></div>
         </div>
 
+        <details class="advanced">
+          <summary>Install without HACS</summary>
+          <div class="advanced-content">
         <h2>Install manually</h2>
         <p>If you prefer not to use HACS, copy the integration into your config directory.</p>
         <div class="steps">
@@ -70,6 +73,9 @@
             <p>Restart so Home Assistant discovers the new integration.</p>
           </div></div>
         </div>
+
+          </div>
+        </details>
 
         <h2>Set up the integration</h2>
         <div class="steps">
@@ -95,13 +101,7 @@
         <p>The panel currently supports English, Spanish, French, German, Dutch, Polish, Russian, Simplified Chinese, Traditional Chinese, Korean, and Japanese. It follows your Home Assistant profile language by default and falls back to English when that language is unavailable.</p>
         <p>To change it manually, open <strong>Phoenix MCP &gt; Settings &gt; Language</strong> and choose a language. Select <strong>Auto</strong> to follow your Home Assistant profile language again.</p>
 
-        <div class="callout note">
-          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
-          <div class="callout-body">
-            <p class="callout-title">Everything lives in the panel</p>
-            <p>Phoenix MCP has no YAML configuration and no options flow. Once the integration is added, the sidebar panel is the only place you manage it.</p>
-          </div>
-        </div>
+        <p>Phoenix MCP has no YAML configuration or options flow. Manage it from the sidebar panel after setup.</p>
 
         <div class="callout tip">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.9 1 1 1.6h5c.1-.6.5-1.2 1-1.6A6 6 0 0 0 12 3z"/></svg>

@@ -25,7 +25,7 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Tools</p>
           <h1>Tools reference</h1>
-          <p class="lede">Phoenix MCP implements all 23 native Home Assistant MCP tools with identical names and responses, then adds 137 of its own, 160 in all. Entity reads and native controls are scoped to the token's permission tree; the ones below note the capability they additionally require. Automation, script, and other authoring/system tools are governed by capability gates instead of the entity tree (see below).</p>
+          <p class="lede">Search all 160 tools by name, task, or required capability. Phoenix includes Home Assistant's 23 native MCP tools plus 137 scoped tools for configuration, diagnostics, and control.</p>
         </header>
 
         <div class="tool-toolbar" role="search">
@@ -792,12 +792,7 @@
 
         <div class="callout note">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
-          <div class="callout-body"><p class="callout-title">Helpers, dashboards, and backups run over a vetted command set</p><p>These tools hold no long-lived token and open no socket. Phoenix dispatches a fixed set of Home Assistant WebSocket commands in-process and validates every payload against its command schema. The set covers helper and dashboard management plus backup listing and creation. Other commands are refused, and backup restore is not exposed.</p></div>
-        </div>
-
-        <div class="callout warn">
-          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M16 4.5 21 3l-1.5 5"/></svg>
-          <div class="callout-body"><p class="callout-title">Reconnect when the tool list changes</p><p>A token sees only the tools its capabilities unlock. Reconnect the MCP client after moving a capability between <code>deny</code> and <code>allow</code>/<code>confirm</code>, changing write scope, or changing <code>announce_all_tools</code>. Moving between <code>allow</code> and <code>confirm</code> takes effect on the next call, although some clients cache metadata. In Claude Code, open <code>/mcp</code> and select <strong>Reconnect</strong>.</p><p>After a capability, permission, or settings preset changes, Phoenix adds a one-time stale-tool-list notice to the next response. The notice directs the agent to <code>get_capability_summary</code> and asks for a reconnect. Per-call enforcement always uses current settings, even before reconnection.</p></div>
+          <div class="callout-body"><p class="callout-title">Runtime and reconnect rules</p><ul><li><strong>Vetted commands:</strong> helper, dashboard, and backup tools dispatch a fixed, validated set of Home Assistant commands in-process. They hold no long-lived token, open no socket, and never expose backup restore.</li><li><strong>Reconnect after the visible tool set changes:</strong> reconnect after changing a capability between <code>deny</code> and <code>allow</code>/<code>confirm</code>, write scope, or <code>announce_all_tools</code>. Changing only <code>allow</code> to <code>confirm</code>, or back, takes effect on the next call.</li><li><strong>Enforcement is immediate:</strong> Phoenix always uses current settings and sends a one-time stale-tool-list notice after a capability, permission, or preset change.</li></ul></div>
         </div>
 
         <nav class="pager" id="pager" aria-label="Page navigation"></nav>

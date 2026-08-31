@@ -103,6 +103,7 @@ export interface AgentTab {
   href: string;
   intro?: string;
   blocks: AgentBlock[];
+  showSkillInstall?: boolean;
 }
 
 // Per-agent connection instructions, default first (Claude Code). Verified
@@ -121,6 +122,23 @@ export function buildAgentTabs(url: string, token: string, tokenName: string): A
       blocks: [
         { hint: t("wizard.agentClaudeHint"), code: buildClaudeCommand(url, token, serverName) },
       ],
+    },
+    {
+      key: "claude-web",
+      label: t("wizard.agentClaudeWebLabel"),
+      href: "https://claude.com/docs/connectors/custom/remote-mcp",
+      intro: t("wizard.agentClaudeWebIntro"),
+      blocks: [
+        {
+          title: t("wizard.agentClaudeWebSetupTitle"),
+          hint: t("wizard.agentClaudeWebSetupHint"),
+          fields: [
+            { label: t("wizard.codexHeaderKeyLabel"), value: "Authorization" },
+            { label: t("wizard.codexHeaderValueLabel"), value: buildBearerValue(token) },
+          ],
+        },
+      ],
+      showSkillInstall: false,
     },
     {
       key: "gemini",

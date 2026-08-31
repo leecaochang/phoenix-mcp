@@ -25,12 +25,19 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Reference / Operations</p>
           <h1>Operations</h1>
-          <p class="lede">What Phoenix MCP exposes once it is running: per-token rate limits and sensors, global settings, the audit log, the events it fires, and its MCP routes. The admin API has its own <a href="admin-api.html">reference</a>.</p>
+          <p class="lede">Monitor and maintain Phoenix MCP with rate limits, sensors, audit logs, configuration history, and Home Assistant events. See the separate <a href="admin-api.html">Admin API reference</a> for HTTP automation.</p>
         </header>
 
         <h2 id="rate-limiting">Rate limiting</h2>
-        <p>Every token has a sliding-window rate limit covering its MCP network requests. The in-process AI surfaces (Agent Chat, the Assist tool provider, the voice agent, and AI Task) are operator-initiated and are deliberately not rate limited; their loops are bounded by the steps-before-check-in limit instead, and their tool calls are still audited and counted. The defaults are 60 requests per minute with a burst of 10 per second, both configurable per token. Setting <code>rate_limit_requests</code> to 0 disables rate limiting for that token. Pass-through tokens get the same default limits and are rate limited like any other token; the create dialog hides the inputs while pass-through is selected, so adjust them afterward on the token's detail page. A JSON-RPC batch counts each call in it, not the one HTTP request that carried them, so a fifty-call batch spends fifty of the minute's budget. A batch that would take the token over its limit is refused whole, with a 429 and a <code>Retry-After</code>, before any of its calls run; nothing is half-applied.</p>
-        <p>A rate-limited request returns HTTP 429 with a <code>Retry-After</code> header. Successful responses carry the current limit state.</p>
+        <p>Each token limits MCP network traffic with a sliding one-minute window.</p>
+        <dl class="kv">
+          <div class="kv-row"><dt>Default</dt><dd>60 requests per minute, with a burst of 10 per second.</dd></div>
+          <div class="kv-row"><dt>Disable</dt><dd>Set <code>rate_limit_requests</code> to <code>0</code> for that token.</dd></div>
+          <div class="kv-row"><dt>Pass-through</dt><dd>Uses the same limits. Edit them on the token detail page after creation.</dd></div>
+          <div class="kv-row"><dt>JSON-RPC batch</dt><dd>Each call spends one request. Phoenix rejects the full batch with HTTP 429 before anything runs when it would exceed the limit.</dd></div>
+          <div class="kv-row"><dt>In-process AI</dt><dd>Agent Chat, Assist, Voice Agent, and AI Task use the steps-before-check-in limit instead. Their tool calls remain audited and counted.</dd></div>
+        </dl>
+        <p>A blocked request returns HTTP 429 and <code>Retry-After</code>. Successful responses include the current limit state.</p>
         <pre class="code" data-lang="http" data-label="Response headers"><code>X-RateLimit-Limit: 60
 X-RateLimit-Remaining: 47
 X-RateLimit-Reset: 1712345678</code></pre>
@@ -93,6 +100,9 @@ X-RateLimit-Reset: 1712345678</code></pre>
         <p><code>get_logbook</code> reads Home Assistant's narrative event history through MCP and returns events chronologically. A home-wide query may cover at most 7 days. Supplying accessible entity IDs, device IDs, or one causal context ID raises that ceiling to 31 days; text search is post-retrieval and does not raise it. Entity and device filters may be combined, while a context filter must stand alone.</p>
         <p>Read <code>total</code> and <code>truncated</code> before treating the reply as complete. <code>total</code> is the number left after permission filtering, response redaction, and optional search but before <code>limit</code>; when truncated, reduce the time window rather than looking for a cursor. Home Assistant's underlying logbook command returns one unpaginated database result, so Phoenix deliberately does not offer response-only continuation that would repeat the expensive query and imply a stable snapshot.</p>
 
+        <details class="advanced">
+          <summary>Configure advanced token behavior</summary>
+          <div class="advanced-content">
         <h2 id="advanced-token-options">Advanced token options</h2>
         <p>Three per-token options sit outside the capability matrix, in the panel's <strong>Tool Announcement</strong> card on the token detail page (and settable through <a href="admin-api.html#tokens">PATCH</a>).</p>
         <dl class="kv">
@@ -100,6 +110,9 @@ X-RateLimit-Reset: 1712345678</code></pre>
           <div class="kv-row"><dt>Inline approval wait</dt><dd>Off by default. A confirm-gated call returns <code>pending_approval</code> as soon as the approval is queued, so a run of writes reaches the Approvals queue in seconds and you clear them individually or as a batch; the agent asks for the outcome when it needs one. Choosing a duration instead makes the call hold the response open until you decide, which suits a client that never asks, at the cost of the next approval not being created until the previous call stops waiting. <strong>This affects external MCP clients only.</strong> Agent Chat, the Assist bridge, the voice agent and AI Task ignore it: they queue immediately and wait their own way, so testing the setting in Agent Chat will show no difference.</dd></div>
           <div class="kv-row"><dt>Limit to Assist-exposed entities</dt><dd>Pass-through tokens only, off by default. A pass-through token normally sees every non-Phoenix entity; enable this to additionally narrow it to the entities exposed to Home Assistant Assist. It is ignored for scoped tokens, which scope by the permission tree, so the toggle is disabled unless pass-through mode is on.</dd></div>
         </dl>
+
+          </div>
+        </details>
 
         <h2 id="audit-log">Audit log</h2>
         <p>Phoenix MCP keeps a circular buffer of requests, viewable in the panel's audit tab or through the admin API. Each entry records a request ID (matching <code>X-Phoenix-Request-ID</code>), timestamp, token ID and name, method, resource path, outcome, and source. After token authentication, pre-dispatch protocol failures are recorded as <code>invalid_request</code> when denied-request logging is enabled; authentication failures have no token audit entry. Every entry produced by one legacy JSON-RPC batch shares the batch's parent HTTP request ID. In the panel, Source shows the caller's IP address for network requests. Requests from Phoenix MCP's own surfaces appear as Agent Chat, Assist Tool Provider, Voice Agent, or AI Task. The admin API continues to expose the underlying value in <code>client_ip</code>.</p>
@@ -139,6 +152,9 @@ X-RateLimit-Reset: 1712345678</code></pre>
         <h2 id="configuration-history">Configuration history</h2>
         <p>Every agent-made create, edit, or delete of an automation, script, scene, helper, blueprint, dashboard layout, entity-registry metadata, ESPHome device YAML, the raw <code>configuration.yaml</code>, or a scoped file (under <code>www/</code>, <code>themes/</code>, <code>custom_templates/</code>) is recorded as a before/after snapshot, viewable in the panel's Changes tab or through the <a href="admin-api.html#versions">admin API</a> (which also documents the few snapshots that deliberately refuse to restore). The most recent twenty versions per resource are kept, oldest evicted first, so history stays bounded without a sweep. A file or YAML snapshot larger than 100&nbsp;KB is kept as a metadata-only marker and cannot be restored inline, so a large file cannot bloat storage. Snapshots are stored in <code>.storage/phoenix_mcp_versions</code> and survive restarts; the file is included in HA backups like the rest of <code>.storage</code>. The store is admin-only; restoring a version re-applies it and records a new <code>rollback</code> entry, so the history stays append-only.</p>
 
+        <details class="advanced">
+          <summary>Automate with Home Assistant events</summary>
+          <div class="advanced-content">
         <h2>HA events</h2>
         <p>Token-lifecycle event data includes <code>token_id</code>, <code>token_name</code>, and <code>timestamp</code>. Revocation and rotation events also include the HA user ID of the admin who acted. <code>phoenix_mcp_config_changed</code> instead carries <code>resource_type</code>, <code>resource_id</code>, and <code>action</code>.</p>
         <div class="table-wrap">
@@ -156,6 +172,12 @@ X-RateLimit-Reset: 1712345678</code></pre>
           </table>
         </div>
 
+          </div>
+        </details>
+
+        <details class="advanced">
+          <summary>Inspect HTTP routes and protocol versions</summary>
+          <div class="advanced-content">
         <h2 id="route-reference">Route reference</h2>
         <h3>Admin API</h3>
         <p>The admin routes (tokens, permissions, approvals, MESA profiles, entity hints, settings, and the rest) now have their own <a href="admin-api.html">Admin API reference</a>, complete with payload schemas. They require a Home Assistant session and the admin role.</p>
@@ -180,6 +202,9 @@ GET        /api/phoenix-mcp/skill                          Agent skill guide</co
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.9 1 1 1.6h5c.1-.6.5-1.2 1-1.6A6 6 0 0 0 12 3z"/></svg>
           <div class="callout-body"><p class="callout-title">There is also an unauthenticated skill route</p><p><code>GET /api/phoenix-mcp/skill</code> serves the agent skill guide with no token. It is generic and contains no token or entity data. See <a href="connect.html#agent-skill">the agent skill</a>.</p></div>
         </div>
+
+          </div>
+        </details>
 
         <nav class="pager" id="pager" aria-label="Page navigation"></nav>
       </div>

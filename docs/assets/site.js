@@ -9,8 +9,8 @@
     { id: "index",        file: "index.html",        title: "Overview",                 group: "Getting started" },
     { id: "install",      file: "install.html",      title: "Installation",             group: "Getting started" },
     { id: "quickstart",   file: "quickstart.html",   title: "Quick start",              group: "Getting started" },
+    { id: "agentcli",     file: "agentcli.html",     title: "Agent Chat (in-panel)",    group: "Getting started" },
     { id: "connect",      file: "connect.html",      title: "Connect an AI client",     group: "Getting started" },
-    { id: "agentcli",     file: "agentcli.html",     title: "Agent Chat (in-panel)", group: "Getting started" },
     { id: "permissions",  file: "permissions.html",  title: "Permissions",              group: "Concepts" },
     { id: "capabilities", file: "capabilities.html", title: "Capabilities & pass-through", group: "Concepts" },
     { id: "mesa",         file: "mesa.html",         title: "MESA",                     group: "Concepts" },
@@ -28,6 +28,7 @@
     auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="none"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>',
     menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
     github: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.5A10.5 10.5 0 0 0 8.7 22c.52.1.71-.23.71-.5v-1.9c-2.9.63-3.52-1.24-3.52-1.24-.48-1.2-1.16-1.53-1.16-1.53-.95-.65.07-.64.07-.64 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.1-.68.36-1.14.66-1.4-2.32-.26-4.76-1.16-4.76-5.16 0-1.14.4-2.07 1.07-2.8-.1-.27-.46-1.33.1-2.78 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.45.21 2.51.11 2.78.67.73 1.07 1.66 1.07 2.8 0 4.01-2.45 4.9-4.78 5.15.38.32.71.95.71 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
@@ -74,12 +75,147 @@
       '</a>' +
       '<span class="header-spacer"></span>' +
       '<div class="header-actions">' +
+        '<button class="search-trigger" id="search-trigger" type="button">' + SVG.search + '<span>Search docs</span><kbd>/</kbd></button>' +
         '<a class="header-link" href="' + REPO + '" target="_blank" rel="noopener">' + SVG.github + '<span class="hide-sm">GitHub</span></a>' +
         '<button class="icon-btn" id="theme-btn" aria-label="Change theme"></button>' +
       '</div>';
     paintThemeBtn();
     document.getElementById("theme-btn").addEventListener("click", cycleTheme);
     document.getElementById("menu-btn").addEventListener("click", toggleNav);
+  }
+
+  /* ---- site-wide search ---- */
+  var searchIndex = [];
+  var searchLoading = null;
+
+  function buildSearchDialog() {
+    var dialog = document.createElement("dialog");
+    dialog.className = "search-dialog";
+    dialog.id = "search-dialog";
+    dialog.setAttribute("aria-labelledby", "search-title");
+    dialog.innerHTML =
+      '<div class="search-panel">' +
+        '<div class="search-field">' + SVG.search +
+          '<label class="sr-only" for="docs-search-input" id="search-title">Search Phoenix MCP documentation</label>' +
+          '<input id="docs-search-input" type="search" placeholder="Search setup, permissions, tools..." autocomplete="off" />' +
+          '<button class="search-close" type="button" aria-label="Close search">' + SVG.close + '</button>' +
+        '</div>' +
+        '<p class="search-status" id="search-status" aria-live="polite">Type to search every guide and reference page.</p>' +
+        '<div class="search-results" id="search-results"></div>' +
+        '<div class="search-help"><span><kbd>Up</kbd><kbd>Down</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>' +
+      '</div>';
+    document.body.appendChild(dialog);
+
+    var trigger = document.getElementById("search-trigger");
+    var input = dialog.querySelector("input");
+    var results = dialog.querySelector(".search-results");
+    var close = dialog.querySelector(".search-close");
+
+    function openSearch() {
+      if (!dialog.open) dialog.showModal();
+      input.focus();
+      ensureSearchIndex();
+    }
+
+    trigger.addEventListener("click", openSearch);
+    close.addEventListener("click", function () { dialog.close(); });
+    dialog.addEventListener("close", function () { trigger.focus(); });
+    dialog.addEventListener("click", function (e) {
+      if (e.target === dialog) dialog.close();
+    });
+    input.addEventListener("input", function () { renderSearch(input.value); });
+    dialog.addEventListener("keydown", function (e) {
+      var links = Array.prototype.slice.call(results.querySelectorAll("a"));
+      if (!links.length || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+      e.preventDefault();
+      var current = links.indexOf(document.activeElement);
+      var next = e.key === "ArrowDown" ? current + 1 : current - 1;
+      if (next < 0) next = links.length - 1;
+      if (next >= links.length) next = 0;
+      links[next].focus();
+    });
+    document.addEventListener("keydown", function (e) {
+      var target = e.target;
+      var typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        openSearch();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        openSearch();
+      }
+    });
+  }
+
+  function ensureSearchIndex() {
+    if (searchLoading) return searchLoading;
+    var status = document.getElementById("search-status");
+    status.textContent = "Indexing documentation...";
+    searchLoading = Promise.all(PAGES.map(function (page) {
+      return fetch(page.file).then(function (response) {
+        if (!response.ok) throw new Error("Search index request failed");
+        return response.text();
+      }).then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var headings = Array.prototype.slice.call(doc.querySelectorAll("main h1, main h2, main h3"));
+        return headings.map(function (heading, index) {
+          var title = heading.textContent.trim();
+          var id = heading.id || (heading.tagName === "H1" ? "" : slugify(title));
+          var next = headings[index + 1];
+          var text = "";
+          var node = heading.nextElementSibling;
+          while (node && node !== next && text.length < 700) {
+            text += " " + node.textContent;
+            node = node.nextElementSibling;
+          }
+          return {
+            page: page.title,
+            title: title,
+            href: page.file + (id ? "#" + id : ""),
+            text: (title + " " + text).replace(/\s+/g, " ").trim().toLowerCase()
+          };
+        });
+      }).catch(function () {
+        return [{ page: page.group, title: page.title, href: page.file, text: (page.title + " " + page.group).toLowerCase() }];
+      });
+    })).then(function (pages) {
+      searchIndex = [].concat.apply([], pages);
+      status.textContent = "Type to search every guide and reference page.";
+      var input = document.getElementById("docs-search-input");
+      if (input && input.value) renderSearch(input.value);
+    });
+    return searchLoading;
+  }
+
+  function renderSearch(value) {
+    var query = value.trim().toLowerCase();
+    var results = document.getElementById("search-results");
+    var status = document.getElementById("search-status");
+    if (!query) {
+      results.innerHTML = "";
+      status.textContent = searchIndex.length ? "Type to search every guide and reference page." : "Indexing documentation...";
+      return;
+    }
+    var terms = query.split(/\s+/);
+    var matches = searchIndex.map(function (item) {
+      var score = 0;
+      terms.forEach(function (term) {
+        if (item.title.toLowerCase().indexOf(term) !== -1) score += 5;
+        if (item.page.toLowerCase().indexOf(term) !== -1) score += 3;
+        if (item.text.indexOf(term) !== -1) score += 1;
+      });
+      return { item: item, score: score };
+    }).filter(function (match) {
+      return match.score >= terms.length;
+    }).sort(function (a, b) {
+      return b.score - a.score || a.item.title.localeCompare(b.item.title);
+    }).slice(0, 10);
+
+    status.textContent = matches.length ? matches.length + " best matches" : "No matching documentation found.";
+    results.innerHTML = matches.map(function (match) {
+      return '<a href="' + match.item.href + '"><span class="search-result-title">' + escapeHtml(match.item.title) + '</span><span class="search-result-page">' + escapeHtml(match.item.page) + '</span></a>';
+    }).join("");
   }
 
   /* ---- sidebar ---- */
@@ -353,6 +489,53 @@
     });
   }
 
+  function setupProviderFilter() {
+    var search = document.getElementById("provider-search-input");
+    if (!search) return;
+    var cards = Array.prototype.slice.call(document.querySelectorAll(".provider-directory > .card"));
+    var noResults = document.getElementById("provider-no-results");
+    search.addEventListener("input", function () {
+      var query = search.value.trim().toLowerCase();
+      var visible = 0;
+      cards.forEach(function (card) {
+        var heading = card.querySelector("h3");
+        var providerName = heading && heading.firstChild
+          ? (heading.firstChild.nodeValue || "").toLowerCase()
+          : "";
+        var show = !query || providerName.indexOf(query) !== -1;
+        card.classList.toggle("is-hidden", !show);
+        if (show) visible++;
+      });
+      if (noResults) noResults.classList.toggle("is-hidden", visible > 0);
+    });
+  }
+
+  /* ---- advanced details ---- */
+  function setupDetails() {
+    var details = Array.prototype.slice.call(document.querySelectorAll("details.advanced"));
+    if (!details.length) return;
+    function openHashedDetail() {
+      if (!window.location.hash) return;
+      var target = document.getElementById(window.location.hash.slice(1));
+      var parent = target && target.closest("details");
+      if (parent) parent.open = true;
+    }
+    openHashedDetail();
+    window.addEventListener("hashchange", openHashedDetail);
+    if (details.length < 2) return;
+    var first = details[0];
+    var toolbar = document.createElement("div");
+    toolbar.className = "details-toolbar";
+    toolbar.innerHTML = '<span>Advanced content is collapsed by default.</span><button type="button">Expand all</button>';
+    first.parentNode.insertBefore(toolbar, first);
+    var button = toolbar.querySelector("button");
+    button.addEventListener("click", function () {
+      var open = details.some(function (item) { return !item.open; });
+      details.forEach(function (item) { item.open = open; });
+      button.textContent = open ? "Collapse all" : "Expand all";
+    });
+  }
+
   /* ---- global listeners ---- */
   document.addEventListener("click", function (e) {
     if (e.target.closest("[data-close-nav]")) closeNav();
@@ -364,6 +547,7 @@
   /* ---- boot ---- */
   function boot() {
     buildHeader();
+    buildSearchDialog();
     buildSidebar();
     buildFooter();
     buildPager();
@@ -371,6 +555,8 @@
     enhanceCode();
     setupReveal();
     setupToolFilter();
+    setupProviderFilter();
+    setupDetails();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();

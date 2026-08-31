@@ -25,18 +25,39 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Getting started / Connect an AI client</p>
           <h1>Connect an AI client</h1>
-          <p class="lede">Phoenix MCP exposes an MCP endpoint at <code>/api/phoenix-mcp</code>. The examples below use Claude Code, but any MCP-capable client connects the same way: a URL and a bearer token.</p>
+          <p class="lede">Connect an MCP client that accepts a custom bearer header. Use the Phoenix endpoint and one scoped token.</p>
         </header>
 
         <div class="callout tip">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.9 1 1 1.6h5c.1-.6.5-1.2 1-1.6A6 6 0 0 0 12 3z"/></svg>
-          <div class="callout-body"><p class="callout-title">First time? Use the guided setup</p><p>The <a href="quickstart.html">Quick start</a> walks you through creating a token, granting one device, and testing the connection in a few minutes. This page is the reference for connecting any client by hand, including per-agent commands and the agent skill.</p></div>
+          <div class="callout-body"><p class="callout-title">Choose the shortest setup for you</p><ul><li><strong>First token:</strong> follow the <a href="quickstart.html">guided quick start</a> to grant one device and test it.</li><li><strong>No external client:</strong> use <a href="agentcli.html">Agent Chat</a> inside Home Assistant with the same scope and approvals.</li></ul></div>
         </div>
 
-        <div class="callout note">
-          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
-          <div class="callout-body"><p class="callout-title">Don't want to install a client?</p><p><a href="agentcli.html">Agent Chat</a> runs the agent inside the Phoenix MCP panel using your own account from any of the 20 supported provider types, with nothing to install and the same scoping and approvals. This page is for connecting an external MCP client instead.</p></div>
+        <h2 id="claude-compatibility">Claude compatibility</h2>
+        <p><strong>Claude Code works directly.</strong> Claude's hosted custom connector also works when your organization has Anthropic's limited Request headers beta.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Claude client</th><th scope="col">Status</th><th scope="col">What to do</th></tr></thead>
+            <tbody>
+              <tr><td>Claude Code</td><td><span class="badge badge-success">Supported</span></td><td>Use the generated <code>claude mcp add</code> command. It sends the token in the <code>Authorization</code> header.</td></tr>
+              <tr><td>Claude web, Desktop remote connectors, mobile, and Cowork</td><td><span class="badge badge-neutral">Limited beta</span></td><td>An organization owner must add the connector with a required <code>Authorization</code> request header. If the dialog has no <strong>Request headers</strong> section, use Claude Code or Agent Chat.</td></tr>
+            </tbody>
+          </table>
         </div>
+        <details class="advanced">
+          <summary>What changed in Claude's connector flow</summary>
+          <div class="advanced-content">
+            <ul>
+              <li>Claude now uses one hosted remote-connector system across the web app, Desktop, mobile apps, and Cowork. Connections originate from Anthropic's cloud, so the MCP endpoint must be public.</li>
+              <li>Personal plans add connectors under <strong>Customize &gt; Connectors</strong>. Team and Enterprise owners add them for the organization before members connect.</li>
+              <li>Users can control connector access and individual tool permissions.</li>
+              <li>Request header authentication is a limited organization beta. In the two-step dialog, choose <strong>Authentication: None</strong>, add a required <code>Authorization</code> header, and enter the full value <code>Bearer phx_your_token_here</code>.</li>
+              <li>The token is shared by everyone in the organization who uses the connector. Create a dedicated least-privilege Phoenix token for this connector.</li>
+              <li>Do not put the token in the connector URL. Claude sends request-header values exactly as entered and does not add the <code>Bearer</code> prefix for you.</li>
+            </ul>
+            <p>See Anthropic's <a href="https://claude.com/docs/connectors/custom/remote-mcp" target="_blank" rel="noopener">remote connector setup</a> and <a href="https://claude.com/docs/connectors/building/authentication" target="_blank" rel="noopener">connector authentication</a> documentation.</p>
+          </div>
+        </details>
 
         <h2>The five steps</h2>
         <div class="steps">
@@ -66,7 +87,7 @@
             <pre class="code" data-lang="bash" data-label="Remote address"><code>claude mcp add --transport http phx-claude-code \
   https://your-instance.ui.nabu.casa/api/phoenix-mcp \
   --header "Authorization: Bearer phx_your_token_here"</code></pre>
-            <p>This example uses Claude Code's CLI. For Cursor, Codex, Gemini CLI, or any other MCP client, the panel's <strong>Connect</strong> step generates the ready-made command or config for that agent and links to its own MCP setup docs. Every client needs the same two things: the endpoint ending in <code>/api/phoenix-mcp</code> and an <code>Authorization: Bearer</code> header carrying your token.</p>
+            <p>This example uses Claude Code's CLI. For Cursor, Codex, Gemini CLI, or another compatible MCP client, the panel's <strong>Connect</strong> step generates the command or config and links to that client's setup guide. The client must support the endpoint ending in <code>/api/phoenix-mcp</code> and an <code>Authorization: Bearer</code> header carrying your token.</p>
           </div></div>
 
           <div class="step"><div class="step-body">
@@ -90,6 +111,9 @@
 
         </div>
 
+        <details class="advanced">
+          <summary>Install the optional agent skill</summary>
+          <div class="advanced-content">
         <h2 id="agent-skill">The agent skill</h2>
         <p>The skill is a usage guide for the connected AI. You get it two ways, and you do not have to choose; the primer always ships, the installed skill is extra.</p>
 
@@ -114,14 +138,15 @@
 
         <div class="callout note">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
-          <div class="callout-body"><p class="callout-title">The skill is advisory only</p><p>Phoenix MCP's permission tree, approval gate, and MESA remain the enforcement regardless of what any connected AI has been told. The skill changes behavior, not access.</p></div>
+          <div class="callout-body"><p class="callout-title">Skill and reconnect rules</p><ul><li><strong>The skill is advisory:</strong> permissions, approvals, and MESA enforce access even if the client ignores its guidance.</li><li><strong>Reconnect after the visible tool set changes:</strong> reconnect after changing a capability between <code>deny</code> and <code>allow</code>/<code>confirm</code>, changing write scope, or changing <code>announce_all_tools</code>. In Claude Code, open <code>/mcp</code> and select <strong>Reconnect</strong>.</li><li><strong>No reconnect for approval mode alone:</strong> changing <code>allow</code> to <code>confirm</code>, or back, takes effect on the next call. Some clients may still cache metadata.</li></ul></div>
         </div>
 
-        <div class="callout warn">
-          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M16 4.5 21 3l-1.5 5"/></svg>
-          <div class="callout-body"><p class="callout-title">Reconnect when the tool list changes</p><p>Moving a capability between <code>deny</code> and <code>allow</code>/<code>confirm</code> changes which tools your token can see, so your MCP client must reconnect to pick up the new list. Changing a token's write scope or <code>announce_all_tools</code> also changes the list. Switching a capability between <code>allow</code> and <code>confirm</code> only changes whether a call needs approval; it takes effect on the next call with no reconnect, though some clients still cache tool metadata. In Claude Code, open <code>/mcp</code> and select <strong>Reconnect</strong>.</p></div>
-        </div>
+          </div>
+        </details>
 
+        <details class="advanced">
+          <summary>Connect Home Assistant Assist or voice</summary>
+          <div class="advanced-content">
         <h2 id="assist">Use with Home Assistant Assist and voice</h2>
         <p>Besides external MCP clients and <a href="agentcli.html">Agent Chat</a>, you can put Phoenix MCP behind Home Assistant's own Assist, so a voice or chat conversation runs through one token's scope, MESA safety, approvals, and audit instead of the unscoped default assistant. There are two ways to do this; pick whichever fits. For generating data inside automations rather than driving a conversation, see <a href="#ai-task">AI Task</a> below.</p>
 
@@ -144,13 +169,15 @@
 
         <div class="callout warn">
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <div class="callout-body"><p class="callout-title">Turn off "Prefer handling commands locally"</p><p>For either option, open your assistant in <strong>Settings > Voice assistants</strong> and ensure "Prefer handling commands locally" is <strong>off</strong>. It is on by default. When this is on, Home Assistant will never reach Phoenix MCP. Making the Phoenix MCP assistant your <strong>Preferred</strong> one is the simplest way to route to it (there is no per-command picker for satellites).</p></div>
-        </div>
-        <div class="callout note">
-          <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
-          <div class="callout-body"><p class="callout-title">Confirm gates still need a panel approval</p><p>Voice has no inline Approve button, so a Confirm-gated action is reported as queued and waits for you to approve it in the Phoenix MCP panel.</p></div>
+          <div class="callout-body"><p class="callout-title">Before you use voice</p><ul><li>In <strong>Settings > Voice assistants</strong>, turn off <strong>Prefer handling commands locally</strong>. Otherwise Home Assistant will not route requests to Phoenix MCP.</li><li>Make the Phoenix MCP assistant your preferred assistant when you want satellites to use it.</li><li>Voice has no inline Approve button. Confirm-gated actions wait for approval in the Phoenix MCP panel.</li></ul></div>
         </div>
 
+          </div>
+        </details>
+
+        <details class="advanced">
+          <summary>Generate automation data with AI Task</summary>
+          <div class="advanced-content">
         <h2 id="ai-task">Generate data in automations with AI Task</h2>
         <p>Home Assistant's <strong>AI Task</strong> feature lets an automation, script, or dashboard ask an AI model to produce text or structured data on demand, through the <code>ai_task.generate_data</code> action. Phoenix MCP can be that model: it registers an <strong>Phoenix MCP AI Task</strong> entity that runs Phoenix MCP's own model on a token's scope, so a task reads only what the token can see and every tool call it makes is gated, MESA-checked, and audited like any other. Requires Home Assistant 2025.7 or later (AI Task shipped then; the panel disables this card on older versions). Like Agent Chat, the model comes from a provider account, so each task's prompt and the tool results the model sees are sent to that provider; use a local Ollama account to keep tasks fully local.</p>
         <ol>
@@ -179,6 +206,9 @@
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.4" fill="currentColor"/></svg>
           <div class="callout-body"><p class="callout-title">A confirm-gated task queues for approval</p><p>AI Task is not interactive, so if the model calls a Confirm-gated tool the call is reported as queued; you will need to approve it later in the Phoenix MCP panel. AI Task reuses an <a href="agentcli.html">Agent Chat</a> provider account for its model. Revoking or expiring the token it uses, or deleting that provider account, removes the Phoenix MCP AI Task entity and clears it as your default.</p></div>
         </div>
+
+          </div>
+        </details>
 
         <nav class="pager" id="pager" aria-label="Page navigation"></nav>
       </div>

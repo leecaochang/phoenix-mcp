@@ -26,9 +26,8 @@
       <section class="hero">
         <div class="hero-inner">
           <div class="hero-copy">
-            <span class="eyebrow reveal">Phoenix MCP</span>
             <h1 class="reveal d1">Give your AI agent the keys to <span class="amber">exactly</span> what it needs.</h1>
-            <p class="hero-lede reveal d2">Phoenix MCP is so much more than other HA MCP servers. You can create multiple tokens, each scoped to just the entities and capabilities you allow. Every action can be manually reviewed prior to approval, and rolled back if necessary. External clients are optional - you can just use the built-in Agent Chat window, or HA's own Assist window. Semantic profiles guard against accidental exposure of your system. Easy to install - you can be up and running in under one minute.</p>
+            <p class="hero-lede reveal d2">Create one scoped token for each AI agent. Choose what it can read, what it can control, and which actions need approval. Use Agent Chat inside Home Assistant or connect any MCP client.</p>
             <div class="hero-cta reveal d3">
               <a class="btn btn-primary" href="install.html">Get started <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
               <a class="btn btn-ghost" href="https://github.com/leecaochang/phoenix-mcp" target="_blank" rel="noopener">View on GitHub</a>
@@ -111,8 +110,8 @@
 
         <!-- ===================== START HERE ===================== -->
         <section>
-          <h2>No external client necessary - prompt entirely inside Home Assistant</h2>
-          <p>Agent Chat runs the agent inside Phoenix MCP itself, on a token you choose, using your own Anthropic, DeepSeek, Ollama or other provider API account. This greatly simplifies installation and daily use.</p>
+          <h2>Choose how you want to chat</h2>
+          <p>Use Agent Chat inside Home Assistant for the shortest setup, or connect an external MCP client. Both options use the same token scope, approvals, audit log, and MESA rules.</p>
           <div class="grid-2">
             <a class="card card-link" href="agentcli.html">
               <span class="card-ix">Internal</span>
@@ -123,7 +122,7 @@
             <a class="card card-link" href="connect.html">
               <span class="card-ix">External</span>
               <h3>Connect a client</h3>
-              <p>Point Claude Code, Cursor, Codex, Gemini CLI, or any MCP client at Phoenix MCP's endpoint with a URL and a bearer token.</p>
+              <p>Point Claude Code, Cursor, Codex, Gemini CLI, or another bearer-token-compatible MCP client at Phoenix MCP's endpoint.</p>
               <span class="card-go">Connect an AI client <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
             </a>
           </div>
@@ -153,14 +152,14 @@
               </tbody>
             </table>
           </div>
-          <p>If you are connecting Claude Code, Cursor, ChatGPT, Antigravity, or any other AI tool to Home Assistant, Phoenix MCP gives you control the native system cannot.</p>
+          <p>If you are connecting Claude Code, Cursor, Codex, Antigravity, or another compatible AI tool to Home Assistant, Phoenix MCP gives you control the native system cannot.</p>
         </section>
 
 
         <!-- ===================== WHAT YOU GET ===================== -->
         <section class="reveal">
           <h2>Three layers between an agent and your home</h2>
-          <p class="lede">Every actuation runs the same gauntlet, in order. Phoenix MCP resolves and flattens the target to explicit entities, checks the token's permissions and capabilities, and only then lets MESA, the semantic safety net, have the final say, a backstop that holds even over a token that was granted too much. Reads run the same permission scoping without the actuation-only stages.</p>
+          <p class="lede">Every action passes three checks: entity permission, capability, then MESA safety. Phoenix runs the action only when all three allow it. Reads use the permission checks that apply to them.</p>
 
           <div class="grid-3">
             <div class="card">

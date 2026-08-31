@@ -25,7 +25,7 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Concepts / Capabilities &amp; pass-through</p>
           <h1>Capabilities &amp; pass-through</h1>
-          <p class="lede">The permission tree decides which entities a token can touch. Capability flags decide whether it can do the high-impact, cross-cutting things at all: restart Home Assistant, control a lock, write an automation, read the logs. They are off by default. Phoenix MCP defines 29 of them; a <a href="#personas">persona</a> applies a ready-made preset across every capability in one step, and you can override any single one afterward.</p>
+          <p class="lede">Capabilities control high-impact actions such as restarting Home Assistant, controlling locks, writing automations, and reading logs. Start with a <a href="#personas">persona</a>, then change individual capabilities only when needed.</p>
         </header>
 
         <h2>How the modes work</h2>
@@ -38,6 +38,9 @@
         <p><code>confirm</code> is only meaningful for the write, system, and irreversible capabilities; the read-tier capabilities are <code>deny</code> or <code>allow</code> only.</p>
         <p>A pending approval stores the requested action so the admin can review it. For file and <code>configuration.yaml</code> writes, the before/after diff shown for review and the admin API responses are run through a secret redactor: values on sensitive-looking keys (<code>password</code>, <code>api_key</code>, <code>secret</code>, and similar) and any embedded tokens or URL credentials are replaced with <code>&lt;redacted&gt;</code>, while the structure of the change stays visible. The pending record itself keeps the raw tool arguments while the approval is queued, because an approved action has to re-run with the real content; so for <code>write_file</code>, <code>set_yaml_config</code> and <code>patch_yaml_config</code> the unredacted content can exist in <code>.storage/phoenix_mcp</code> during the approval window.</p>
 
+        <details class="advanced">
+          <summary>Compare all 29 capability flags</summary>
+          <div class="advanced-content">
         <h2 id="capability-flags">The capability flags</h2>
         <p>The <strong>pass-through</strong> column shows what happens under a pass-through token: <em>granted</em> means pass-through turns it on for you, <em>must enable</em> means it stays off until you set it explicitly, even for pass-through tokens. Each row names the capability as it appears in the panel, with its API field id (used by the <a href="admin-api.html">admin API</a>) beneath.</p>
 
@@ -88,6 +91,9 @@
             </tbody>
           </table>
         </div>
+
+          </div>
+        </details>
 
         <h2 id="personas">Personas</h2>
         <p>You rarely set capabilities one at a time. A <strong>persona</strong> is a named preset that fills in the entire matrix at once, and choosing one applies the whole set, not just a label. After applying a persona you can still adjust any single capability; the token then shows as <strong>Custom</strong> unless the new combination happens to match another preset.</p>

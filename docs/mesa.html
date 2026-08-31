@@ -25,7 +25,7 @@
         <header class="page-head">
           <p class="breadcrumb"><a href="index.html">Docs</a> / Concepts / MESA</p>
           <h1>MESA</h1>
-          <p class="lede">MESA is the third and last gate between an agent and your home. The permission tree decides which entities a token can touch and capabilities decide whether it can do the high-impact things at all; MESA decides, per entity, whether an action is safe by the entity's own nature, no matter what the token allows.</p>
+          <p class="lede">MESA sets safety rules based on what an entity is, not which token calls it. Its profile can require approval or block an action even when the token would otherwise allow it.</p>
         </header>
 
         <h2>What MESA is</h2>
@@ -140,6 +140,9 @@
           <div class="callout-body"><p class="callout-title">It patches the Home Assistant frontend</p><p>These buttons are injected into pages Phoenix MCP does not own, so a Home Assistant update that reworks those pages can make them stop appearing until Phoenix MCP is updated with a fix. If that happens the feature self-disables on the layout it no longer recognises rather than breaking anything, so the failure is cosmetic, it's perfectly safe, and it never affects Home Assistant itself.</p></div>
         </div>
 
+        <details class="advanced">
+          <summary>Use MESA tools and advisory leases</summary>
+          <div class="advanced-content">
         <h2 id="mesa-tools">The MESA tools</h2>
         <p>An agent can read MESA profiles through four retrieval tools, all gated by <strong>Config read</strong> (profiles are configuration metadata, the same sensitivity class as <code>get_config</code>). They are token-scoped: the handlers and resolver only ever see entities the token can read, and every count, cursor, and fingerprint is relative to that scope, so there is no way to enumerate entities outside it. An out-of-scope or nonexistent entity returns the same "not found" envelope.</p>
         <div class="table-wrap">
@@ -160,6 +163,9 @@
           <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.9 1 1 1.6h5c.1-.6.5-1.2 1-1.6A6 6 0 0 0 12 3z"/></svg>
           <div class="callout-body"><p class="callout-title">Scoped token plus MESA is the recommended pairing</p><p>The permission tree scopes what an agent sees, which keeps context cheap and reads secure; MESA governs the nature of writes on top. <a href="capabilities.html#mesa">Pass-through and MESA</a> explains why pass-through plus MESA, though possible, is usually not the better trade.</p></div>
         </div>
+
+          </div>
+        </details>
 
         <nav class="pager" id="pager" aria-label="Page navigation"></nav>
       </div>

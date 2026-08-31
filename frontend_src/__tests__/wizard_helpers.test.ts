@@ -74,15 +74,24 @@ describe("buildCodexConfig", () => {
 });
 
 describe("buildAgentTabs", () => {
-  it("returns the five agents with Claude Code first and Cursor (not DeepSeek)", () => {
+  it("returns the supported agents plus an explained Claude hosted-connector limit", () => {
     const tabs = buildAgentTabs("http://ha/api/phoenix-mcp", "phx_abc", "Voice_Assist");
-    expect(tabs.map((t) => t.key)).toEqual(["claude", "gemini", "codex", "cursor", "other"]);
+    expect(tabs.map((t) => t.key)).toEqual(["claude", "claude-web", "gemini", "codex", "cursor", "other"]);
     expect(tabs[0].blocks[0].code).toContain("claude mcp add");
     // Every tab carries a docs link and at least one block.
     for (const t of tabs) {
       expect(t.href).toMatch(/^https:\/\//);
       expect(t.blocks.length).toBeGreaterThan(0);
     }
+  });
+
+  it("provides the full bearer header but no local skill install for Claude hosted connectors", () => {
+    const claudeWeb = buildAgentTabs("http://ha/api/phoenix-mcp", "phx_secret", "Voice_Assist")
+      .find((t) => t.key === "claude-web")!;
+    expect(claudeWeb.showSkillInstall).toBe(false);
+    expect(claudeWeb.blocks[0].fields).toContainEqual({ label: "Header key", value: "Authorization" });
+    expect(claudeWeb.blocks[0].fields).toContainEqual({ label: "Header value", value: "Bearer phx_secret" });
+    expect(claudeWeb.blocks[0].code).toBeUndefined();
   });
 
   it("threads the token-derived server name into every tab", () => {
