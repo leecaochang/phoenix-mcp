@@ -81,6 +81,7 @@
         "token_expired": "Jeton expiré",
         "execution_failed": "Échec de l'exécution",
         "execution_interrupted": "Interrompu ; a pu être appliqué",
+        "approval_format_incompatible": "Annulée après la mise à niveau en raison d'un format d'approbation incompatible",
         "agent_chat_ended": "Agent Chat terminé avant l'approbation"
       },
       "reasonExecutionFailedDetail": "Échec de l'exécution : {detail}",

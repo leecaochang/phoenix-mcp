@@ -29,9 +29,12 @@ GITHUB_URL = "https://github.com/leecaochang/phoenix-mcp"
 DOMAIN = "phoenix_mcp"
 RUNTIME_READY_KEY = "phoenix_mcp_runtime_ready"
 STORAGE_KEY = "phoenix_mcp"
-STORAGE_VERSION = 2
+STORAGE_VERSION = 4
 
 PROXY_TIMEOUT_SECONDS = 30
+RELATIVE_VOLUME_MAX_CONCURRENCY = 8
+RELATIVE_VOLUME_PLAN_VERSION = 1
+APPROVAL_REASON_FORMAT_INCOMPATIBLE = "approval_format_incompatible"
 MAX_REQUEST_BODY_BYTES = 1_048_576
 MAX_BATCH_ITEMS = 50
 

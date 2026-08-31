@@ -16,6 +16,7 @@ from custom_components.phoenix_mcp.const import (
     CAP_DENY,
     DEFAULT_RATE_LIMIT_BURST,
     DEFAULT_RATE_LIMIT_REQUESTS,
+    STORAGE_VERSION,
     TOKEN_LENGTH,
     TOKEN_PREFIX,
 )
@@ -557,11 +558,11 @@ class TestTokenStoreLoad:
         mock_store.async_save.assert_awaited()
 
     async def test_load_valid_collections_untouched_no_spurious_save(self, hass):
-        # A well-formed v2 store must load verbatim with no heal-save fired by
+        # A well-formed current store must load verbatim with no heal-save fired by
         # normalization (the token carries persona, so migration is a no-op too).
         now = utcnow()
         existing = {
-            "version": 2,
+            "version": STORAGE_VERSION,
             "tokens": [{
                 "id": "tok1", "name": "mytoken", "token_hash": "h",
                 "created_at": now.isoformat(), "created_by": "admin",
@@ -579,6 +580,38 @@ class TestTokenStoreLoad:
             store = await TokenStore.async_create(hass)
         assert [t.id for t in store.list_tokens()] == ["tok1"]
         mock_store.async_save.assert_not_awaited()
+
+    async def test_load_dismisses_notifications_for_migrated_approvals(self, hass):
+        existing = {
+            "version": 2,
+            "tokens": [],
+            "archived_tokens": [],
+            "pending_approvals": [{
+                "id": "legacy-volume",
+                "status": "pending",
+                "tool_name": "call_service_mesa_approved",
+                "args": {"domain": "media_player", "service": "volume_set"},
+            }],
+            "settings": {},
+        }
+        mock_store = AsyncMock()
+        mock_store.async_load = AsyncMock(return_value=existing)
+        mock_store.async_save = AsyncMock()
+        with patch(
+            "custom_components.phoenix_mcp.token_store._PhoenixStore",
+            return_value=mock_store,
+        ), patch(
+            "homeassistant.components.persistent_notification.async_dismiss"
+        ) as dismiss:
+            store = await TokenStore.async_create(hass)
+
+        approval = store.get_pending_approvals()[0]
+        assert approval["status"] == "cancelled"
+        mock_store.async_save.assert_awaited_once()
+        dismiss.assert_called_once_with(
+            hass,
+            notification_id="phoenix_mcp_approval_legacy-volume",
+        )
 
     async def test_load_falsy_root_healed_but_fresh_install_not(self, hass):
         # `[]`, `""`, and `0` are corrupt roots and should heal to disk; None

@@ -57,6 +57,7 @@
         "token_expired": "Token abgelaufen",
         "execution_failed": "Ausführung fehlgeschlagen",
         "execution_interrupted": "Unterbrochen; möglicherweise angewendet",
+        "approval_format_incompatible": "Nach Upgrade wegen inkompatiblem Genehmigungsformat abgebrochen",
         "agent_chat_ended": "Agent Chat endete vor der Genehmigung"
       },
       "reasonExecutionFailedDetail": "Ausführung fehlgeschlagen: {detail}",

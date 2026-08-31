@@ -1617,6 +1617,7 @@
         "token_expired": "토큰이 만료되었습니다",
         "execution_failed": "실행에 실패했습니다",
         "execution_interrupted": "중단되었습니다. 적용되었을 수 있습니다",
+        "approval_format_incompatible": "업그레이드 후 호환되지 않는 승인 형식으로 인해 취소되었습니다",
         "agent_chat_ended": "승인 전에 에이전트 채팅이 종료되었습니다"
       },
       "reasonExecutionFailedDetail": "실행에 실패했습니다: {detail}",

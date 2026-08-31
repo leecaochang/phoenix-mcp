@@ -575,6 +575,7 @@
         "capability_denied": "Возможность была запрещена",
         "execution_failed": "Выполнение не удалось",
         "execution_interrupted": "Прервано; возможно, применено",
+        "approval_format_incompatible": "Отменено после обновления из-за несовместимого формата одобрения",
         "kill_switch": "Аварийный выключатель включён",
         "rate_limited_at_execution": "Ограничение частоты при выполнении",
         "target_missing": "Цель больше не существует",

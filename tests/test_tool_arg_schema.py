@@ -94,6 +94,11 @@ UNPUBLISHED_ARGS = {
         "its registered executor replays this frozen entity-to-level map so approval "
         "cannot actuate a later, recomputed target state."
     ),
+    ("native.py", "_relative_volume_plan_version"): (
+        "INTERNAL compatibility marker stored beside target_levels. The approval "
+        "executor rejects an old or unknown frozen-plan representation instead of "
+        "guessing how to replay it."
+    ),
 }
 
 # Catalog v2 handlers normalize structured public inputs to the mature executor

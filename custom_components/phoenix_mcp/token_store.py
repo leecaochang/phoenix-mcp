@@ -23,6 +23,7 @@ from .const import (
     AGENTCLI_SCROLLBACK_DEFAULT,
     AGENTCLI_SCROLLBACK_MAX,
     AGENTCLI_SCROLLBACK_MIN,
+    APPROVAL_REASON_FORMAT_INCOMPATIBLE,
     CONVERSATION_STYLES,
     CONVERSATION_STYLE_DIRECT,
     DETAIL_LEVELS,
@@ -37,13 +38,16 @@ from .const import (
     DEFAULT_CONFIRM_INLINE_WAIT_SECONDS,
     DEFAULT_RATE_LIMIT_BURST,
     DEFAULT_RATE_LIMIT_REQUESTS,
+    DOMAIN,
     MAX_CONFIRM_INLINE_WAIT_SECONDS,
     MIN_CONFIRM_INLINE_WAIT_SECONDS,
     MAX_PRESETS_PER_TOKEN,
+    MESA_APPROVED_EXECUTOR,
     MESA_MODE_ADVISORY,
     MESA_MODES,
     PERSONA_CUSTOM,
     PERSONA_NAMES,
+    RELATIVE_VOLUME_PLAN_VERSION,
     STORAGE_KEY,
     STORAGE_VERSION,
     TOKEN_HEX_LENGTH,
@@ -753,11 +757,20 @@ class TokenStore:
     async def async_load(self) -> None:
         """Load token and settings data from the HA storage file.
 
-        Applies the v1 -> v2 migration in place when older storage is detected.
+        Applies storage migrations in place when older data is detected.
         """
         raw = await self._store.async_load()
         raw, normalized = _normalize_storage_root(raw)
-        migrated = _migrate_storage_v1_to_v2(raw)
+        migrated = _migrate_storage(raw)
+        notification_marker_present = "_invalidated_approval_notification_ids" in raw
+        raw_invalidated_notifications = raw.pop(
+            "_invalidated_approval_notification_ids", []
+        )
+        invalidated_notifications = (
+            raw_invalidated_notifications
+            if isinstance(raw_invalidated_notifications, list)
+            else []
+        )
 
         tokens: dict[str, TokenRecord] = {}
         for r in raw.get("tokens", []):
@@ -795,11 +808,23 @@ class TokenStore:
         }
 
         if migrated:
-            _LOGGER.info("Phoenix MCP storage migrated from v1 to v2; saving canonical form")
-        if migrated or normalized or approvals_cleaned:
+            _LOGGER.info(
+                "Phoenix MCP storage migrated to v%d; saving canonical form",
+                STORAGE_VERSION,
+            )
+        if migrated or normalized or approvals_cleaned or notification_marker_present:
             # Persist the cleaned form so a one-time corruption does not have to
             # be re-normalized on every load.
             await self.async_save()
+        if invalidated_notifications:
+            from homeassistant.components import persistent_notification  # noqa: PLC0415
+
+            for approval_id in invalidated_notifications:
+                if isinstance(approval_id, str):
+                    persistent_notification.async_dismiss(
+                        self._hass,
+                        notification_id=f"{DOMAIN}_approval_{approval_id}",
+                    )
 
     async def async_save(self) -> None:
         """Persist the current in-memory state to HA storage."""
@@ -1247,18 +1272,18 @@ _LEGACY_ALLOW_TO_CAP = {
 
 
 class _PhoenixStore(Store):
-    """Subclass of HA's Store that wires our v1 -> v2 migration into the load path.
+    """Subclass of HA's Store that wires our migrations into the load path.
 
     HA's Store invokes `_async_migrate_func` when the stored major version differs
     from the constructor's version. The default implementation raises
-    NotImplementedError; we override it to run `_migrate_storage_v1_to_v2` in place.
+    NotImplementedError; we override it to migrate the stored data in place.
     """
 
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict
     ) -> dict:
         if old_major_version < STORAGE_VERSION:
-            _migrate_storage_v1_to_v2(old_data)
+            _migrate_storage(old_data, source_version=old_major_version)
         return old_data
 
 
@@ -1336,5 +1361,70 @@ def _migrate_storage_v1_to_v2(raw: dict) -> bool:
                 needs_save = True
     if "pending_approvals" not in raw:
         raw["pending_approvals"] = []
+        needs_save = True
+    return needs_save
+
+
+def _migrate_volume_approval_payloads(raw: dict, *, repair_v3: bool) -> bool:
+    """Cancel incompatible pending volume approvals and repair v3 history."""
+    invalidated_ids: list[str] = []
+    changed = False
+    now_iso = utcnow().isoformat()
+    for approval in raw.get("pending_approvals", []) or []:
+        if not isinstance(approval, dict):
+            continue
+        args = approval.get("args")
+        if not isinstance(args, dict):
+            continue
+        legacy_mesa_volume = (
+            approval.get("tool_name") == MESA_APPROVED_EXECUTOR
+            and args.get("domain") == "media_player"
+            and args.get("service") == "volume_set"
+        )
+        incompatible_relative_plan = (
+            approval.get("tool_name") == "HassSetVolumeRelative"
+            and args.get("_relative_volume_plan_version")
+            != RELATIVE_VOLUME_PLAN_VERSION
+        )
+        if not legacy_mesa_volume and not incompatible_relative_plan:
+            continue
+        if (
+            repair_v3
+            and approval.get("status") == "cancelled"
+            and not approval.get("rejected_reason")
+        ):
+            approval["rejected_reason"] = APPROVAL_REASON_FORMAT_INCOMPATIBLE
+            changed = True
+            continue
+        if approval.get("status") != "pending":
+            continue
+        if approval.get("execution_started_at"):
+            continue
+        approval["status"] = "cancelled"
+        approval["resolved_at"] = now_iso
+        approval["rejected_reason"] = APPROVAL_REASON_FORMAT_INCOMPATIBLE
+        changed = True
+        approval_id = approval.get("id")
+        if isinstance(approval_id, str):
+            invalidated_ids.append(approval_id)
+    if invalidated_ids:
+        raw["_invalidated_approval_notification_ids"] = invalidated_ids
+    return changed
+
+
+def _migrate_storage(raw: dict, *, source_version: int | None = None) -> bool:
+    """Migrate any non-empty storage object to the current version in place."""
+    if not isinstance(raw, dict) or not raw:
+        return False
+    stored_version = raw.get("version") if source_version is None else source_version
+    version = stored_version if isinstance(stored_version, int) else 1
+    needs_save = _migrate_storage_v1_to_v2(raw)
+    if version < 4:
+        needs_save = _migrate_volume_approval_payloads(
+            raw,
+            repair_v3=version == 3,
+        ) or needs_save
+    if raw.get("version") != STORAGE_VERSION:
+        raw["version"] = STORAGE_VERSION
         needs_save = True
     return needs_save

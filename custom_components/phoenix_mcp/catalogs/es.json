@@ -469,6 +469,7 @@
         "capability_denied": "Capacidad denegada",
         "execution_failed": "Error de ejecución",
         "execution_interrupted": "Interrumpida; puede que se haya aplicado",
+        "approval_format_incompatible": "Cancelada tras la actualización por un formato de aprobación incompatible",
         "kill_switch": "Interruptor de emergencia activado",
         "rate_limited_at_execution": "Límite de velocidad aplicado en la ejecución",
         "target_missing": "El objetivo ya no existe",

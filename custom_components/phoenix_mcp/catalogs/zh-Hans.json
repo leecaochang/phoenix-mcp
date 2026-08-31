@@ -965,6 +965,7 @@
         "token_inactive": "令牌处于非活动状态",
         "token_revoked": "令牌已吊销",
         "execution_interrupted": "已中断，可能已生效",
+        "approval_format_incompatible": "升级后因审批格式不兼容而取消",
         "agent_chat_ended": "智能体对话在审批前已结束"
       },
       "reasonExecutionFailedDetail": "执行失败：{detail}",

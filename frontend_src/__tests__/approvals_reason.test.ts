@@ -86,6 +86,7 @@ describe("friendlyReason", () => {
     expect(friendlyReason(rec({ rejected_reason: "capability_denied" }))).toBe("Capability was denied");
     expect(friendlyReason(rec({ rejected_reason: "kill_switch" }))).toBe("Kill switch engaged");
     expect(friendlyReason(rec({ rejected_reason: "agent_chat_ended" }))).toBe("Agent Chat ended before approval");
+    expect(friendlyReason(rec({ rejected_reason: "approval_format_incompatible" }))).toBe("Cancelled after upgrade because the approval format is incompatible");
   });
 
   it("passes a free-text admin reason through verbatim", () => {

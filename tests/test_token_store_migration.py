@@ -1,14 +1,23 @@
-"""Tests for the v1 -> v2 storage migration in token_store._migrate_storage_v1_to_v2."""
+"""Tests for Phoenix token-store migrations."""
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
+from custom_components.phoenix_mcp.approvals import (
+    REASON_EXECUTION_INTERRUPTED,
+    async_reconcile_interrupted_approvals,
+)
 from custom_components.phoenix_mcp.const import (
+    APPROVAL_REASON_FORMAT_INCOMPATIBLE,
     CAP_ALLOW,
     CAP_DENY,
     PERSONA_CUSTOM,
+    STORAGE_VERSION,
 )
 from custom_components.phoenix_mcp.token_store import (
     _LEGACY_ALLOW_TO_CAP,
+    _migrate_storage,
     _migrate_storage_v1_to_v2,
 )
 
@@ -41,6 +50,119 @@ class TestMigrationOnEmpty:
         changed = _migrate_storage_v1_to_v2(raw)
         assert changed is True
         assert raw["pending_approvals"] == []
+
+
+class TestV2ApprovalMigration:
+    def test_incompatible_volume_approvals_are_cancelled_once(self):
+        approvals = [
+            {
+                "id": "legacy-mesa",
+                "status": "pending",
+                "tool_name": "call_service_mesa_approved",
+                "args": {
+                    "domain": "media_player",
+                    "service": "volume_set",
+                    "service_data": {"volume_level": 0.45},
+                    "entity_id": ["media_player.one"],
+                },
+            },
+            {
+                "id": "unversioned-plan",
+                "status": "pending",
+                "tool_name": "HassSetVolumeRelative",
+                "args": {"target_levels": []},
+            },
+            {
+                "id": "current-plan",
+                "status": "pending",
+                "tool_name": "HassSetVolumeRelative",
+                "args": {"_relative_volume_plan_version": 1},
+            },
+            {
+                "id": "resolved-legacy",
+                "status": "approved",
+                "tool_name": "call_service_mesa_approved",
+                "args": {"domain": "media_player", "service": "volume_set"},
+            },
+            {
+                "id": "other-service",
+                "status": "pending",
+                "tool_name": "call_service_mesa_approved",
+                "args": {"domain": "media_player", "service": "media_pause"},
+            },
+        ]
+        raw = {"version": 2, "tokens": [], "pending_approvals": approvals}
+
+        assert _migrate_storage(raw) is True
+
+        by_id = {approval["id"]: approval for approval in approvals}
+        assert raw["version"] == STORAGE_VERSION
+        assert by_id["legacy-mesa"]["status"] == "cancelled"
+        assert (
+            by_id["legacy-mesa"]["rejected_reason"]
+            == APPROVAL_REASON_FORMAT_INCOMPATIBLE
+        )
+        assert by_id["unversioned-plan"]["status"] == "cancelled"
+        assert by_id["current-plan"]["status"] == "pending"
+        assert by_id["resolved-legacy"]["status"] == "approved"
+        assert by_id["other-service"]["status"] == "pending"
+        assert raw["_invalidated_approval_notification_ids"] == [
+            "legacy-mesa",
+            "unversioned-plan",
+        ]
+        assert _migrate_storage(raw) is False
+
+    async def test_execution_marker_survives_for_startup_reconciliation(self):
+        started_at = "2026-08-31T00:00:00+00:00"
+        approval = {
+            "id": "interrupted-volume",
+            "token_id": "token",
+            "token_name": "test",
+            "status": "pending",
+            "tool_name": "call_service_mesa_approved",
+            "cap_name": "mesa_control_mode",
+            "args": {"domain": "media_player", "service": "volume_set"},
+            "diff": {},
+            "created_at": started_at,
+            "expires_at": "2026-08-31T01:00:00+00:00",
+            "request_id": "request",
+            "execution_started_at": started_at,
+        }
+        raw = {"version": 2, "tokens": [], "pending_approvals": [approval]}
+
+        assert _migrate_storage(raw) is True
+        assert approval["status"] == "pending"
+        assert approval["execution_started_at"] == started_at
+        assert "_invalidated_approval_notification_ids" not in raw
+
+        store = MagicMock()
+        store.get_pending_approvals.return_value = raw["pending_approvals"]
+        store.async_save = AsyncMock()
+        reconciled = await async_reconcile_interrupted_approvals(store)
+
+        assert len(reconciled) == 1
+        assert approval["status"] == "failed"
+        assert approval["rejected_reason"] == REASON_EXECUTION_INTERRUPTED
+        assert "execution_started_at" not in approval
+        store.async_save.assert_awaited_once()
+
+    def test_v3_cancelled_record_gains_the_localized_reason(self):
+        approval = {
+            "id": "cancelled-by-v3",
+            "status": "cancelled",
+            "tool_name": "call_service_mesa_approved",
+            "args": {"domain": "media_player", "service": "volume_set"},
+        }
+        raw = {"version": 3, "tokens": [], "pending_approvals": [approval]}
+
+        assert _migrate_storage(raw) is True
+
+        assert raw["version"] == STORAGE_VERSION
+        assert (
+            approval["rejected_reason"]
+            == APPROVAL_REASON_FORMAT_INCOMPATIBLE
+        )
+        assert "_invalidated_approval_notification_ids" not in raw
 
 
 class TestTokenMigration:

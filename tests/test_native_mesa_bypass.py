@@ -190,6 +190,10 @@ MESA_EXEMPT_ACTUATORS = {
     "mcp_view.py::_tool_get_calendar_events": "calendar.get_events is a read with return_response",
     "mcp_view.py::_dispatch_no_target_tool_call": "NO_TARGET_SERVICES take no entity (rule 15)",
     "mcp_view.py::_execute_restart_ha": "homeassistant.restart has no entity target",
+    "tools/native.py::_relative_volume_worker": (
+        "private relative-volume worker runs only after its enclosing executor "
+        "MESA-gates the complete frozen target plan"
+    ),
     "radio.py::async_permit_join": "Zigbee coordinator operation, not entity actuation",
     "radio.py::async_remove_device": "Zigbee coordinator operation, not entity actuation",
     "tools/authoring.py::_execute_create_automation": "automation.reload after a config write",

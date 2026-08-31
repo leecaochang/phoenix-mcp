@@ -671,6 +671,7 @@
         "capability_denied": "Możliwość została odrzucona",
         "execution_failed": "Wykonanie nie powiodło się",
         "execution_interrupted": "Przerwano; mogło zostać zastosowane",
+        "approval_format_incompatible": "Anulowano po aktualizacji z powodu niezgodnego formatu zatwierdzenia",
         "kill_switch": "Wyłącznik awaryjny włączony",
         "rate_limited_at_execution": "Limit szybkości przy wykonywaniu",
         "target_missing": "Cel już nie istnieje",

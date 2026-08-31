@@ -81,6 +81,7 @@
         "token_expired": "トークンの有効期限が切れました",
         "execution_failed": "実行に失敗しました",
         "execution_interrupted": "中断されました。適用済みの可能性があります",
+        "approval_format_incompatible": "アップグレード後、承認形式の非互換性によりキャンセルされました",
         "agent_chat_ended": "承認前に Agent Chat が終了しました"
       },
       "reasonExecutionFailedDetail": "実行に失敗しました: {detail}",

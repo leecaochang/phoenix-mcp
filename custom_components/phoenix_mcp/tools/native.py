@@ -47,7 +47,8 @@ from homeassistant.core import HomeAssistant
 from ..audit import generate_request_id
 from ..const import (
     ANNOUNCE_BIT, BLOCKED_DOMAINS, CAP_CONFIRM, CAP_DENY, DOMAIN, PHYSICAL_GATE_DOMAINS,
-    PROXY_TIMEOUT_SECONDS, SENSITIVE_ATTRIBUTES,
+    PROXY_TIMEOUT_SECONDS, RELATIVE_VOLUME_MAX_CONCURRENCY,
+    RELATIVE_VOLUME_PLAN_VERSION, SENSITIVE_ATTRIBUTES,
     VACUUM_CLEAN_AREA_BIT, VACUUM_RETURN_HOME_BIT, VACUUM_START_BIT,
 )
 from ..data import PhoenixData
@@ -58,6 +59,9 @@ from ..policy_engine import Permission, normalize_intent_selectors, resolve, res
 from ..token_store import TokenRecord
 
 _LOGGER = logging.getLogger(__name__)
+
+_RELATIVE_VOLUME_NOT_DISPATCHED = object()
+_RELATIVE_VOLUME_DISPATCHED = object()
 
 
 def _validate_integer_range(param_name: str, value: Any, min_val: int, max_val: int | None = None) -> str | None:
@@ -1035,6 +1039,8 @@ def _validated_relative_volume_plan(
     args: dict,
 ) -> list[tuple[str, float]] | None:
     """Validate the private exact-action payload stored in an approval."""
+    if args.get("_relative_volume_plan_version") != RELATIVE_VOLUME_PLAN_VERSION:
+        return None
     raw = args.get("target_levels")
     if not isinstance(raw, list) or not raw:
         return None
@@ -1124,31 +1130,76 @@ async def _execute_hass_set_volume_relative(
     for entity_id, level in plan:
         grouped.setdefault(level, []).append(entity_id)
     grouped_items = list(grouped.items())
-    call_results = await asyncio.gather(*(
-        asyncio.wait_for(
-            hass.services.async_call(
-                "media_player",
-                "volume_set",
-                {"volume_level": level, "entity_id": grouped_entities},
-                blocking=True,
-                return_response=False,
-            ),
+    call_results: list[BaseException | None | object] = [
+        _RELATIVE_VOLUME_NOT_DISPATCHED for _item in grouped_items
+    ]
+    next_group = 0
+    dispatch_stopped = False
+
+    async def _relative_volume_worker() -> None:
+        nonlocal next_group
+        while not dispatch_stopped and next_group < len(grouped_items):
+            index = next_group
+            next_group += 1
+            if dispatch_stopped:
+                return
+            level, grouped_entities = grouped_items[index]
+            call_results[index] = _RELATIVE_VOLUME_DISPATCHED
+            try:
+                await hass.services.async_call(
+                    "media_player",
+                    "volume_set",
+                    {"volume_level": level, "entity_id": grouped_entities},
+                    blocking=True,
+                    return_response=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - classified below per target
+                if not dispatch_stopped:
+                    call_results[index] = exc
+            else:
+                if not dispatch_stopped:
+                    call_results[index] = None
+
+    workers = [
+        asyncio.create_task(_relative_volume_worker())
+        for _index in range(min(RELATIVE_VOLUME_MAX_CONCURRENCY, len(grouped_items)))
+    ]
+    try:
+        _done, pending = await asyncio.wait(
+            workers,
             timeout=PROXY_TIMEOUT_SECONDS,
         )
-        for level, grouped_entities in grouped_items
-    ), return_exceptions=True)
+        if pending:
+            dispatch_stopped = True
+            for worker in pending:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+    except asyncio.CancelledError:
+        dispatch_stopped = True
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        raise
 
     succeeded: list[str] = []
     failed: list[dict[str, str]] = []
     dispatched_unknown = False
-    failures: list[tuple[str, list[str], str]] = []
+    failure_statuses: set[str] = set()
     for (_level, grouped_entities), call_result in zip(grouped_items, call_results):
         if call_result is None:
             succeeded.extend(grouped_entities)
             continue
-        if isinstance(call_result, asyncio.CancelledError):
+        if call_result is _RELATIVE_VOLUME_NOT_DISPATCHED:
+            status = "deadline_exceeded"
+            message = "Action was not dispatched before the request deadline."
+        elif call_result is _RELATIVE_VOLUME_DISPATCHED:
+            status = "timeout"
+            message = "Action dispatch timed out; completion is unknown."
+        elif isinstance(call_result, asyncio.CancelledError):
             raise call_result
-        if isinstance(call_result, asyncio.TimeoutError):
+        elif isinstance(call_result, asyncio.TimeoutError):
             status = "timeout"
             message = "Action dispatch timed out; completion is unknown."
         elif isinstance(call_result, ServiceNotFound):
@@ -1170,7 +1221,7 @@ async def _execute_hass_set_volume_relative(
         else:
             succeeded.extend(grouped_entities)
             continue
-        failures.append((status, grouped_entities, message))
+        failure_statuses.add(status)
         if status == "timeout":
             dispatched_unknown = True
         for entity_id in grouped_entities:
@@ -1179,11 +1230,6 @@ async def _execute_hass_set_volume_relative(
                 "reason": status,
                 "message": message,
             })
-
-    if not succeeded and not dispatched_unknown:
-        first_status, _entities, first_message = failures[0]
-        outcome = "invalid_request" if first_status == "invalid_request" else "denied"
-        return _tool_error(first_message), outcome, "HassSetVolumeRelative"
 
     success = _build_target_context(args, hass) if succeeded else []
     success.extend(_native_entity_entry(entity_id, hass) for entity_id in succeeded)
@@ -1197,8 +1243,17 @@ async def _execute_hass_set_volume_relative(
         "response_type": "action_done",
         "data": {"success": success, "failed": failed},
     }
-    if failed:
+    if failed and (succeeded or dispatched_unknown):
         payload["partial"] = True
+    if not succeeded and not dispatched_unknown:
+        outcome = (
+            "invalid_request" if "invalid_request" in failure_statuses else "denied"
+        )
+        return (
+            _tool_error(json.dumps(payload)),
+            outcome,
+            "HassSetVolumeRelative",
+        )
     return (
         _tool_success(json.dumps(payload)),
         "allowed",
@@ -1272,6 +1327,7 @@ async def _tool_hass_set_volume_relative(
             "HassSetVolumeRelative",
         )
     plan_args: dict[str, Any] = {
+        "_relative_volume_plan_version": RELATIVE_VOLUME_PLAN_VERSION,
         "target_levels": targets,
         "volume_step": step,
     }

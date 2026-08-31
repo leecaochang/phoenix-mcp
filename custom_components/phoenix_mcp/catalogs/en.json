@@ -82,6 +82,7 @@
         "token_expired": "Token expired",
         "execution_failed": "Execution failed",
         "execution_interrupted": "Interrupted; may have applied",
+        "approval_format_incompatible": "Cancelled after upgrade because the approval format is incompatible",
         "agent_chat_ended": "Agent Chat ended before approval"
       },
       "reasonExecutionFailedDetail": "Execution failed: {detail}",

@@ -14,6 +14,7 @@ export const APPROVAL_REASON_LABEL_KEYS: Readonly<Record<string, string>> = {
   token_expired: "approvals.reason.token_expired",
   execution_failed: "approvals.reason.execution_failed",
   execution_interrupted: "approvals.reason.execution_interrupted",
+  approval_format_incompatible: "approvals.reason.approval_format_incompatible",
   agent_chat_ended: "approvals.reason.agent_chat_ended",
 };
 

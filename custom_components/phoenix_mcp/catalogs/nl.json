@@ -671,6 +671,7 @@
         "capability_denied": "Mogelijkheid is geweigerd",
         "execution_failed": "Uitvoering mislukt",
         "execution_interrupted": "Onderbroken; mogelijk toegepast",
+        "approval_format_incompatible": "Na upgrade geannuleerd vanwege een incompatibel goedkeuringsformaat",
         "kill_switch": "Noodstop ingeschakeld",
         "rate_limited_at_execution": "Snelheidslimiet bereikt bij uitvoering",
         "target_missing": "Doel bestaat niet meer",

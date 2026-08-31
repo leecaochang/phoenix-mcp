@@ -73,6 +73,7 @@ def _mesa_outcome(
 
 def _plan() -> dict:
     return {
+        "_relative_volume_plan_version": 1,
         "target_levels": [
             {"entity_id": "media_player.one", "volume_level": 0.45},
             {"entity_id": "media_player.two", "volume_level": 1.0},
@@ -219,6 +220,210 @@ async def test_distinct_volume_groups_dispatch_concurrently():
         "media_player.one",
         "media_player.two",
     }
+
+
+async def test_distinct_volume_groups_have_a_fixed_concurrency_ceiling():
+    entity_count = 40
+    levels = {
+        f"media_player.player_{index}": index / entity_count
+        for index in range(entity_count)
+    }
+    hass = _hass(levels)
+    active = 0
+    peak = 0
+
+    async def service_call(_domain, _service, _call_data, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.005)
+        finally:
+            active -= 1
+
+    hass.services.async_call.side_effect = service_call
+    plan = {
+        "_relative_volume_plan_version": 1,
+        "target_levels": [
+            {"entity_id": entity_id, "volume_level": level}
+            for entity_id, level in levels.items()
+        ],
+        "volume_step": 1,
+    }
+    with patch(f"{NATIVE}.resolve", return_value=Permission.WRITE):
+        response, outcome, _resource = await _execute_hass_set_volume_relative(
+            plan, _token(), hass, _data(with_mesa=False),
+        )
+
+    body = json.loads(response["content"][0]["text"])
+    assert outcome == "allowed"
+    assert len(body["data"]["success"]) == entity_count
+    assert hass.services.async_call.await_count == entity_count
+    assert peak == 8
+
+
+async def test_relative_volume_uses_one_deadline_and_reports_undispatched_groups():
+    entity_count = 20
+    levels = {
+        f"media_player.player_{index}": index / entity_count
+        for index in range(entity_count)
+    }
+    hass = _hass(levels)
+    cancelled = 0
+
+    async def service_call(_domain, _service, _call_data, **_kwargs):
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled += 1
+
+    hass.services.async_call.side_effect = service_call
+    plan = {
+        "_relative_volume_plan_version": 1,
+        "target_levels": [
+            {"entity_id": entity_id, "volume_level": level}
+            for entity_id, level in levels.items()
+        ],
+        "volume_step": 1,
+    }
+    with patch(f"{NATIVE}.resolve", return_value=Permission.WRITE), patch(
+        f"{NATIVE}.PROXY_TIMEOUT_SECONDS", 0.02,
+    ):
+        response, outcome, _resource = await _execute_hass_set_volume_relative(
+            plan, _token(), hass, _data(with_mesa=False),
+        )
+
+    body = json.loads(response["content"][0]["text"])
+    reasons = [entry["reason"] for entry in body["data"]["failed"]]
+    assert outcome == "allowed"
+    assert body["partial"] is True
+    assert hass.services.async_call.await_count == 8
+    assert cancelled == 8
+    assert reasons.count("timeout") == 8
+    assert reasons.count("deadline_exceeded") == entity_count - 8
+
+
+async def test_deadline_stops_queue_when_service_suppresses_cancellation():
+    entity_count = 20
+    levels = {
+        f"media_player.player_{index}": index / entity_count
+        for index in range(entity_count)
+    }
+    hass = _hass(levels)
+
+    async def service_call(_domain, _service, _call_data, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return
+
+    hass.services.async_call.side_effect = service_call
+    plan = {
+        "_relative_volume_plan_version": 1,
+        "target_levels": [
+            {"entity_id": entity_id, "volume_level": level}
+            for entity_id, level in levels.items()
+        ],
+        "volume_step": 1,
+    }
+    with patch(f"{NATIVE}.resolve", return_value=Permission.WRITE), patch(
+        f"{NATIVE}.PROXY_TIMEOUT_SECONDS", 0.02,
+    ):
+        response, outcome, _resource = await _execute_hass_set_volume_relative(
+            plan, _token(), hass, _data(with_mesa=False),
+        )
+
+    body = json.loads(response["content"][0]["text"])
+    reasons = [entry["reason"] for entry in body["data"]["failed"]]
+    assert outcome == "allowed"
+    assert body["data"]["success"] == []
+    assert hass.services.async_call.await_count == 8
+    assert reasons.count("timeout") == 8
+    assert reasons.count("deadline_exceeded") == entity_count - 8
+
+
+async def test_relative_volume_cancellation_stops_workers_and_propagates():
+    levels = {
+        f"media_player.player_{index}": index / 20
+        for index in range(20)
+    }
+    hass = _hass(levels)
+    started = asyncio.Event()
+    cancelled = 0
+
+    async def service_call(_domain, _service, _call_data, **_kwargs):
+        nonlocal cancelled
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled += 1
+
+    hass.services.async_call.side_effect = service_call
+    plan = {
+        "_relative_volume_plan_version": 1,
+        "target_levels": [
+            {"entity_id": entity_id, "volume_level": level}
+            for entity_id, level in levels.items()
+        ],
+        "volume_step": 1,
+    }
+    with patch(f"{NATIVE}.resolve", return_value=Permission.WRITE):
+        task = asyncio.create_task(_execute_hass_set_volume_relative(
+            plan, _token(), hass, _data(with_mesa=False),
+        ))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert hass.services.async_call.await_count == 8
+    assert cancelled == 8
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_all_failed_groups_keep_details_with_deterministic_outcome(reverse):
+    hass = _hass({"media_player.one": 0.2, "media_player.two": 0.9})
+
+    async def service_call(_domain, _service, call_data, **_kwargs):
+        if call_data["volume_level"] == 0.45:
+            raise HomeAssistantError("offline")
+        raise vol.Invalid("invalid level")
+
+    hass.services.async_call.side_effect = service_call
+    plan = _plan()
+    if reverse:
+        plan["target_levels"].reverse()
+    with patch(f"{NATIVE}.resolve", return_value=Permission.WRITE):
+        response, outcome, _resource = await _execute_hass_set_volume_relative(
+            plan, _token(), hass, _data(with_mesa=False),
+        )
+
+    body = json.loads(response["content"][0]["text"])
+    failed = {entry["id"]: entry["reason"] for entry in body["data"]["failed"]}
+    assert outcome == "invalid_request"
+    assert response["isError"] is True
+    assert body["data"]["success"] == []
+    assert failed == {
+        "media_player.one": "denied",
+        "media_player.two": "invalid_request",
+    }
+    assert "partial" not in body
+
+
+async def test_unversioned_frozen_plan_is_refused_before_dispatch():
+    hass = _hass({"media_player.one": 0.2, "media_player.two": 0.9})
+    plan = _plan()
+    plan.pop("_relative_volume_plan_version")
+
+    response, outcome, _resource = await _execute_hass_set_volume_relative(
+        plan, _token(), hass, _data(with_mesa=False),
+    )
+
+    assert outcome == "invalid_request"
+    assert "invalid relative-volume target plan" in response["content"][0]["text"]
+    hass.services.async_call.assert_not_awaited()
 
 
 async def test_missing_current_volume_refuses_before_mesa_or_dispatch():

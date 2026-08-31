@@ -562,6 +562,7 @@
         "capability_denied": "能力已被拒絕",
         "execution_failed": "執行失敗",
         "execution_interrupted": "已中斷，可能已生效",
+        "approval_format_incompatible": "升級後因審批格式不相容而取消",
         "kill_switch": "緊急停止開關已啟用",
         "rate_limited_at_execution": "執行時達到速率限制",
         "target_missing": "目標已不存在",
