@@ -34,4 +34,4 @@ pyflakes==3.4.0
 
 # Standalone type checker, same rationale as pyflakes above (not pulled in by
 # PHACC). Config and the per-module ratchet live in pyproject.toml.
-mypy==2.3.0
+mypy==2.3.1
