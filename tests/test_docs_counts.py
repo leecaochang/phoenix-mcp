@@ -126,7 +126,13 @@ def test_docs_directory_is_present() -> None:
 def test_agent_chat_provider_cards_are_alphabetical() -> None:
     """Keep the provider scan predictable as the catalog grows."""
     html = (DOCS / "agentcli.html").read_text(encoding="utf-8")
-    names = re.findall(r"<h3>([^<]+)</h3>", html)
+    directory = re.search(
+        r'<div class="grid-2 provider-directory">(.*?)<h2>Using the chat</h2>',
+        html,
+        re.DOTALL,
+    )
+    assert directory is not None
+    names = re.findall(r"<h3>([^<]+)</h3>", directory.group(1))
     assert len(names) == len(AGENTCLI_PROVIDERS)
     assert names == sorted(names, key=str.casefold)
 

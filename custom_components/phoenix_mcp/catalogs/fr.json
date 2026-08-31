@@ -686,7 +686,7 @@
       "addingProvider": "Ajout de {label}",
       "agentClaudeHint": "Exécutez ceci dans votre terminal, puis vérifiez avec claude mcp list.",
       "agentClaudeWebIntro": "Disponible uniquement pour les organisations ayant accès à la bêta limitée Request headers d'Anthropic. Claude se connecte depuis le cloud d'Anthropic, utilisez donc une adresse Home Assistant HTTPS publique.",
-      "agentClaudeWebLabel": "Claude web/app",
+      "agentClaudeWebLabel": "Claude web/applications",
       "agentClaudeWebSetupHint": "En tant que propriétaire de l'organisation Claude, ouvrez Organization settings > Connectors > Add > Custom > Web. Choisissez Authentication: None et ajoutez un en-tête de requête obligatoire avec ces valeurs. Si Request headers est absent, utilisez Claude Code ou Agent Chat. Ce jeton est partagé avec tous les utilisateurs du connecteur. Créez donc un jeton dédié avec le minimum de droits.",
       "agentClaudeWebSetupTitle": "Ajouter un connecteur d'organisation",
       "agentCodexIntro": "La CLI Codex n'ajoute que des serveurs stdio. Utilisez les paramètres de l'application ou modifiez le fichier de configuration ci-dessous.",

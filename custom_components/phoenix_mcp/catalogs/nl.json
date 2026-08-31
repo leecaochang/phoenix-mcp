@@ -948,7 +948,7 @@
       "addingProvider": "{label} toevoegen",
       "agentClaudeHint": "Voer dit uit in je terminal en controleer het daarna met claude mcp list.",
       "agentClaudeWebIntro": "Alleen beschikbaar voor organisaties met toegang tot Anthropics beperkte Request headers-bèta. Claude maakt verbinding vanuit Anthropics cloud, dus gebruik een openbaar HTTPS-adres voor Home Assistant.",
-      "agentClaudeWebLabel": "Claude web/app",
+      "agentClaudeWebLabel": "Claude-web/app",
       "agentClaudeWebSetupHint": "Open als eigenaar van de Claude-organisatie Organization settings > Connectors > Add > Custom > Web. Kies Authentication: None en voeg met deze waarden een vereiste request-header toe. Ontbreekt Request headers, gebruik dan Claude Code of Agent Chat. Dit token wordt gedeeld met iedereen die de connector gebruikt. Maak daarom een speciaal token met minimale rechten.",
       "agentClaudeWebSetupTitle": "Organisatieconnector toevoegen",
       "agentCodexIntro": "De Codex CLI voegt alleen stdio-servers toe. Gebruik de app-instellingen of bewerk het onderstaande configuratiebestand.",
