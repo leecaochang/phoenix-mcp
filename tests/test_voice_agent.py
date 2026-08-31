@@ -474,6 +474,53 @@ async def test_agent_process_wraps_answer_as_speech():
     assert result.conversation_id == "c1"
 
 
+@pytest.mark.asyncio
+async def test_agent_process_strips_markdown_for_every_assist_input():
+    agent = voice_agent.PhoenixConversationAgent(MagicMock(), _make_data())
+    markdown = (
+        "## Status\n\n**Kitchen** is *off*.\n\n"
+        "- [Front door](https://example.invalid) is `locked`."
+    )
+    with patch.object(
+        voice_agent, "async_voice_answer", AsyncMock(return_value=markdown)
+    ):
+        voice_result = await agent.async_process(
+            SimpleNamespace(
+                text="status", language="en", conversation_id="c1",
+                satellite_id="sat-1",
+            )
+        )
+        app_result = await agent.async_process(
+            SimpleNamespace(
+                text="status", language="en", conversation_id="c2",
+                device_id="mobile-device", satellite_id=None,
+            )
+        )
+
+    assert voice_result.response.speech["plain"]["speech"] == (
+        "Status\n\nKitchen is off.\n\nFront door is locked."
+    )
+    assert app_result.response.speech["plain"]["speech"] == (
+        "Status\n\nKitchen is off.\n\nFront door is locked."
+    )
+
+
+@pytest.mark.parametrize(
+    ("markdown", "spoken"),
+    [
+        (r"\*\*Kitchen\*\* is off.", "Kitchen is off."),
+        ("~~Old~~ new state", "Old new state"),
+        ("```text\nGarage closed\n```", "Garage closed"),
+        ("2 * 3 is 6", "2 * 3 is 6"),
+        ("sensor_outdoor_temperature is 20", "sensor_outdoor_temperature is 20"),
+    ],
+)
+def test_spoken_text_removes_formatting_without_changing_literal_symbols(
+    markdown: str, spoken: str
+):
+    assert voice_agent._spoken_text(markdown) == spoken
+
+
 _FULL_CFG = dict(
     voice_agent_enabled=True, voice_agent_token_id="t",
     voice_agent_provider_id="p", voice_agent_model="m",

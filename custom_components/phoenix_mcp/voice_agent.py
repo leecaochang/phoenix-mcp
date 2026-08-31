@@ -23,6 +23,7 @@ HA versions; re-verify on upgrades.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Literal
 
 from homeassistant.const import MATCH_ALL
@@ -33,6 +34,42 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .helpers import voice_text
 
 _LOGGER = logging.getLogger(__name__)
+
+_MARKDOWN_FENCE_LINE_RE = re.compile(
+    r"^[ \t]*(?:```+|~~~+)(?:[A-Za-z0-9_.+-]+)?[ \t]*$", re.MULTILINE
+)
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^\n)]*\)")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\n)]*\)")
+_MARKDOWN_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+_MARKDOWN_QUOTE_RE = re.compile(r"^[ \t]{0,3}>[ \t]?", re.MULTILINE)
+_MARKDOWN_BULLET_RE = re.compile(r"^[ \t]*[-+*][ \t]+", re.MULTILINE)
+_MARKDOWN_RULE_RE = re.compile(r"^[ \t]*(?:[-*_][ \t]*){3,}$", re.MULTILINE)
+_MARKDOWN_STRONG_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+_MARKDOWN_EMPHASIS_RE = re.compile(
+    r"(?<!\w)([*_])(?=\S)(.+?)(?<=\S)\1(?!\w)", re.DOTALL
+)
+_MARKDOWN_STRIKE_RE = re.compile(r"~~(?=\S)(.+?)(?<=\S)~~", re.DOTALL)
+_MARKDOWN_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!>|])")
+
+
+def _spoken_text(text: str) -> str:
+    """Remove common visual Markdown syntax before handing text to TTS."""
+    spoken = _MARKDOWN_RULE_RE.sub("", text)
+    spoken = _MARKDOWN_FENCE_LINE_RE.sub("", spoken)
+    spoken = _MARKDOWN_IMAGE_RE.sub(r"\1", spoken)
+    spoken = _MARKDOWN_LINK_RE.sub(r"\1", spoken)
+    spoken = _MARKDOWN_HEADING_RE.sub("", spoken)
+    spoken = _MARKDOWN_QUOTE_RE.sub("", spoken)
+    spoken = _MARKDOWN_BULLET_RE.sub("", spoken)
+    spoken = _MARKDOWN_ESCAPE_RE.sub(r"\1", spoken)
+    spoken = _MARKDOWN_STRIKE_RE.sub(r"\1", spoken)
+    spoken = _MARKDOWN_STRONG_RE.sub(r"\2", spoken)
+    spoken = _MARKDOWN_EMPHASIS_RE.sub(r"\2", spoken)
+    spoken = spoken.replace("`", "")
+    spoken = re.sub(r"[*_~]{2,}", "", spoken)
+    spoken = re.sub(r"[ \t]+\n", "\n", spoken)
+    spoken = re.sub(r"\n{3,}", "\n\n", spoken)
+    return spoken.strip()
 
 # conversation is a guaranteed core integration in any real HA, but guard the
 # import so Phoenix MCP setup never hard-crashes if its deps are ever unavailable (and so
@@ -135,15 +172,19 @@ if _CONVERSATION_AVAILABLE:
             self, user_input: "_conversation.ConversationInput"
         ) -> "_conversation.ConversationResult":
             """Answer one utterance, spoken as the final assistant text."""
-            # A voice satellite sets satellite_id; only then would an appended link be
-            # read aloud by TTS. Absent it (the typed Assist chat), include the link.
+            # A hardware satellite sets satellite_id, so approval links are suppressed
+            # there. Companion-app STT does not: HA discards the pipeline's start_stage
+            # before calling the agent, making app voice and typed turns indistinguishable.
+            # Sanitize every response because HA uses this one plain-speech value for
+            # both its visible Assist reply and TTS input.
+            satellite_id = getattr(user_input, "satellite_id", None)
             text = await async_voice_answer(
                 self.hass, self._data, user_input.text,
-                include_review_links=getattr(user_input, "satellite_id", None) is None,
+                include_review_links=satellite_id is None,
                 language=user_input.language,
             )
             response = intent.IntentResponse(language=user_input.language)
-            response.async_set_speech(text)
+            response.async_set_speech(_spoken_text(text))
             return _conversation.ConversationResult(
                 response=response,
                 conversation_id=user_input.conversation_id,
