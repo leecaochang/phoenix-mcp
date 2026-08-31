@@ -20,7 +20,7 @@
 #   # then pip freeze the two lines back into this file)
 #   venv/bin/python -m pytest
 
-pytest-homeassistant-custom-component==0.13.354
+pytest-homeassistant-custom-component==0.13.358
 
 # Dependencies of HA's `conversation` component, needed by the Phoenix MCP voice-agent
 # tests (voice_agent.py imports homeassistant.components.conversation). PHACC does
