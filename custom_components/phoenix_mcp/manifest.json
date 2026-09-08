@@ -8,6 +8,6 @@
   "documentation": "https://leecaochang.github.io/phoenix-mcp/",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/leecaochang/phoenix-mcp/issues",
-  "requirements": ["voluptuous-serialize"]
+  "requirements": ["voluptuous-serialize"],
   "version": "1.4.0"
 }
