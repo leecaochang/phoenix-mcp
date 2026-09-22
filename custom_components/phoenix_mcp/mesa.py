@@ -689,7 +689,12 @@ def refresh_orphans(hass: HomeAssistant, runtime: MesaRuntime) -> None:
     known = set(er.entities) | set(hass.states.async_entity_ids())
     runtime.orphans = runtime.store.find_orphans(known)
 
-    known_devices = set(dr_mod.async_get(hass).devices)
+    # HA 2026.9 exposes DeviceEntry values when the registry view is
+    # iterated, while older HA releases expose device IDs from the mapping.
+    known_devices = {
+        item.id if hasattr(item, "id") else item
+        for item in dr_mod.async_get(hass).devices
+    }
     runtime.orphan_devices = [d for d in runtime.store.device_keys() if d not in known_devices]
 
     known_areas = set(ar_mod.async_get(hass).areas)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -143,6 +146,25 @@ async def test_refresh_orphans_flags_unknown_entities(hass: HomeAssistant):
 
     refresh_orphans(hass, runtime)
     assert runtime.orphans == ["light.deleted"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_orphans_accepts_new_device_registry_view(hass: HomeAssistant):
+    """Device registry iteration works with HA 2026.9 DeviceEntry values."""
+    runtime = await async_setup_mesa(hass, "advisory")
+    runtime.store.set_device_profile("device.live", _profile("device.live"))
+    runtime.store.set_device_profile("device.deleted", _profile("device.deleted"))
+
+    registry = SimpleNamespace(
+        devices=[SimpleNamespace(id="device.live")],
+    )
+    with patch(
+        "custom_components.phoenix_mcp.mesa.dr_mod.async_get",
+        return_value=registry,
+    ):
+        refresh_orphans(hass, runtime)
+
+    assert runtime.orphan_devices == ["device.deleted"]
 
 
 # ---------------------------------------------------------------------------

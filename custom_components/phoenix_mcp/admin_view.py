@@ -53,6 +53,7 @@ from .policy_engine import (
     Permission,
     config_entry_registry_context,
     device_config_entry_ids,
+    device_registry_entries,
     get_effective_hint,
     resolve,
 )
@@ -3820,7 +3821,7 @@ class PhoenixAdminMesaDeviceOptionsView(PhoenixView):
         rid = request["phoenix_mcp_rid"]
         registry = dr_mod.async_get(self.hass)
         options = []
-        for device in registry.devices.values():
+        for device in device_registry_entries(registry):
             name = device.name_by_user or device.name or device.id
             options.append({"id": device.id, "name": name})
         options.sort(key=lambda o: (o["name"].lower(), o["id"]))

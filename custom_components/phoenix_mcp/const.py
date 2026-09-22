@@ -927,6 +927,7 @@ TARGET_SELECTOR_KEYS = frozenset({"entity_id", "device_id", "area_id", "floor_id
 # when a description cannot be loaded and an upgrade guard for newly added keys.
 SECONDARY_TARGET_SELECTOR_KEYS = frozenset({
     "add_entities",
+    "account",
     "bridge",
     "cleaning_area_id",
     "container_device_id",
@@ -938,6 +939,7 @@ SECONDARY_TARGET_SELECTOR_KEYS = frozenset({
     "master",
     "media_player",
     "media_player_entity_id",
+    "pot",
     "remove_entities",
     "rooms",
     "slaves",

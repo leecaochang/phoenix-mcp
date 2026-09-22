@@ -102,6 +102,16 @@ def _add_owner_entity(
     return entry.entity_id
 
 
+def _make_legacy_shared_device(device: object, *entry_ids: str) -> None:
+    """Emulate HA's pre-2026.9 composite ownership shape without deprecated APIs."""
+    object.__setattr__(device, "_pending_move", None)
+    object.__setattr__(
+        device,
+        "_composite_subentries",
+        {entry_id: {None} for entry_id in entry_ids},
+    )
+
+
 @pytest.fixture
 def removal_env(hass: HomeAssistant) -> dict:
     owner = MockConfigEntry(
@@ -308,8 +318,10 @@ async def test_mesa_evaluates_exact_selected_owner_membership(
         domain="second_integration", entry_id="mesa-second", title="MESA second"
     )
     second.add_to_hass(hass)
-    dr.async_get(hass).async_update_device(
-        device_id, add_config_entry_id=second.entry_id
+    _make_legacy_shared_device(
+        dr.async_get(hass).async_get(device_id),
+        removal_env["owner"].entry_id,
+        second.entry_id,
     )
     unaffected = _add_owner_entity(hass, second, device_id, "mesa-unaffected")
     data = await _data(hass, "enforced")
@@ -319,9 +331,22 @@ async def test_mesa_evaluates_exact_selected_owner_membership(
     )
     data.mesa.store.set(unaffected, _profile(unaffected, "read_only"))
     hook = AsyncMock(return_value=True)
+    registry = dr.async_get(hass)
+
+    def remove_legacy_owner(target_id: str, **kwargs):
+        if kwargs.get("remove_config_entry_id") == removal_env["owner"].entry_id:
+            object.__setattr__(
+                registry.async_get(target_id),
+                "_composite_subentries",
+                {second.entry_id: {None}},
+            )
+        return registry.async_get(target_id)
+
     with patch(
         "custom_components.phoenix_mcp.mcp_view._async_device_removal_hook",
         AsyncMock(return_value=hook),
+    ), patch.object(
+        registry, "async_update_device", side_effect=remove_legacy_owner
     ):
         content, outcome, _ = await _call_tool(
             "remove_device",

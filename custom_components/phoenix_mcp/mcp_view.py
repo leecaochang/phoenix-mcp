@@ -217,7 +217,7 @@ from .tool_defs import (
 )
 from .audit import Outcome
 from .tool_common import _CAP_FORBIDDEN_MESSAGE, _resolve_area_id, _ProgressBus, _approved_exec_ctx, _approval_resource, _gate, _mesa_advisory_ctx, _mesa_confirm_annotation, _operator_accepted_result, _pending_or_inline, _progress_ctx, _record_version, _restore_ctx, _set_progress_status, _tool_error, _tool_success
-from .policy_engine import (EntityCreationNotPermitted, Permission, assist_expose_check, call_needs_physical_gate, config_entry_registry_context, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_config_entry_registry_access, resolve_config_entry_registry_write, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
+from .policy_engine import (EntityCreationNotPermitted, Permission, assist_expose_check, call_needs_physical_gate, config_entry_registry_context, device_config_entry_ids, device_registry_entries, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, get_effective_hint, resolve, resolve_config_entry_registry_access, resolve_config_entry_registry_write, resolve_device_registry_access, resolve_device_registry_write, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes, scrub_state_dict as _scrub_state_dict)
 from .rate_limiter import RateLimitResult
 from .token_store import TokenRecord
 from . import yaml_includes
@@ -3650,7 +3650,7 @@ async def _resolve_device_removal_context(
     )
     child_device_ids = sorted(
         child.id
-        for child in registry.devices.values()
+        for child in device_registry_entries(registry)
         if child.via_device_id == device_id
     )
     fingerprint = _device_removal_context_fingerprint(
@@ -3930,9 +3930,17 @@ async def _execute_remove_device(
     current = registry.async_get(device_id)
     if current is not None and selected_owner in device_config_entry_ids(current):
         try:
-            registry.async_update_device(
-                device_id, remove_config_entry_id=selected_owner
-            )
+            owners = device_config_entry_ids(current)
+            if len(owners) > 1:
+                # HA releases with composite/multi-owner devices still need
+                # the legacy selective removal path.
+                registry.async_update_device(
+                    device_id, remove_config_entry_id=selected_owner
+                )
+            else:
+                # HA 2026.9 models a device as belonging to one config entry;
+                # removing that owner removes the device itself.
+                registry.async_remove_device(device_id)
         except Exception as exc:  # noqa: BLE001 - HA registry boundary
             _LOGGER.error(
                 "remove_device registry cleanup failed for %s owner %s: %s",

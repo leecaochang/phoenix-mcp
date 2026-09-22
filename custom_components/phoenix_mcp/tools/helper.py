@@ -28,7 +28,6 @@ import logging
 from typing import Any, cast
 
 import voluptuous as vol
-import voluptuous_serialize
 
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -62,6 +61,7 @@ from ..tool_common import (
     _tool_error,
     _tool_success,
     _truncate,
+    serialize_ha_schema,
 )
 from ..policy_engine import (
     _ENTITY_ID_RE,
@@ -2173,7 +2173,7 @@ def _options_schema_json(result: Any) -> list | None:
         # it returns the empty list rather than the "unknown" None below.
         return []
     try:
-        converted = voluptuous_serialize.convert(schema, custom_serializer=cv.custom_serializer)
+        converted = serialize_ha_schema(schema, cv.custom_serializer)
     except Exception:  # noqa: BLE001 - a schema shape this cannot describe
         # Returning [] here would be a lie the caller acts on: an empty field
         # list reads as "this helper accepts nothing", and the caller would then

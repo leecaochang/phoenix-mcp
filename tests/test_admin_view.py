@@ -807,12 +807,9 @@ async def test_integration_permission_options_use_exact_entry_and_warn_shared_de
         identifiers={("test_integration", "shared")},
         name="Shared",
     )
-    updated_device = dr.async_get(hass).async_update_device(
-        device.id, add_config_entry_id=second.entry_id
-    )
-    assert updated_device is not None
-    # HA 2026 stages this as a move because its registry model became
-    # single-owner; emulate the 2025.2 multi-owner shape Phoenix still supports.
+    # HA 2026.9 stages multi-owner updates as a move because its registry model
+    # became single-owner; emulate the 2025.2 composite shape directly.
+    updated_device = device
     object.__setattr__(updated_device, "_pending_move", None)
     object.__setattr__(updated_device, "_composite_subentries", {
         first.entry_id: {None}, second.entry_id: {None},

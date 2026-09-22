@@ -42,6 +42,25 @@ from .token_store import TokenRecord
 _LOGGER = logging.getLogger(__name__)
 
 
+def serialize_ha_schema(schema: Any, custom_serializer: Any) -> Any:
+    """Serialize a Home Assistant form schema across HA's serializer eras."""
+    try:
+        import probatio  # noqa: PLC0415
+    except ImportError:
+        import voluptuous_serialize  # noqa: PLC0415
+
+        return voluptuous_serialize.convert(
+            schema, custom_serializer=custom_serializer
+        )
+
+    if type(schema).__module__.startswith("probatio"):
+        return probatio.to_field_list(schema, custom_serializer=custom_serializer)
+
+    import voluptuous_serialize  # noqa: PLC0415
+
+    return voluptuous_serialize.convert(schema, custom_serializer=custom_serializer)
+
+
 def _tool_success(text: str) -> dict:
     """Return an MCP tool result content block with a plain-text payload."""
     return {"content": [{"type": "text", "text": text}]}

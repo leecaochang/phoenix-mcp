@@ -16,7 +16,6 @@ from datetime import datetime
 from typing import Any, cast
 
 import voluptuous as vol
-import voluptuous_serialize
 
 from homeassistant.config_entries import ConfigEntryState, SOURCE_RECONFIGURE
 from homeassistant.core import HomeAssistant
@@ -24,6 +23,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_validation as cv
 
 from ..policy_engine import is_sensitive_key
+from ..tool_common import serialize_ha_schema
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -146,9 +146,7 @@ def _public_schema(result: Mapping[str, Any]) -> list[dict[str, Any]] | None:
     if schema is None:
         return []
     try:
-        converted = voluptuous_serialize.convert(
-            schema, custom_serializer=cv.custom_serializer
-        )
+        converted = serialize_ha_schema(schema, cv.custom_serializer)
     except Exception:  # an integration-defined schema outside HA serialization
         _LOGGER.debug("Could not serialize reconfigure schema", exc_info=True)
         return None

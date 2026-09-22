@@ -575,7 +575,9 @@ class TestTokenRenameKeepsSensorIdentity:
         assert after == before
         assert all(entity_id is not None for entity_id in after.values())
         # Only the display name moved.
-        device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, token.id)})
+        device = dr.async_get(hass).async_get_devices(
+            identifiers={(DOMAIN, token.id)}
+        )[0]
         assert device.name == _device_name("beta")
         assert device.id == device_id
 

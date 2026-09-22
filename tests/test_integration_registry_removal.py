@@ -117,6 +117,16 @@ def _environment(hass: HomeAssistant, *, entry_id: str = "remove-entry") -> dict
     }
 
 
+def _make_legacy_shared_device(device: object, *entry_ids: str) -> None:
+    """Emulate HA's pre-2026.9 composite ownership shape without deprecated APIs."""
+    object.__setattr__(device, "_pending_move", None)
+    object.__setattr__(
+        device,
+        "_composite_subentries",
+        {entry_id: {None} for entry_id in entry_ids},
+    )
+
+
 async def test_preview_reports_exact_consumers_shared_owners_and_phoenix_refs(
     hass: HomeAssistant,
 ):
@@ -125,8 +135,10 @@ async def test_preview_reports_exact_consumers_shared_owners_and_phoenix_refs(
         domain="second_integration", entry_id="remaining-owner", title="Remaining owner"
     )
     second.add_to_hass(hass)
-    dr.async_get(hass).async_update_device(
-        env["device_id"], add_config_entry_id=second.entry_id
+    _make_legacy_shared_device(
+        dr.async_get(hass).async_get(env["device_id"]),
+        env["entry_id"],
+        second.entry_id,
     )
     data = await _data(hass, "enforced")
     token = _token(env)
@@ -229,8 +241,10 @@ async def test_shared_device_survives_with_remaining_owner(hass: HomeAssistant):
         domain="second_integration", entry_id="shared-owner", title="Shared owner"
     )
     second.add_to_hass(hass)
-    dr.async_get(hass).async_update_device(
-        env["device_id"], add_config_entry_id=second.entry_id
+    _make_legacy_shared_device(
+        dr.async_get(hass).async_get(env["device_id"]),
+        env["entry_id"],
+        second.entry_id,
     )
     data = await _data(hass)
     original_private_remove = hass.config_entries._async_remove

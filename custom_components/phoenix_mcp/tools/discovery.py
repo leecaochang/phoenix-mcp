@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 import dataclasses
 import difflib
 import functools
@@ -64,7 +64,7 @@ from .authoring import _AUTOMATION_YAML, _read_automations_yaml
 from .esphome import _ESPHOME_DOMAIN, _esphome_action_signature, _esphome_actions_for_entity, esphome_availability
 from ..tool_common import _resolve_area_id, _tool_error, _tool_success
 from ..ws_dispatch import WsDispatchError, async_get_lovelace_config, async_ws_command
-from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, device_config_entry_ids, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, physical_gate_applies, resolve, resolve_device_registry_access, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
+from ..policy_engine import _ENTITY_ID_RE, EntityCreationNotPermitted, Permission, assist_expose_check, device_config_entry_ids, device_registry_entries, device_registry_entity_ids, esphome_entry_writable, filter_entities_for_token, filter_service_response, physical_gate_applies, resolve, resolve_device_registry_access, resolve_esphome_user_service, resolve_registry_access, resolve_service_targets, scrub_sensitive_attributes
 from ..token_store import TokenRecord
 from .. import yaml_includes
 
@@ -1031,7 +1031,7 @@ async def _tool_list_devices(
 
     dev_reg = dr.async_get(hass)
     devices: list[dict] = []
-    for device in dev_reg.devices.values():
+    for device in device_registry_entries(dev_reg):
         if registry_state == "enabled" and device.disabled_by is not None:
             continue
         if registry_state == "disabled" and device.disabled_by is None:
@@ -1061,7 +1061,7 @@ async def _tool_get_device(
         return _tool_error("Missing required argument: device_id"), "invalid_request", "get_device"
 
     dev_reg = dr.async_get(hass)
-    device = dev_reg.async_get(device_id)
+    device = cast(dr.DeviceEntry | None, dev_reg.async_get(device_id))
     permission = resolve_device_registry_access(device_id, token, hass)
     if device is None or permission not in (Permission.READ, Permission.WRITE):
         return _tool_error("Device not found."), "not_found", device_id
@@ -1074,7 +1074,7 @@ async def _tool_get_device(
         "entities": _accessible_device_entity_ids(device.id, token, hass),
         "child_device_ids": sorted(
             child.id
-            for child in dev_reg.devices.values()
+            for child in device_registry_entries(dev_reg)
             if child.via_device_id == device.id
             and resolve_device_registry_access(
                 child.id, token, hass

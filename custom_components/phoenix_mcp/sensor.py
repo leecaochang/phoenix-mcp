@@ -295,7 +295,15 @@ async def async_rename_token_sensors(
             sensor.async_follow_token_update(token)
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={(DOMAIN, token.id)})
+    # HA 2026.9 deprecated the identifier-only lookup because identifiers are
+    # no longer globally unique across config entries. Token sensors have no
+    # entry-specific lookup context, so use the collection API and retain the
+    # legacy fallback for older HA releases.
+    if hasattr(device_registry, "async_get_devices"):
+        devices = device_registry.async_get_devices(identifiers={(DOMAIN, token.id)})
+        device = devices[0] if devices else None
+    else:
+        device = device_registry.async_get_device(identifiers={(DOMAIN, token.id)})
     if device is not None:
         device_registry.async_update_device(device.id, name=_device_name(token.name))
 

@@ -43,6 +43,12 @@ class ConfigEntryRegistryContext(NamedTuple):
     device_ids: tuple[str, ...]
 
 
+def device_registry_entries(registry: Any) -> Any:
+    """Iterate device entries across HA's mapping and registry-view APIs."""
+    devices = registry.devices
+    return devices.values() if isinstance(devices, Mapping) else devices
+
+
 class EntityCreationNotPermitted(Exception):
     def __init__(self, entity_id: str) -> None:
         self.entity_id = entity_id
@@ -338,7 +344,7 @@ def config_entry_registry_context(
     ))
     device_ids = tuple(sorted(
         device.id
-        for device in dr.async_get(hass).devices.values()
+        for device in device_registry_entries(dr.async_get(hass))
         if entry_id in device_config_entry_ids(device)
         and not _phoenix_owned_device(device, hass)
     ))
@@ -609,7 +615,7 @@ def expand_service_targets(
         for aid in aids:
             for eid in area_entity_index.get(aid, []):
                 candidates.add(eid)
-            for device in device_registry.devices.values():
+            for device in device_registry_entries(device_registry):
                 if device.area_id == aid:
                     for eid in device_entity_index.get(device.id, []):
                         candidates.add(eid)

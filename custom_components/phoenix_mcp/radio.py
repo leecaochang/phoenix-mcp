@@ -55,6 +55,7 @@ from .ws_dispatch import (
     async_ws_command,
     async_zha_reconfigure_device,
 )
+from .policy_engine import device_registry_entries
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def z2m_present(hass: HomeAssistant) -> bool:
     if "mqtt" not in hass.config.components:
         return False
     registry = dr.async_get(hass)
-    for device in registry.devices.values():
+    for device in device_registry_entries(registry):
         for ident in device.identifiers:
             if (
                 isinstance(ident, (list, tuple))
